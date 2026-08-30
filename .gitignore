@@ -1,0 +1,19 @@
+__pycache__/
+.idea/
+.venv/
+.pytest_cache/
+.vscode
+.dockerignore
+.env
+
+/.coverage
+/venv/
+# Nothing here consumes a lockfile: the production image installs the built package
+# (`uv pip install /src`), and dev is `uv pip install -e ".[dev]"`. A committed
+# uv.lock would only be a second dependency source to keep in step with pyproject.
+uv.lock
+/data/*
+!/data/.gitkeep
+/media/
+.cache/
+tests/fixtures/pages/**/*.html

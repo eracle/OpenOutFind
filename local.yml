@@ -1,0 +1,19 @@
+# local.yml — the server deploy. See docs/docker.md.
+#
+# For development, install the package instead: `uv pip install -e ".[dev]"`.
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: ./compose/openoutfind/Dockerfile
+    restart: unless-stopped
+    stdin_open: true
+    tty: true
+    environment:
+      - HOST_UID=${HOST_UID:-1000}
+      - HOST_GID=${HOST_GID:-1000}
+    volumes:
+      # Only the CRM is mounted — the code is what the image was built from, so
+      # moving an instance forward is `git pull` + rebuild, never a live edit.
+      - ./data:/app/data

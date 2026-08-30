@@ -1,0 +1,131 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: eracle/openoutfind
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install
+        run: uv pip install --system -e ".[dev]"
+
+      - name: Run tests
+        run: pytest
+
+  # The supported install. **Every green push to `main` is a release** — the version is
+  # derived here, not committed, because PyPI numbers are single-use and permanent.
+  #
+  # This is deliberate: deriving the version from the commit count means a release nobody
+  # has to remember cannot drift out of sync with what actually shipped.
+  # The cost is accepted: every commit that passes CI is public and permanent, so `main`
+  # is the release branch and a broken merge reaches installers within minutes. `needs:
+  # test` is the whole gate.
+  #
+  # Tags do not publish. They are still worth cutting as human markers (and the image job
+  # below reads them for its semver tags), but a tag on an already-published commit would
+  # only collide with the version that commit already shipped.
+  publish-pypi:
+    if: github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    # Required: the PyPI trusted publisher is registered against this workflow filename
+    # *and* this environment name. Do not add a required reviewer to it — that would put
+    # every push behind a manual approval, which is the thing this job exists to remove.
+    environment: pypi
+    permissions:
+      id-token: write # PyPI trusted publishing
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the version is a commit count; a shallow clone cannot count
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # `0.1.0` in pyproject.toml is the *base*: major and minor are declared there and
+      # bumped by hand when the change deserves it; the patch is how many commits have
+      # landed since the first release. Monotonic across a base bump (0.1.20 → 0.2.21),
+      # unique per commit, and nothing has to be committed for it.
+      - name: Derive the version from the commit count
+        id: version
+        run: |
+          set -euo pipefail
+          base=$(grep -m1 '^version = ' pyproject.toml | cut -d'"' -f2 | cut -d. -f1,2)
+          patch=$(git rev-list --count v0.1.0..HEAD)
+          version="${base}.${patch}"
+          echo "Releasing ${version}"
+          sed -i "0,/^version = .*/s//version = \"${version}\"/" pyproject.toml
+          echo "value=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Build sdist + wheel
+        run: pipx run build
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # A re-run of an already-published commit is a no-op, not a red build. PyPI
+          # refuses a duplicate version and it is right to; that is not a failure worth
+          # waking up to.
+          skip-existing: true
+
+  # The server image (docs/infrastructure.md §7) — not the install path.
+  build-and-push:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./compose/openoutfind/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      # Notify the hub repo that a new image was published (image-updated).
+      # Prod runs on the shared GCP VM (Compute Engine), not a DigitalOcean snapshot.
+      - name: Notify hub of new image
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.GH_PAT }}
+          repository: eracle/hub.openoutreach.app
+          event-type: image-updated

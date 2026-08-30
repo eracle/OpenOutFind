@@ -1,0 +1,22 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "openoutfind",
+  "description": "The OpenOutFind plugin for Claude Code — find B2B leads that fit, with the reason written out.",
+  "owner": {
+    "name": "OpenOutFind",
+    "email": "hello@openoutreach.app"
+  },
+  "plugins": [
+    {
+      "name": "openoutfind",
+      "description": "Find qualified B2B leads from inside Claude Code — drives the OpenOutFind CLI, reads the CSV it prints, and hands the rows to whatever you send with.",
+      "author": {
+        "name": "OpenOutFind",
+        "email": "hello@openoutreach.app"
+      },
+      "category": "productivity",
+      "source": "./",
+      "homepage": "https://openoutreach.app"
+    }
+  ]
+}

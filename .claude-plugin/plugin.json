@@ -1,0 +1,20 @@
+{
+  "name": "openoutfind",
+  "description": "Find qualified B2B leads from inside Claude Code — drives the OpenOutFind CLI, reads the CSV it prints, and hands the rows to whatever you send with.",
+  "version": "0.1.0",
+  "author": {
+    "name": "OpenOutFind",
+    "email": "hello@openoutreach.app"
+  },
+  "homepage": "https://openoutreach.app",
+  "repository": "https://github.com/eracle/OpenOutFind",
+  "license": "GPL-3.0-or-later",
+  "keywords": [
+    "lead-generation",
+    "b2b",
+    "outreach",
+    "sales",
+    "cli",
+    "self-hosted"
+  ]
+}

@@ -1,0 +1,14 @@
+#!/bin/bash
+# compose/start
+
+set -o errexit
+set -o pipefail
+set -o nounset
+
+# There is no daemon any more: the work verb is bounded by a goal, so the container runs
+# one job and exits. Whatever supervises it (a systemd timer, a cron entry, `docker compose
+# run`) decides how often — which is the right place for that decision, and is why nothing
+# here loops. `find` migrates and onboards on the way in.
+#
+# The goal is the argument: `docker compose run app 10 emails`.
+exec outfind find "${@:-1}"
