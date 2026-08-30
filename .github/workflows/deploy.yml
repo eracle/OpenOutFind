@@ -84,7 +84,7 @@ jobs:
           # waking up to.
           skip-existing: true
 
-  # The server image (docs/infrastructure.md §7) — not the install path.
+  # The server image (docs/docker.md) — not the install path.
   build-and-push:
     needs: test
     runs-on: ubuntu-latest
@@ -120,12 +120,3 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-
-      # Notify the hub repo that a new image was published (image-updated).
-      # Prod runs on the shared GCP VM (Compute Engine), not a DigitalOcean snapshot.
-      - name: Notify hub of new image
-        uses: peter-evans/repository-dispatch@v3
-        with:
-          token: ${{ secrets.GH_PAT }}
-          repository: eracle/hub.openoutreach.app
-          event-type: image-updated
