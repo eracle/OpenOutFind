@@ -36,7 +36,7 @@ from openoutfind.crm.models import DealState
 logger = logging.getLogger(__name__)
 
 
-def promote_to_ready(campaign, qualifier: Qualifier) -> int:
+def promote_to_ready(qualifier: Qualifier) -> int:
     """Promote QUALIFIED profiles at or above the GP confidence gate to
     READY_TO_FIND_EMAIL.
 
@@ -48,7 +48,7 @@ def promote_to_ready(campaign, qualifier: Qualifier) -> int:
     from openoutfind.crm.models import Lead
 
     threshold = CAMPAIGN_CONFIG["min_gp_confidence"]
-    profiles = get_qualified_profiles(campaign)
+    profiles = get_qualified_profiles()
     if not profiles:
         return 0
 
@@ -84,16 +84,16 @@ def promote_to_ready(campaign, qualifier: Qualifier) -> int:
             logger.debug("%s %s (P(f>0.5)=%.3f ≥ %.2f)", pid,
                          colored("READY_TO_FIND_EMAIL", "yellow", attrs=["bold"]),
                          prob, threshold)
-            set_profile_state(campaign, p["profile_url"],
+            set_profile_state(p["profile_url"],
                               DealState.READY_TO_FIND_EMAIL.value, log=False)
             promoted += 1
 
     return promoted
 
 
-def find_ready_candidate(campaign, qualifier: Qualifier) -> dict | None:
+def find_ready_candidate(qualifier: Qualifier) -> dict | None:
     """Return the top-ranked READY_TO_FIND_EMAIL profile, or None."""
-    profiles = get_ready_to_find_email_profiles(campaign)
+    profiles = get_ready_to_find_email_profiles()
     if not profiles:
         return None
 

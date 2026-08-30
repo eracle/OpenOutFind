@@ -16,7 +16,7 @@ Three rules, and they exist because the reader is as often a program as a person
 
 A freshly installed tool is the fourth case, and it used to be a raw Django traceback:
 the database file exists (``settings.py`` creates its directory) but has no schema until
-``run`` migrates, so asking anything else first hit ``no such table: core_campaign``.
+``run`` migrates, so asking anything else first hit ``no such table: core_siteconfig``.
 """
 from __future__ import annotations
 
@@ -69,7 +69,7 @@ def format_failure(exc: OpenOutFindError, *, as_json: bool) -> str:
 def require_initialized_database() -> None:
     """Refuse to read a database that is missing or behind on migrations.
 
-    Answering with zero campaigns instead would be the empty-result failure the error
+    Answering with zero leads instead would be the empty-result failure the error
     vocabulary exists to prevent: nothing was found because nothing has ever run. A
     schema that exists but is behind (a ``.venv``/checkout refreshed against a DB file
     from before some migration) hits the same class of failure — a raw
@@ -80,7 +80,7 @@ def require_initialized_database() -> None:
     from django.db import connection
     from django.db.migrations.executor import MigrationExecutor
 
-    if "core_campaign" not in connection.introspection.table_names():
+    if "core_siteconfig" not in connection.introspection.table_names():
         raise OpenOutFindError(
             ErrorType.NOT_INITIALIZED,
             f"no pipeline yet at {settings.DATABASE_PATH} — run `outfind init` to create it",

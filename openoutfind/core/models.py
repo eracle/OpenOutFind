@@ -1,7 +1,6 @@
 # openoutfind/core/models.py
 from __future__ import annotations
 
-from django.contrib.auth.models import User
 from django.db import models
 
 from openoutfind.discovery import SEARCH_FIELDS, describe_node
@@ -53,40 +52,17 @@ class SiteConfig(models.Model):
     # model — identity like email/name stays on the Django ``User``). Drives the
     # email-jurisdiction rules (core/geo.py): newsletter opt-in default + whether
     # we contribute to the contacts store (derived, ``not is_eea_located`` — never
-    # a stored toggle).
+    # a stored toggle). Also the target country stamped on every discovered Lead
+    # (the contacts geo-gate) and, before this field existed on this model, on
+    # ``Campaign`` — one install runs one campaign, so there is one country.
     country_code = models.CharField(max_length=2, blank=True, default="")
 
-    class Meta:
-        verbose_name = "Site Configuration"
-        verbose_name_plural = "Site Configuration"
-
-    def __str__(self):
-        return "Site Configuration"
-
-    def save(self, *args, **kwargs):
-        self.pk = 1
-        super().save(*args, **kwargs)
-
-    @classmethod
-    def load(cls) -> "SiteConfig":
-        obj, _ = cls.objects.get_or_create(pk=1)
-        return obj
-
-
-class Campaign(models.Model):
-    name = models.CharField(max_length=200, unique=True)
-    users = models.ManyToManyField(User, blank=True, related_name="campaigns")
+    # The campaign content — folded onto this singleton from the old ``Campaign``
+    # model (2026-08-30): this install has never run more than one campaign, so a
+    # separate campaign-identity row bought nothing but a selection step nobody used.
     product_docs = models.TextField(blank=True)
     campaign_target = models.TextField(blank=True)
-    # ``booking_link`` was here — a meeting URL the outreach agent offered when a lead
-    # asked for a call, and the only thing that ever read it was that agent's prompt.
-    # It left with the sender: a finder has nobody to offer a meeting to.
     model_blob = models.BinaryField(null=True, blank=True)
-    # ISO-3166 alpha-2 target country for this campaign's leads — the contacts
-    # geo-gate stamp put on every discovered Lead. A stable ICP attribute (one
-    # country per campaign), so it lives here rather than duplicated on each query
-    # node. Set by ``icp.generate_seed`` from the LLM's ICP spec on the cold start.
-    country_code = models.CharField(max_length=2, blank=True, default="")
 
     # The ICP's company-size band. A fixed constraint riding every discovery query
     # unchanged, never a search axis: loosening a size bound queries off-ICP rather
@@ -109,20 +85,32 @@ class Campaign(models.Model):
     # window (in Admin) onto what the model currently believes a good lead looks like; no
     # Lead or Deal row is ever created from them and nobody is ever emailed. Both fields
     # are cleared the moment a real lead qualifies — the cold phase is over, real ground
-    # truth supersedes the guess, and a campaign carrying anchors is exactly a campaign
-    # still waiting for its first positive.
+    # truth supersedes the guess, and anchors standing is exactly the sign of no positive yet.
     anchor_profiles = models.JSONField(default=list, blank=True)
     anchor_embeddings = models.BinaryField(null=True, blank=True)
     # The same invented people as *lead rows* — one ``source_fields`` dict per profile,
-    # parallel to ``anchor_profiles``. This is what lets a campaign with no acceptances
-    # open a precise frontier: ``vocabulary.refresh`` counts these alongside real accepted
-    # profiles, so the walk starts from words the ICP actually named instead of the
-    # generic tokens a three-profile corpus admits. Written by the model, never parsed out
-    # of the flat line — see ``pipeline/icp._AnchorProfile``.
+    # parallel to ``anchor_profiles``. This is what lets a fresh install with no
+    # acceptances open a precise frontier: ``vocabulary.refresh`` counts these alongside
+    # real accepted profiles, so the walk starts from words the ICP actually named instead
+    # of the generic tokens a three-profile corpus admits. Written by the model, never
+    # parsed out of the flat line — see ``pipeline/icp._AnchorProfile``.
     anchor_source_fields = models.JSONField(default=list, blank=True)
 
+    class Meta:
+        verbose_name = "Site Configuration"
+        verbose_name_plural = "Site Configuration"
+
     def __str__(self):
-        return self.name
+        return "Site Configuration"
+
+    def save(self, *args, **kwargs):
+        self.pk = 1
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def load(cls) -> "SiteConfig":
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
 
 
 class Keyword(models.Model):
@@ -226,9 +214,6 @@ class QueryNode(models.Model):
         # whole subtree with it: a superset of these tokens matches a subset of people.
         DEAD = "dead", "dead"
 
-    campaign = models.ForeignKey(
-        Campaign, on_delete=models.CASCADE, related_name="query_nodes",
-    )
     keywords = models.ManyToManyField(Keyword, related_name="nodes")
     # sha256 of the canonicalized keyword set — the node-identity key, a column
     # because the set lives across an M2M and no unique constraint can span one.
@@ -252,11 +237,11 @@ class QueryNode(models.Model):
         verbose_name_plural = "Query Nodes"
         constraints = [
             models.UniqueConstraint(
-                fields=["campaign", "token_key"], name="uniq_query_node",
+                fields=["token_key"], name="uniq_query_node",
             ),
         ]
         indexes = [
-            models.Index(fields=["campaign", "state"], name="query_node_state_idx"),
+            models.Index(fields=["state"], name="query_node_state_idx"),
         ]
 
     @property
@@ -268,7 +253,8 @@ class QueryNode(models.Model):
         """This node as a Lead Finder filter dict — the only thing the provider sees."""
         from openoutfind.discovery import filters_for
 
-        return filters_for(self.pairs, (self.campaign.headcount_min, self.campaign.headcount_max))
+        config = SiteConfig.load()
+        return filters_for(self.pairs, (config.headcount_min, config.headcount_max))
 
     def __str__(self):
         """The query itself, not its row id — a node *is* its keyword set."""

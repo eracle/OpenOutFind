@@ -12,8 +12,8 @@ from openoutfind.core.ml.qualifier import BayesianQualifier
 logger = logging.getLogger(__name__)
 
 
-def fetch_qualification_candidates(campaign):
-    """Embedded, un-dealt Leads awaiting qualification in this campaign, oldest first.
+def fetch_qualification_candidates():
+    """Embedded, un-dealt Leads awaiting qualification, oldest first.
 
     Invariant (convention, not DB-enforced): a disqualified lead never gets a NEW
     deal, so every deal-creating query filters ``disqualified=False``.
@@ -22,12 +22,12 @@ def fetch_qualification_candidates(campaign):
 
     return list(
         Lead.objects.filter(disqualified=False, embedding__isnull=False)
-        .exclude(deal__campaign=campaign)
+        .exclude(deal__isnull=False)
         .order_by("creation_date")
     )
 
 
-def run_qualification(campaign, qualifier: BayesianQualifier, candidates=None) -> str | None:
+def run_qualification(site_config, qualifier: BayesianQualifier, candidates=None) -> str | None:
     """Qualify one unlabelled profile via the LLM. Returns profile_url or None.
 
     ``candidates`` restricts the selection to a caller-chosen subset — the consume
@@ -36,14 +36,14 @@ def run_qualification(campaign, qualifier: BayesianQualifier, candidates=None) -
     unlabelled pool, which is what the explore state wants.
 
     Which candidate gets the call is the qualifier's balance-driven strategy; the
-    verdict itself is always the LLM's. On a cold campaign that strategy runs against a
+    verdict itself is always the LLM's. On a cold start that strategy runs against a
     GP anchored on synthetic ideal profiles (``icp.generate_anchors``) rather than
     against no model at all.
     """
     from openoutfind.core.ml.qualifier import qualify_with_llm, format_prediction
 
     if candidates is None:
-        candidates = fetch_qualification_candidates(campaign)
+        candidates = fetch_qualification_candidates()
     if not candidates:
         return None
 
@@ -60,7 +60,7 @@ def run_qualification(campaign, qualifier: BayesianQualifier, candidates=None) -
         result = qualifier.acquisition_scores(embeddings)
 
         if result is None:
-            # No posterior at all. An anchored campaign always has one, so this is the
+            # No posterior at all. An anchored install always has one, so this is the
             # degraded path: anchoring failed (LLM outage, no ICP text) and the label
             # set is still single-class. Oldest first — nothing here can rank.
             logger.info("  %s no posterior yet — taking the oldest candidate",
@@ -101,10 +101,10 @@ def run_qualification(campaign, qualifier: BayesianQualifier, candidates=None) -
 
     label, reason = qualify_with_llm(
         candidate.profile_text,
-        product_docs=campaign.product_docs,
-        campaign_target=campaign.campaign_target,
+        product_docs=site_config.product_docs,
+        campaign_target=site_config.campaign_target,
     )
-    _save_qualification_result(campaign, qualifier, candidate, embedding, label, reason)
+    _save_qualification_result(qualifier, candidate, embedding, label, reason)
     return profile_url
 
 
@@ -146,9 +146,9 @@ def _verdict_line(glyph: str, color: str, verdict: str, who: str, reason: str) -
     return f"  {tint(glyph)}  {tint(f'{verdict:<{_VERDICT_WIDTH}}')}  {tint(who)} — {reason}"
 
 
-def _save_qualification_result(campaign, qualifier: BayesianQualifier, lead, embedding: np.ndarray, label: int, reason: str):
-    # LLM rejections are tracked as FAILED Deals with "Disqualified" closing reason
-    # (campaign-scoped), not as Lead.disqualified (permanent account-level exclusion).
+def _save_qualification_result(qualifier: BayesianQualifier, lead, embedding: np.ndarray, label: int, reason: str):
+    # LLM rejections are tracked as FAILED Deals with "Disqualified" closing reason,
+    # not as Lead.disqualified (permanent account-level exclusion).
     #
     # A hit leaves the Deal QUALIFIED, and QUALIFIED is already exportable — the
     # reason written here is the product. The GP rank gate (ready_pool) then
@@ -167,14 +167,14 @@ def _save_qualification_result(campaign, qualifier: BayesianQualifier, lead, emb
     # reason it writes is the product either way.
     if label == 1:
         try:
-            promote_lead_to_deal(campaign, profile_url, reason=reason)
+            promote_lead_to_deal(profile_url, reason=reason)
         except ValueError as e:
             logger.warning("Cannot promote %s: %s — disqualifying", profile_url, e)
-            create_disqualified_deal(campaign, profile_url, reason=str(e))
+            create_disqualified_deal(profile_url, reason=str(e))
             return
         logger.info("%s", _verdict_line("✓", "green", "QUALIFIED", _who(lead), reason))
     else:
-        create_disqualified_deal(campaign, profile_url, reason=reason)
+        create_disqualified_deal(profile_url, reason=reason)
         logger.info("%s", _verdict_line("✗", "red", "DISQUALIFIED", _who(lead), reason))
     # The URL behind the name on the verdict line above, which carries the reason
     # already — repeating it here made the same sentence appear twice under --debug.

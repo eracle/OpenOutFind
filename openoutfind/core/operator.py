@@ -1,11 +1,10 @@
-"""Who is running this daemon.
+"""Who is running this install.
 
 Self-hosted means one operator, so identity is a lookup, not a parameter. This
 replaces the ``OperatorSession`` object that used to be threaded through every
 call: it was the browser era's session handle, and once the browser went there was
-nothing session-like left in it — just the Django ``User`` and the campaign the
-handler happened to be working on. The campaign now rides on the deal (a real FK),
-and the operator is looked up here.
+nothing session-like left in it — just the Django ``User``. The operator is looked
+up here.
 
 Nothing is cached across calls. Both reads are a single indexed row and happen at
 most once per cycle; a cache would only add a way for a renamed operator to keep
@@ -23,13 +22,6 @@ def get_active_user():
     from django.contrib.auth.models import User
 
     return User.objects.filter(is_active=True, is_staff=True).order_by("pk").first()
-
-
-def campaigns():
-    """Every campaign this operator runs, oldest first — the cycle's rotation."""
-    from openoutfind.core.models import Campaign
-
-    return list(Campaign.objects.filter(users=get_active_user()).order_by("pk"))
 
 
 def self_profile() -> dict:

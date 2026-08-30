@@ -84,8 +84,6 @@ import logging
 import sys
 import webbrowser
 
-from termcolor import colored
-
 from openoutfind.core.errors import ErrorType, OpenOutFindError
 from openoutfind.core.logging import format_elapsed
 from openoutfind.core.export import IncrementalWriter, lead_record, lead_records, write_csv, write_json_lines
@@ -111,7 +109,6 @@ class Command(OpenOutFindCommand):
         parser.add_argument("count", type=int, help="How many more to find. 0 prints what is there.")
         parser.add_argument("unit", nargs="?", default=LEADS, choices=UNITS,
                             help=f"{LEADS} (default) or {EMAILS} — one credit per address.")
-        parser.add_argument("--campaign", help="Campaign name. Required only if there are several.")
         parser.add_argument("--new", action="store_true", dest="only_new",
                             help="Print only the rows this run produced.")
         parser.add_argument("--emails", action="store_true", dest="buy_emails",
@@ -157,12 +154,14 @@ class Command(OpenOutFindCommand):
         ensure_onboarded()
         validate_operator()
 
-        campaign = _select_campaign(options.get("campaign"))
+        from openoutfind.core.models import SiteConfig
+
+        site_config = SiteConfig.load()
         goal = Goal(count=options["count"], unit=options["unit"])
 
-        _announce_the_run(campaign, goal, buy_addresses)
+        _announce_the_run(site_config, goal, buy_addresses)
 
-        # The default: print what the campaign already has before touching the job, then
+        # The default: print what the install already has before touching the job, then
         # stream each new lead as it lands. `--new` skips the opening bulk — it wants only
         # what this run produces — but the streaming still happens either way. `--batch`
         # skips both; `_report` materialises the whole thing once the job ends instead.
@@ -170,23 +169,23 @@ class Command(OpenOutFindCommand):
         if not options["batch"]:
             writer = IncrementalWriter(self.stdout, as_json=options["as_json"])
             if not options["only_new"]:
-                for record in lead_records(campaign):
+                for record in lead_records():
                     writer.write(record)
 
         opener = _browser() if options["open_profiles"] else None
-        streamer = _streamer(campaign, writer) if writer is not None else None
+        streamer = _streamer(writer) if writer is not None else None
         on_new_lead = _combine(opener, streamer)
 
-        result = run_job(campaign, goal, on_new_lead=on_new_lead,
+        result = run_job(site_config, goal, on_new_lead=on_new_lead,
                          buy_addresses=buy_addresses)
-        self._report(campaign, result, options, writer)
+        self._report(result, options, writer)
 
         if not result.reached:
             raise OpenOutFindError(result.stopped_because, result.detail)
 
     # ── output ───────────────────────────────────────────────────
 
-    def _report(self, campaign, result: JobResult, options, writer: IncrementalWriter | None) -> None:
+    def _report(self, result: JobResult, options, writer: IncrementalWriter | None) -> None:
         """Say what happened, on stderr — the rows themselves are already on stdout by
         the time this runs, unless `--batch` asked to hold them until now.
 
@@ -210,7 +209,6 @@ class Command(OpenOutFindCommand):
             # produced, which is `--new`-narrowed already if that flag was set.
             if options["as_json"]:
                 sys.stderr.write(json.dumps({
-                    "campaign": campaign.name,
                     "goal": {"count": result.goal.count, "unit": result.goal.unit},
                     "produced": result.produced,
                     "reached": result.reached,
@@ -228,7 +226,7 @@ class Command(OpenOutFindCommand):
             return
 
         # `--batch`: nothing has been written yet — materialise the whole thing now.
-        records = list(lead_records(campaign))
+        records = list(lead_records())
         if options["only_new"]:
             produced = set(result.produced_ids)
             records = [row for row in records if row["lead_id"] in produced]
@@ -240,7 +238,6 @@ class Command(OpenOutFindCommand):
             # a log line would be. The error object below it, if the run fell short, is
             # written the same way by `base.format_failure`.
             sys.stderr.write(json.dumps({
-                "campaign": campaign.name,
                 "goal": {"count": result.goal.count, "unit": result.goal.unit},
                 "produced": result.produced,
                 "reached": result.reached,
@@ -280,15 +277,15 @@ class Command(OpenOutFindCommand):
 # ── minute 0 ─────────────────────────────────────────────────────
 
 
-def _announce_the_run(campaign, goal: Goal, buy_addresses: bool) -> None:
-    """State the deal before any work: the campaign, the goal, and whether this can spend.
+def _announce_the_run(site_config, goal: Goal, buy_addresses: bool) -> None:
+    """State the deal before any work: the goal, and whether this run can spend.
 
     **A run that cannot buy addresses says so before it starts, not after.** Spending is
     opt-in at every layer, which is a good default and an invisible one — an operator who
     expected addresses should learn it in the first line rather than from an empty column
     at the end.
 
-    Then the ICP echo: who the system thinks this campaign sells to. It is the earliest
+    Then the ICP echo: who the system thinks this install sells to. It is the earliest
     chance to notice the product description was misread, and on a first run there is
     nothing to echo yet — the anchors are written during the job, and print themselves
     there.
@@ -298,38 +295,11 @@ def _announce_the_run(campaign, goal: Goal, buy_addresses: bool) -> None:
     spending = ("buying addresses, one credit each" if buy_addresses
                 else "finding only, no addresses bought")
     work = f"goal: {goal}" if goal.count else "no work — printing what is already there"
-    logger.info("%s · %s · %s",
-                colored(str(campaign), "cyan", attrs=["bold"]), work, spending)
-    log_icp_echo(campaign)
+    logger.info("%s · %s", work, spending)
+    log_icp_echo(site_config)
 
 
-# ── choosing what to work on ─────────────────────────────────────
-
-def _select_campaign(name: str | None):
-    """The named campaign, or the only one. Ambiguity is an error, never a guess."""
-    from openoutfind.core.operator import campaigns
-
-    known = campaigns()
-    if name:
-        match = next((c for c in known if c.name == name), None)
-        if match is None:
-            raise OpenOutFindError(
-                ErrorType.BAD_CONFIG,
-                f"no campaign named {name!r} — this operator has: "
-                + ", ".join(repr(c.name) for c in known),
-            )
-        return match
-
-    if len(known) > 1:
-        raise OpenOutFindError(
-            ErrorType.BAD_CONFIG,
-            "several campaigns — name one with --campaign: "
-            + ", ".join(repr(c.name) for c in known),
-        )
-    return known[0]
-
-
-def _streamer(campaign, writer: IncrementalWriter):
+def _streamer(writer: IncrementalWriter):
     """A callback that writes each new lead's full record as its deal settles.
 
     Reuses `on_new_lead`, the hook `run_job` already calls once per lead the moment it
@@ -341,7 +311,7 @@ def _streamer(campaign, writer: IncrementalWriter):
     from openoutfind.crm.models import Deal
 
     def stream_lead(lead):
-        deal = Deal.objects.get(campaign=campaign, lead=lead)
+        deal = Deal.objects.get(lead=lead)
         writer.write(lead_record(deal))
 
     return stream_lead

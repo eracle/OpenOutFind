@@ -21,26 +21,23 @@ _STATE_LOG_STYLE = {
 }
 
 
-def _deals_at_state(campaign, state: DealState) -> list:
-    """Return profile dicts for all Deals at the given state in this campaign."""
+def _deals_at_state(state: DealState) -> list:
+    """Return profile dicts for all Deals at the given state."""
     from openoutfind.crm.models import Deal
 
-    qs = Deal.objects.filter(
-        state=state,
-        campaign=campaign,
-    ).select_related("lead")
+    qs = Deal.objects.filter(state=state).select_related("lead")
     return [d.lead.to_profile_dict() for d in qs]
 
 
-def _existing_deal_or_lead(profile_url: str, campaign):
-    """Check for an existing Deal in campaign; if none, look up the Lead.
+def _existing_deal_or_lead(profile_url: str):
+    """Check for an existing Deal; if none, look up the Lead.
 
     Returns (lead, existing_deal) — exactly one will be non-None,
     or both None if no Lead exists at all.
     """
     from openoutfind.crm.models import Deal, Lead
 
-    existing = Deal.objects.filter(lead__profile_url=profile_url, campaign=campaign).first()
+    existing = Deal.objects.filter(lead__profile_url=profile_url).first()
     if existing:
         return None, existing
     lead = Lead.objects.filter(profile_url=profile_url).first()
@@ -50,10 +47,9 @@ def _existing_deal_or_lead(profile_url: str, campaign):
 # ── State transitions ──
 
 
-def set_profile_state(campaign, profile_url: str, new_state: str, reason: str = "", outcome: str = "", log: bool = True):
+def set_profile_state(profile_url: str, new_state: str, reason: str = "", outcome: str = "", log: bool = True):
     """Move the Deal to the corresponding state.
 
-    Campaign-scoped: only finds Deals in the current campaign.
     Raises ValueError if no Deal exists.
 
     ``log`` emits the standalone ``<url> STATE`` spine line. Callers that render
@@ -64,7 +60,7 @@ def set_profile_state(campaign, profile_url: str, new_state: str, reason: str = 
     from openoutfind.crm.models import Deal
 
     deal = (
-        Deal.objects.filter(lead__profile_url=profile_url, campaign=campaign)
+        Deal.objects.filter(lead__profile_url=profile_url)
         .select_related("lead")
         .first()
     )
@@ -96,34 +92,28 @@ def set_profile_state(campaign, profile_url: str, new_state: str, reason: str = 
 # ── State queries ──
 
 
-def get_qualified_profiles(campaign) -> list:
+def get_qualified_profiles() -> list:
     """QUALIFIED deals awaiting the rank gate.
 
     The single find-email-pool chokepoint: ``ready_pool`` promotes above the GP
     confidence threshold from here to READY_TO_FIND_EMAIL (the paid-lookup pool).
     """
-    from openoutfind.crm.models import Deal
-
-    qs = Deal.objects.filter(
-        state=DealState.QUALIFIED,
-        campaign=campaign,
-    ).select_related("lead")
-    return [d.lead.to_profile_dict() for d in qs]
+    return _deals_at_state(DealState.QUALIFIED)
 
 
-def get_ready_to_find_email_profiles(campaign) -> list:
-    return _deals_at_state(campaign, DealState.READY_TO_FIND_EMAIL)
+def get_ready_to_find_email_profiles() -> list:
+    return _deals_at_state(DealState.READY_TO_FIND_EMAIL)
 
 
 # ── Deal creation ──
 
 
 @transaction.atomic
-def create_disqualified_deal(campaign, profile_url: str, reason: str = ""):
+def create_disqualified_deal(profile_url: str, reason: str = ""):
     """Create a FAILED Deal with 'Disqualified' closing reason for an LLM-rejected lead.
 
-    LLM qualification rejections are tracked as FAILED Deals (campaign-scoped),
-    NOT as Lead.disqualified (which is for permanent account-level exclusion).
+    LLM qualification rejections are tracked as FAILED Deals, NOT as Lead.disqualified
+    (which is for permanent account-level exclusion).
 
     **Says nothing** — the rejection is announced by the step that reached it
     (``pipeline.qualify``). Announcing here too printed the same reason twice in a row,
@@ -131,7 +121,7 @@ def create_disqualified_deal(campaign, profile_url: str, reason: str = ""):
     """
     from openoutfind.crm.models import Outcome
 
-    lead, existing = _existing_deal_or_lead(profile_url, campaign)
+    lead, existing = _existing_deal_or_lead(profile_url)
     if existing:
         return existing
     if not lead:
@@ -141,7 +131,6 @@ def create_disqualified_deal(campaign, profile_url: str, reason: str = ""):
     deal = _create_deal(
         lead=lead,
         state=DealState.FAILED,
-        campaign=campaign,
         outcome=Outcome.WRONG_FIT,
         reason=reason,
     )
@@ -155,7 +144,7 @@ def create_disqualified_deal(campaign, profile_url: str, reason: str = ""):
 
 
 def _create_deal(
-    *, lead, state, campaign,
+    *, lead, state,
     outcome="", reason="",
 ):
     """Shared Deal creation with common defaults."""
@@ -163,7 +152,6 @@ def _create_deal(
 
     return Deal.objects.create(
         lead=lead,
-        campaign=campaign,
         state=state,
         outcome=outcome,
         reason=reason,

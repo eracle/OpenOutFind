@@ -1,13 +1,12 @@
 # openoutfind/core/cycle.py
-"""One action — do the single most valuable thing available for a campaign, and say so.
+"""One action — do the single most valuable thing available, and say so.
 
-**This module no longer owns a loop.** It used to run a daemon: `run_daemon` rotated over
-the operator's campaigns forever, sleeping `CYCLE_SECONDS` between actions. That process
-never ended, so it could never return a result — which is why `status`, a `next_action`
-object and a CSV on disk all had to exist for anyone to find out what it had done. The
-loop now lives in `core/job.py`, is bounded by a goal, and ends when `run_one_action`
-returns `False`. What is left here is the hierarchy itself, which never depended on the
-loop's shape.
+**This module no longer owns a loop.** It used to run a daemon: `run_daemon` rotated
+forever, sleeping `CYCLE_SECONDS` between actions. That process never ended, so it could
+never return a result — which is why `status`, a `next_action` object and a CSV on disk
+all had to exist for anyone to find out what it had done. The loop now lives in
+`core/job.py`, is bounded by a goal, and ends when `run_one_action` returns `False`. What
+is left here is the hierarchy itself, which never depended on the loop's shape.
 
 **A queue is a status, not a table.** Work is found by asking the deals what they
 need (``Deal.objects.filter(state=...)``), so a deal is available because of its own
@@ -15,8 +14,8 @@ row. Nothing is created in advance, which means nothing can drift, be lost, or n
 reconciling — and no row's timestamp can gate anything but itself.
 
 What this replaces was a *token loop*. ``core/scheduler.py`` wrote ``Task`` rows that
-were permission tokens stamped with a time — "at 14:32 someone may send one email for
-campaign A" — without saying to whom; the loop took the earliest-due token, and the
+were permission tokens stamped with a time — "at 14:32 someone may send one email" —
+without saying to whom; the loop took the earliest-due token, and the
 handler then went and found its own target. When no token was due it slept **until
 the earliest token's timestamp**. On 2026-08-05 that put a live install to sleep for
 34 hours: two BetterContact polls had never terminated, their uncapped backoff had
@@ -34,9 +33,9 @@ One ordered list. The cycle walks it top to bottom and stops at the first thing 
 can do, so priority is just the order these are written in:
 
     1  FINDING_EMAIL          check the lookup            (not_before elapsed)
-    2  QUALIFIED              score with the campaign's model
+    2  QUALIFIED              score with the install's model
     3  READY_TO_FIND_EMAIL    buy the address             (free sources first)
-    4  (the campaign itself)  top up the pipeline         (always)
+    4  (the install itself)   top up the pipeline         (always)
 
 A state that is not listed is terminal, and terminal costs nothing: RESOLVED,
 NO_EMAIL_FOUND and FAILED. Most deals come to rest at one of those three,
@@ -58,9 +57,10 @@ email — along with the mail pass and the daily warmth re-measure that fed them
 live in OpenOutSend now. Leads leave this process over a CSV
 (``core/export.py``) and nothing comes back up that wire.
 
-**Campaigns no longer take turns.** ``_rotate`` round-robined them because a daemon had
-to decide, forever, whose work to do next. A job names its campaign, so the fairness
-question has nobody to be fair between and the scheduler that answered it is gone.
+**There is no rotation any more.** ``_rotate`` round-robined multiple campaigns because
+a daemon had to decide, forever, whose work to do next. There is one install and one
+job at a time now, so the fairness question has nobody to be fair between and the
+scheduler that answered it is gone.
 """
 from __future__ import annotations
 
@@ -81,16 +81,16 @@ logger = logging.getLogger(__name__)
 # `core/job.py` turns this into one typed line and a non-zero exit.
 HALTING_ERRORS = (ModelHTTPError,)
 
-# Per-campaign `(qualified, past-the-gate)` counts as of the last scoring pass, so a
-# pool that has not moved is not re-scored. Process-local by design: one process per
-# job, and a second job simply scores once more than it had to.
-_scored_at: dict[int, tuple[int, int]] = {}
+# `(qualified, past-the-gate)` counts as of the last scoring pass, so a pool that has
+# not moved is not re-scored. Process-local by design: one process per job, and a
+# second job simply scores once more than it had to.
+_scored_at: tuple[int, int] | None = None
 
 # ── The loop ──────────────────────────────────────────────────────
 
 
-def run_one_action(campaign, buy_addresses: bool = False, max_new_lookups: int | None = None) -> bool:
-    """Do the highest-priority thing available for *campaign*. Returns whether it did.
+def run_one_action(site_config, buy_addresses: bool = False, max_new_lookups: int | None = None) -> bool:
+    """Do the highest-priority thing available. Returns whether it did.
 
     Each row is a query and a step. The first one that produces work wins and the
     cycle returns — nothing below it runs, which is what makes the order a priority.
@@ -122,37 +122,34 @@ def run_one_action(campaign, buy_addresses: bool = False, max_new_lookups: int |
     so a row skipped for "budget spent" on one call is live again on a later one, and
     ``may_spend`` must therefore be recomputed per call rather than latched.
     """
-    if campaign is None:
-        return False
-
     may_spend = buy_addresses and (max_new_lookups is None or max_new_lookups > 0)
-    model = _one_model_per_action(campaign)
+    model = _one_model_per_action(site_config)
     for name, row, spends in ROWS:
         if spends and not may_spend:
             reason = "addresses not requested" if not buy_addresses \
                 else "this run's lookup budget is spent"
-            logger.debug("[%s] → %s? skipped — %s", campaign, name, reason)
+            logger.debug("→ %s? skipped — %s", name, reason)
             continue
-        logger.debug("[%s] → %s?", campaign, name)
+        logger.debug("→ %s?", name)
         started = time.monotonic()
-        acted = row(campaign, model)
+        acted = row(site_config, model)
         elapsed = time.monotonic() - started
         if acted:
             # Which row of the hierarchy fired, and how long it took, is how *we* read a
             # run. The operator reads the action's own block header instead.
-            logger.debug("[%s] %s — %.1fs", campaign,
+            logger.debug("%s — %.1fs",
                          colored(name, "cyan", attrs=["bold"]), elapsed)
             return True
-        logger.debug("[%s] %s: nothing (%.1fs)", campaign, name, elapsed)
+        logger.debug("%s: nothing (%.1fs)", name, elapsed)
     # At DEBUG because it is not the last word: the job turns this same summary into its
     # `goal_unreached` line, and printing it twice would read as two different findings.
-    logger.debug("[%s] nothing to do — %s", campaign,
-                 pipeline_summary(campaign, buy_addresses=buy_addresses))
+    logger.debug("nothing to do — %s",
+                 pipeline_summary(site_config, buy_addresses=buy_addresses))
     return False
 
 
-def _one_model_per_action(campaign):
-    """The campaign's model, built on first use and shared by every row that scores.
+def _one_model_per_action(site_config):
+    """The model, built on first use and shared by every row that scores.
 
     Rows 2 and 4 both score with the GP, and *building* it is the expensive part —
     the fit is O(n³) in the label count, seconds where the rest of the action is
@@ -172,7 +169,7 @@ def _one_model_per_action(campaign):
     """
     from openoutfind.core.ml.qualifier import qualifier_for
 
-    return functools.cache(lambda: qualifier_for(campaign))
+    return functools.cache(lambda: qualifier_for())
 
 
 # What each waiting state means to someone reading a log, in pipeline order. The state
@@ -187,7 +184,7 @@ _WAITING_ON = (
 )
 
 
-def pipeline_summary(campaign, buy_addresses: bool = True) -> str:
+def pipeline_summary(site_config, buy_addresses: bool = True) -> str:
     """One line of counts: who is waiting on what, and which gate is holding them.
 
     Public because it is also the answer to *why did the job stop short* — a drained
@@ -204,7 +201,7 @@ def pipeline_summary(campaign, buy_addresses: bool = True) -> str:
     from openoutfind.enrichment import bettercontact, provider
 
     counts = dict(
-        Deal.objects.filter(campaign=campaign, lead__disqualified=False)
+        Deal.objects.filter(lead__disqualified=False)
         .values_list("state")
         .annotate(n=Count("state"))
         .values_list("state", "n"),
@@ -237,10 +234,10 @@ def pipeline_summary(campaign, buy_addresses: bool = True) -> str:
 # ── 1. Check an in-flight lookup ──────────────────────────────────
 
 
-def _check_lookups(campaign, model) -> bool:
+def _check_lookups(site_config, model) -> bool:
     from openoutfind.enrichment.lookup import check_lookup, reclaim_lookup
 
-    deal = _due(campaign, DealState.FINDING_EMAIL).first()
+    deal = _due(DealState.FINDING_EMAIL).first()
     if deal is None:
         return False
     # A deal here without a handle has no job to poll — reclaim it rather than skip
@@ -252,10 +249,10 @@ def _check_lookups(campaign, model) -> bool:
 # ── 4. Score the qualified pool ───────────────────────────────────
 
 
-def _score_qualified(campaign, model) -> bool:
-    """Promote every QUALIFIED deal the campaign's model is confident about.
+def _score_qualified(site_config, model) -> bool:
+    """Promote every QUALIFIED deal the model is confident about.
 
-    The one step that is per-campaign rather than per-deal: building the model
+    The one step that is per-install rather than per-deal: building the model
     dominates the cost of using it, so once it is in hand it scores the whole pool
     in a single pass. It is *not* dropped afterwards — ``model`` is the action's
     shared one (see ``_one_model_per_action``), so the top-up row below reuses this
@@ -263,23 +260,24 @@ def _score_qualified(campaign, model) -> bool:
 
     Skipped entirely while nothing has changed since the last pass. Scoring is a
     pure function of two things — the labels the GP fits on and the pool it scores —
-    so re-running it against the same counts cannot promote anybody, and a campaign
-    whose pool sits below the gate would otherwise refit a GP every few seconds
-    forever (measured: ~1.1s at 300 labels, against a 5s cycle). The counts are two
+    so re-running it against the same counts cannot promote anybody, and a pool
+    sitting below the gate would otherwise refit a GP every few seconds forever
+    (measured: ~1.1s at 300 labels, against a 5s cycle). The counts are two
     indexed `COUNT`s, and being wrong costs one cycle's delay, never a wrong answer.
     """
+    global _scored_at
     from openoutfind.core.pipeline.ready_pool import promote_to_ready
 
-    before = _pool_signature(campaign)
-    if before[0] == 0 or _scored_at.get(campaign.pk) == before:
+    before = _pool_signature()
+    if before[0] == 0 or _scored_at == before:
         return False
 
-    promoted = promote_to_ready(campaign, model())
-    _scored_at[campaign.pk] = _pool_signature(campaign)
+    promoted = promote_to_ready(model())
+    _scored_at = _pool_signature()
     return promoted > 0
 
 
-def _pool_signature(campaign) -> tuple[int, int]:
+def _pool_signature() -> tuple[int, int]:
     """`(deals awaiting the gate, deals already past it)` — what scoring depends on.
 
     The second count stands in for the label set: every state but QUALIFIED is a
@@ -288,17 +286,16 @@ def _pool_signature(campaign) -> tuple[int, int]:
     """
     from openoutfind.crm.models import Deal
 
-    of_campaign = Deal.objects.filter(campaign=campaign)
     return (
-        of_campaign.filter(state=DealState.QUALIFIED).count(),
-        of_campaign.exclude(state=DealState.QUALIFIED).count(),
+        Deal.objects.filter(state=DealState.QUALIFIED).count(),
+        Deal.objects.exclude(state=DealState.QUALIFIED).count(),
     )
 
 
 # ── 5. Buy an address ─────────────────────────────────────────────
 
 
-def _buy_addresses(campaign, model) -> bool:
+def _buy_addresses(site_config, model) -> bool:
     from openoutfind.enrichment.lookup import buy_address
 
     # **This row has no gate on it any more, and that is deliberate.** It used to
@@ -313,7 +310,7 @@ def _buy_addresses(campaign, model) -> bool:
     # is a 402 from the provider, typed at the HTTP boundary. What bounds the spend is
     # the operator's own prepaid balance — see ``_top_up`` for why nothing here rations
     # it on our side.
-    deal = _due(campaign, DealState.READY_TO_FIND_EMAIL).filter(
+    deal = _due(DealState.READY_TO_FIND_EMAIL).filter(
         lead__disqualified=False).first()
     if deal is None:
         return False
@@ -323,10 +320,10 @@ def _buy_addresses(campaign, model) -> bool:
 # ── 6. Top up the pipeline ────────────────────────────────────────
 
 
-def _top_up(campaign, model) -> bool:
+def _top_up(site_config, model) -> bool:
     """Discover and qualify, always. This row has no gate, and that is the pivot.
 
-    It used to have two — a mailbox had to exist and the campaign had to have send
+    It used to have two — a mailbox had to exist and the install had to have send
     headroom left today — because every lead ended in a send, so spending an LLM
     call on someone there was no room to email was waste. Rows 5 and 6 shared that
     one gate (``room_to_send_today``, now deleted): *never resolve an address, and
@@ -347,7 +344,7 @@ def _top_up(campaign, model) -> bool:
     """
     from openoutfind.core.pipeline.top_up import top_up
 
-    return top_up(campaign, model())
+    return top_up(site_config, model())
 
 
 # ── The hierarchy ─────────────────────────────────────────────────
@@ -371,7 +368,7 @@ def _top_up(campaign, model) -> bool:
 # *on*. Only row 3 carries it: checking a lookup we already submitted is free, and
 # abandoning one would waste a credit already committed rather than save it.
 #
-# Every row is called as `row(campaign, model)` with the action's shared model getter,
+# Every row is called as `row(site_config, model)` with the action's shared model getter,
 # so the two rows that score share one fit; the rows that do not score take it and
 # ignore it, which is cheaper than two call shapes for the walk to tell apart.
 ROWS = (
@@ -385,16 +382,16 @@ ROWS = (
 # ── Plumbing ──────────────────────────────────────────────────────
 
 
-def _due(campaign, state):
-    """This campaign's deals in *state* that are not waiting on a ``not_before``."""
+def _due(state):
+    """Deals in *state* that are not waiting on a ``not_before``."""
     from django.db.models import Q
 
     from openoutfind.crm.models import Deal
 
     return (
-        Deal.objects.filter(campaign=campaign, state=state)
+        Deal.objects.filter(state=state)
         .filter(Q(not_before__isnull=True) | Q(not_before__lte=timezone.now()))
-        .select_related("lead", "campaign")
+        .select_related("lead")
         .order_by("creation_date")
     )
 

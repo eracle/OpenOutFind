@@ -321,7 +321,7 @@ class TestSeedKeywords:
 
     def test_domain_words_reach_the_searchable_axis(self):
         # The gap this closes: ICPSpec had no field for what the target company *does*,
-        # so a health-and-wellness campaign seeded on role words alone and every query
+        # so a health-and-wellness site_config seeded on role words alone and every query
         # it composed was blind to industry. lead_industry is inert (card §8), but
         # domain words are alive in lead_job_title, which matches headline text too.
         from openoutfind.core.pipeline.icp import ICPSpec, _seed_keywords

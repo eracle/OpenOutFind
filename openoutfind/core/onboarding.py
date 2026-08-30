@@ -48,8 +48,6 @@ from openoutfind.core import onboarding_wizard as wiz
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CAMPAIGN_NAME = "Email Outreach"
-
 _INTRO = """
   Welcome to OpenOutFind — a self-hosted lead finder that qualifies for you.
   Describe your product and who you sell to; it discovers matching people, judges
@@ -179,13 +177,13 @@ class Step:
 # ── Campaign: what you sell, and to whom ─────────────────────────
 
 def _campaign_done() -> bool:
-    from openoutfind.core.models import Campaign
+    from openoutfind.core.models import SiteConfig
 
-    return Campaign.objects.exists()
+    return bool(SiteConfig.load().product_docs)
 
 
 def _run_campaign() -> None:
-    from openoutfind.core.models import Campaign
+    from openoutfind.core.models import SiteConfig
 
     print(
         "\n  Campaign — describe what you sell and who you're selling to. This is the\n"
@@ -197,37 +195,35 @@ def _run_campaign() -> None:
         "  missing some trait you never actually required. Describe the kind of\n"
         "  organization or role that fits, not a single ideal example of one."
     )
-    Campaign.objects.create(
-        name=DEFAULT_CAMPAIGN_NAME,
-        product_docs=_required(wiz.multiline(
-            "Product/service description — what it does, who it's for, the problem it solves "
-            "(e.g. 'A self-hosted CI dashboard for small dev teams — replaces spreadsheet "
-            "build-tracking; cuts flaky-test triage from hours to minutes')"
-        )),
-        campaign_target=_required(wiz.multiline(
-            "Campaign target — who you're going after and the outcome you want. Broad enough "
-            "to cover a real range of companies or roles, not one hyper-specific persona "
-            "(e.g. 'book demos with engineering leaders at growth-stage SaaS companies', not "
-            "'the VP of Platform Engineering at a 200-person Series B fintech using Kubernetes')"
-        )),
-    )
-    logger.info("Campaign '%s' created.", DEFAULT_CAMPAIGN_NAME)
+    site_config = SiteConfig.load()
+    site_config.product_docs = _required(wiz.multiline(
+        "Product/service description — what it does, who it's for, the problem it solves "
+        "(e.g. 'A self-hosted CI dashboard for small dev teams — replaces spreadsheet "
+        "build-tracking; cuts flaky-test triage from hours to minutes')"
+    ))
+    site_config.campaign_target = _required(wiz.multiline(
+        "Campaign target — who you're going after and the outcome you want. Broad enough "
+        "to cover a real range of companies or roles, not one hyper-specific persona "
+        "(e.g. 'book demos with engineering leaders at growth-stage SaaS companies', not "
+        "'the VP of Platform Engineering at a 200-person Series B fintech using Kubernetes')"
+    ))
+    site_config.save(update_fields=["product_docs", "campaign_target"])
+    logger.info("Campaign configured.")
 
 
 def _campaign_from_env() -> bool:
-    from openoutfind.core.models import Campaign
+    from openoutfind.core.models import SiteConfig
 
     product = _env("PRODUCT_DESCRIPTION")
     target = _env("CAMPAIGN_TARGET")
     if not (product and target):
         return False
 
-    Campaign.objects.create(
-        name=_env("CAMPAIGN_NAME") or DEFAULT_CAMPAIGN_NAME,
-        product_docs=product,
-        campaign_target=target,
-    )
-    logger.info("Campaign created from the environment.")
+    site_config = SiteConfig.load()
+    site_config.product_docs = product
+    site_config.campaign_target = target
+    site_config.save(update_fields=["product_docs", "campaign_target"])
+    logger.info("Campaign configured from the environment.")
     return True
 
 
@@ -493,14 +489,14 @@ def _finalize_account(operator_email: str, country: str, newsletter: bool) -> No
     install that only ever exports a CSV.
     """
     from openoutfind.contacts.service import register_operator
-    from openoutfind.core.models import Campaign, SiteConfig
+    from openoutfind.core.models import SiteConfig
     from openoutfind.core.newsletter import subscribe_to_newsletter
 
     cfg = SiteConfig.load()
     cfg.country_code = country
     cfg.save(update_fields=["country_code"])
 
-    user = _create_operator(Campaign.objects.first(), operator_email)
+    user = _create_operator(operator_email)
     if newsletter:
         subscribe_to_newsletter(operator_email)
     logger.info("Operator account '%s' created (email=%s).", user.username, operator_email)
@@ -514,7 +510,7 @@ def _finalize_account(operator_email: str, country: str, newsletter: bool) -> No
     register_operator()
 
 
-def _create_operator(campaign, email: str):
+def _create_operator(email: str):
     """Create the operator Django ``User`` from their email (the human's own inbox)."""
     from django.contrib.auth.models import User
 
@@ -526,8 +522,6 @@ def _create_operator(campaign, email: str):
     if created:
         user.set_unusable_password()
         user.save()
-    if campaign is not None:
-        campaign.users.add(user)
     return user
 
 
@@ -563,9 +557,9 @@ def missing_keys() -> set[str]:
 def hydrate_from_env() -> set[str]:
     """Satisfy every unsatisfied step the environment can, returning the keys filled.
 
-    Runs in step order so a later step can rely on an earlier one's rows (the account
-    step attaches the operator to the campaign). A step that cannot be filled is left
-    alone; a step whose variables are set but *wrong* raises rather than being skipped.
+    Runs in step order so a later step can rely on an earlier one's rows. A step that
+    cannot be filled is left alone; a step whose variables are set but *wrong* raises
+    rather than being skipped.
     """
     filled = set()
     for step in STEPS:

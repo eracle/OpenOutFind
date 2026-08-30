@@ -1,23 +1,23 @@
 # openoutfind/core/pipeline/icp.py
-"""ICP generators — the LLM writes the campaign's cold-start priors, in two shapes.
+"""ICP generators — the LLM writes the install's cold-start priors, in two shapes.
 
 The same two inputs (``product_docs + campaign_target``) are the only prior available
 before any lead has been judged, and the engine needs them expressed two ways:
 
 - ``generate_seed`` — the ICP as a **query**: one value per family (a title, a
   seniority, a country, a size band), the single most precise conjunction the model can
-  name. That conjunction is the campaign's whole starting **pool**, so the initial
-  maximal set is exactly one query — the seed. Breadth is not seeded; it grows from the
-  leads that qualify (``mint.py``), which add more values per family and so more
-  maximals for the selector to rank.
+  name. That conjunction is the whole starting **pool**, so the initial maximal set is
+  exactly one query — the seed. Breadth is not seeded; it grows from the leads that
+  qualify (``mint.py``), which add more values per family and so more maximals for the
+  selector to rank.
 - ``generate_anchors`` — the ICP as **profiles**: a few invented leads that would be
   ideal fits, written in the shape ``discovery.profile_text_for`` produces. Embedded and
   handed to the GP as synthetic positives (``BayesianQualifier.set_anchors``), they are
-  what lets the model fit at all on a campaign whose every real verdict so far is a
-  rejection — a single-class label set never produces a posterior, so without them BALD,
-  P(f>0.5), and every piece of steering that reads them stay unavailable for the whole
-  cold phase. They are permanent: once written they stand alongside whatever real
-  positives arrive, for the campaign's whole life.
+  what lets the model fit at all when every real verdict so far is a rejection — a
+  single-class label set never produces a posterior, so without them BALD, P(f>0.5), and
+  every piece of steering that reads them stay unavailable for the whole cold phase. They
+  are permanent: once written they stand alongside whatever real positives arrive, for
+  the install's whole life.
 
 Profiles rather than the product text itself because the space they have to land in is
 one of *lead* embeddings: marketing prose about the product embeds nowhere near a row of
@@ -45,8 +45,8 @@ from openoutfind.discovery import LEAD_SENIORITIES, Seniority
 
 logger = logging.getLogger(__name__)
 
-# How many synthetic ideal profiles anchor a cold campaign. Several rather than one so
-# the positive region is outlined rather than pinned to a single hallucination, but few
+# How many synthetic ideal profiles anchor a cold start. Several rather than one so the
+# positive region is outlined rather than pinned to a single hallucination, but few
 # enough that a handful of real labels outweighs them.
 ANCHOR_COUNT = 3
 
@@ -61,7 +61,7 @@ class ICPSpec(BaseModel):
 
     **``domain_keywords`` is the field that makes an ICP an ICP.** The old spec had
     nowhere to put "what the target company actually does" — no field for it — so a
-    health-and-wellness campaign seeded on ``content``/``lead``/``united``/``states``
+    health-and-wellness ICP seeded on ``content``/``lead``/``united``/``states``
     and every query it could compose selected for *role* while being blind to
     *industry*. The obvious home would be ``lead_industry``, and that field is inert:
     a nonsense value returns the identical count to no filter at all (§8 of the roadmap
@@ -143,14 +143,14 @@ def _seed_keywords(spec: ICPSpec) -> list[tuple[str, str]]:
     return sorted(keywords)
 
 
-def generate_seed(campaign) -> list[tuple[str, str]]:
-    """LLM-generate the campaign's opening vocabulary and size band.
+def generate_seed(site_config) -> list[tuple[str, str]]:
+    """LLM-generate the opening vocabulary and size band.
 
     The cold start, and the **only** LLM call discovery makes about queries: with no
     qualified leads there are no profiles to count words from, so the ICP text is the one
     available source. Everything after this is counting (``vocabulary.refresh``). Also
-    folds ``country_code`` and the headcount band onto the campaign — the band rides every
-    query unchanged and is never searched.
+    folds ``country_code`` and the headcount band onto ``site_config`` — the band rides
+    every query unchanged and is never searched.
 
     Returns the seed keywords, or ``[]`` when the ICP is empty.
     """
@@ -162,8 +162,8 @@ def generate_seed(campaign) -> list[tuple[str, str]]:
 
     env = jinja2.Environment(loader=jinja2.FileSystemLoader(str(PROMPTS_DIR)))
     prompt = env.get_template("icp_filters.j2").render(
-        product_docs=campaign.product_docs,
-        campaign_target=campaign.campaign_target,
+        product_docs=site_config.product_docs,
+        campaign_target=site_config.campaign_target,
         seniorities=LEAD_SENIORITIES,
     )
 
@@ -182,20 +182,20 @@ def generate_seed(campaign) -> list[tuple[str, str]]:
 
     updates = []
     country_code = spec.country_code.lower()
-    if country_code and campaign.country_code != country_code:
-        campaign.country_code = country_code
+    if country_code and site_config.country_code != country_code:
+        site_config.country_code = country_code
         updates.append("country_code")
-    if (campaign.headcount_min, campaign.headcount_max) != (spec.headcount_min, spec.headcount_max):
-        campaign.headcount_min = spec.headcount_min
-        campaign.headcount_max = spec.headcount_max
+    if (site_config.headcount_min, site_config.headcount_max) != (spec.headcount_min, spec.headcount_max):
+        site_config.headcount_min = spec.headcount_min
+        site_config.headcount_max = spec.headcount_max
         updates += ["headcount_min", "headcount_max"]
     if updates:
-        campaign.save(update_fields=updates)
+        site_config.save(update_fields=updates)
 
     # The seed is a *query*, not a description of a buyer — it says `founder cto` where
     # the operator asked for "engineering leaders at small SaaS firms". The operator's
     # echo is `log_icp_echo` below; this one stays for the maintainer reading the walk.
-    logger.debug("[%s] %s: %s · headcount %d–%d", campaign,
+    logger.debug("%s: %s · headcount %d–%d",
                  colored("discovery seed", "cyan", attrs=["bold"]),
                  colored(describe_node(keywords), "cyan"),
                  spec.headcount_min, spec.headcount_max)
@@ -225,7 +225,7 @@ class _AnchorProfile(BaseModel):
     The fields are asked for rather than parsed out. Splitting the flat line by guess is
     what made anchors unusable as vocabulary: a bag of words cannot say whether
     ``united states`` is a job title or a place, and filing it wrong poisons the axis for
-    the campaign's life. The model already knows which is which — it just was never asked.
+    the install's life. The model already knows which is which — it just was never asked.
     """
 
     profile: str = Field(
@@ -255,13 +255,13 @@ class _AnchorProfiles(BaseModel):
     profiles: list[_AnchorProfile] = Field(default_factory=list)
 
 
-def generate_anchors(campaign, count: int = ANCHOR_COUNT, existing=()) -> list[Anchor]:
+def generate_anchors(site_config, count: int = ANCHOR_COUNT, existing=()) -> list[Anchor]:
     """LLM-invent ``count`` ideal-lead profiles. ``[]`` on an outage or empty ICP.
 
-    ``existing`` are the profiles already written for this campaign — shown to the model
-    so a top-up round widens the positive region instead of restating it.
+    ``existing`` are the profiles already written — shown to the model so a top-up round
+    widens the positive region instead of restating it.
 
-    Best-effort by design: an unanchored campaign still runs, it just spends its cold
+    Best-effort by design: an unanchored install still runs, it just spends its cold
     phase without a fitted GP, so failure must not propagate to the caller.
     """
     from pydantic_ai import Agent
@@ -270,8 +270,8 @@ def generate_anchors(campaign, count: int = ANCHOR_COUNT, existing=()) -> list[A
 
     env = jinja2.Environment(loader=jinja2.FileSystemLoader(str(PROMPTS_DIR)))
     prompt = env.get_template("anchor_profiles.j2").render(
-        product_docs=campaign.product_docs,
-        campaign_target=campaign.campaign_target,
+        product_docs=site_config.product_docs,
+        campaign_target=site_config.campaign_target,
         count=count,
         existing=list(existing),
     )
@@ -286,7 +286,7 @@ def generate_anchors(campaign, count: int = ANCHOR_COUNT, existing=()) -> list[A
         )
         result = run_agent_sync(agent.run(prompt)).output
     except Exception:
-        logger.exception("[%s] anchor generation failed — campaign stays unanchored", campaign)
+        logger.exception("anchor generation failed — install stays unanchored")
         return []
 
     return [anchor for anchor in map(_as_anchor, result.profiles) if anchor.profile]
@@ -312,42 +312,41 @@ def _as_anchor(written: _AnchorProfile) -> Anchor:
     )
 
 
-def stored_anchors(campaign) -> np.ndarray | None:
-    """The campaign's persisted anchor embeddings as ``(N, dim)``, or ``None``."""
-    if not (campaign.anchor_embeddings and campaign.anchor_profiles):
+def stored_anchors(site_config) -> np.ndarray | None:
+    """The persisted anchor embeddings as ``(N, dim)``, or ``None``."""
+    if not (site_config.anchor_embeddings and site_config.anchor_profiles):
         return None
-    stored = np.frombuffer(bytes(campaign.anchor_embeddings), dtype=np.float32)
-    return stored.reshape(len(campaign.anchor_profiles), -1).copy()
+    stored = np.frombuffer(bytes(site_config.anchor_embeddings), dtype=np.float32)
+    return stored.reshape(len(site_config.anchor_profiles), -1).copy()
 
 
-def ensure_anchors(campaign) -> np.ndarray | None:
-    """The campaign's anchor embeddings as ``(N, dim)``, filled up to ``ANCHOR_COUNT``.
+def ensure_anchors(site_config) -> np.ndarray | None:
+    """The anchor embeddings as ``(N, dim)``, filled up to ``ANCHOR_COUNT``.
 
     Generates on first use and fills the remainder on a later call if an earlier one came
     back short. Already-written profiles are shown to the model so the second round widens
-    the ideal region rather than restating it, and the set is persisted — the daemon must
-    not re-invent anchors (and re-anchor the GP somewhere slightly different) on every
-    restart.
+    the ideal region rather than restating it, and the set is persisted — a restart must
+    not re-invent anchors (and re-anchor the GP somewhere slightly different).
 
-    ``None`` when the campaign has no ICP text to work from, or the LLM call failed and
-    nothing is stored — callers treat that as "no anchors", never as an error. A failed
-    fill-up keeps whatever is already there.
+    ``None`` when there is no ICP text to work from, or the LLM call failed and nothing is
+    stored — callers treat that as "no anchors", never as an error. A failed fill-up keeps
+    whatever is already there.
 
     Never called once a real lead has qualified: from that point the set is permanent,
-    and the daemon restores it with ``stored_anchors`` instead of inventing more.
+    and callers restore it with ``stored_anchors`` instead of inventing more.
     """
     from openoutfind.discovery import embed_profile
 
-    profiles = list(campaign.anchor_profiles or [])
-    stored = stored_anchors(campaign)
+    profiles = list(site_config.anchor_profiles or [])
+    stored = stored_anchors(site_config)
     if len(profiles) >= ANCHOR_COUNT:
         return stored
 
-    if not (campaign.product_docs or campaign.campaign_target):
+    if not (site_config.product_docs or site_config.campaign_target):
         return stored
 
     fresh = [
-        anchor for anchor in generate_anchors(campaign, count=ANCHOR_COUNT - len(profiles),
+        anchor for anchor in generate_anchors(site_config, count=ANCHOR_COUNT - len(profiles),
                                               existing=profiles)
         if anchor.profile not in profiles
     ]
@@ -358,23 +357,23 @@ def ensure_anchors(campaign) -> np.ndarray | None:
     if stored is not None:
         embeddings = np.vstack([stored, embeddings])
 
-    campaign.anchor_profiles = profiles + [a.profile for a in fresh]
+    site_config.anchor_profiles = profiles + [a.profile for a in fresh]
     # Kept parallel to the profiles rather than derived from them: the fields are the
     # model's own assignment, and nothing downstream can recover them from the flat line.
-    campaign.anchor_source_fields = (
-        list(campaign.anchor_source_fields or []) + [a.source_fields for a in fresh]
+    site_config.anchor_source_fields = (
+        list(site_config.anchor_source_fields or []) + [a.source_fields for a in fresh]
     )
-    campaign.anchor_embeddings = embeddings.tobytes()
-    campaign.save(update_fields=["anchor_profiles", "anchor_source_fields",
-                                 "anchor_embeddings"])
-    logger.debug("[%s] %s: +%d synthetic ideal profile(s) (%d total)", campaign,
+    site_config.anchor_embeddings = embeddings.tobytes()
+    site_config.save(update_fields=["anchor_profiles", "anchor_source_fields",
+                                    "anchor_embeddings"])
+    logger.debug("%s: +%d synthetic ideal profile(s) (%d total)",
                  colored("anchors", "cyan", attrs=["bold"]), len(fresh), len(embeddings))
-    log_icp_echo(campaign)
+    log_icp_echo(site_config)
     return embeddings
 
 
-def log_icp_echo(campaign) -> None:
-    """Tell the operator who the system thinks this campaign sells to. No-op unanchored.
+def log_icp_echo(site_config) -> None:
+    """Tell the operator who the system thinks this install sells to. No-op unanchored.
 
     **This is the earliest proof the product description was understood**, and therefore
     the earliest chance to correct it — the loop the README sells. The material costs
@@ -384,7 +383,7 @@ def log_icp_echo(campaign) -> None:
     Printed on the pass that writes them and again at the start of every later run, so
     the operator meets it before the first search rather than only on a cold start.
     """
-    profiles = list(campaign.anchor_profiles or [])
+    profiles = list(site_config.anchor_profiles or [])
     if not profiles:
         return
 

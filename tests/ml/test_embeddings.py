@@ -67,19 +67,16 @@ class TestLeadEmbeddingFields:
         )
         assert lead.embedding_array is None
 
-    def test_get_labeled_arrays_empty(self, campaign):
+    def test_get_labeled_arrays_empty(self, db):
         from openoutfind.crm.models import Lead
 
-        campaign = campaign
-        X, y = Lead.get_labeled_arrays(campaign)
+        X, y = Lead.get_labeled_arrays()
         assert X.shape == (0, 384)
         assert y.shape == (0,)
 
-    def test_get_labeled_arrays_from_deals(self, campaign):
+    def test_get_labeled_arrays_from_deals(self, db):
         """Labels are derived from Deal state + outcome."""
         from openoutfind.crm.models import Deal, Lead, Outcome, DealState
-
-        campaign = campaign
 
         # Create a lead with embedding + QUALIFIED deal → label=1
         emb = np.random.randn(384).astype(np.float32)
@@ -87,7 +84,7 @@ class TestLeadEmbeddingFields:
             profile_url="https://linkedin.com/in/alice/", embedding=emb.tobytes(),
         )
         Deal.objects.create(
-            lead=lead, campaign=campaign, state=DealState.QUALIFIED,
+            lead=lead, state=DealState.QUALIFIED,
         )
 
         # Create a lead with embedding + FAILED/Disqualified deal → label=0
@@ -96,49 +93,46 @@ class TestLeadEmbeddingFields:
             profile_url="https://linkedin.com/in/bob/", embedding=emb2.tobytes(),
         )
         Deal.objects.create(
-            lead=lead2, campaign=campaign, state=DealState.FAILED,
+            lead=lead2, state=DealState.FAILED,
             outcome=Outcome.WRONG_FIT,
         )
 
-        X, y = Lead.get_labeled_arrays(campaign)
+        X, y = Lead.get_labeled_arrays()
         assert len(X) == 2
         assert set(y) == {0, 1}
 
-    def test_get_labeled_arrays_keeps_no_email_miss_positive(self, campaign):
+    def test_get_labeled_arrays_keeps_no_email_miss_positive(self, db):
         """A NO_EMAIL_FOUND miss is a fit positive (label=1), not skipped —
         the LLM qualified it; only enrichment failed."""
         from openoutfind.crm.models import Deal, Lead, DealState
 
-        campaign = campaign
         emb = np.random.randn(384).astype(np.float32)
         lead = Lead.objects.create(
             profile_url="https://linkedin.com/in/dana/", embedding=emb.tobytes(),
         )
         Deal.objects.create(
-            lead=lead, campaign=campaign,
+            lead=lead,
             state=DealState.NO_EMAIL_FOUND,
         )
 
-        X, y = Lead.get_labeled_arrays(campaign)
+        X, y = Lead.get_labeled_arrays()
         assert len(X) == 1
         assert list(y) == [1]
 
-    def test_get_labeled_arrays_skips_operational_failures(self, campaign):
+    def test_get_labeled_arrays_skips_operational_failures(self, db):
         """FAILED deals with non-wrong_fit outcome are not training data."""
         from openoutfind.crm.models import Deal, Lead, Outcome, DealState
-
-        campaign = campaign
 
         emb = np.random.randn(384).astype(np.float32)
         lead = Lead.objects.create(
             profile_url="https://linkedin.com/in/charlie/", embedding=emb.tobytes(),
         )
         Deal.objects.create(
-            lead=lead, campaign=campaign, state=DealState.FAILED,
+            lead=lead, state=DealState.FAILED,
             outcome=Outcome.UNKNOWN,
         )
 
-        X, y = Lead.get_labeled_arrays(campaign)
+        X, y = Lead.get_labeled_arrays()
         assert len(X) == 0
 
     def test_embedded_lead_ids(self, db):

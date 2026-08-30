@@ -30,9 +30,8 @@ def _keys(config, *, bc="", ap="", preferred=""):
     config.save()
 
 
-def _ready_to_find(campaign):
+def _ready_to_find(site_config):
     return DealFactory(
-        campaign=campaign,
         lead=LeadFactory(email=None),
         state=DealState.READY_TO_FIND_EMAIL,
     )
@@ -78,9 +77,9 @@ class TestActive:
 
 class TestEitherFinderResolves:
 
-    def test_a_sync_finder_resolves_without_entering_finding_email(self, config, campaign):
+    def test_a_sync_finder_resolves_without_entering_finding_email(self, config, site_config):
         _keys(config, ap="secret")
-        deal = _ready_to_find(campaign)
+        deal = _ready_to_find(site_config)
         hit = Lookup(outcome=PollOutcome(running=False, email="alice@acme.com"))
 
         with patch.object(apollo, "start", return_value=hit), \
@@ -91,9 +90,9 @@ class TestEitherFinderResolves:
         assert deal.lead.email == "alice@acme.com"
         assert deal.lookup_request_id == ""
 
-    def test_an_async_finder_parks_on_its_handle(self, config, campaign):
+    def test_an_async_finder_parks_on_its_handle(self, config, site_config):
         _keys(config, bc="secret")
-        deal = _ready_to_find(campaign)
+        deal = _ready_to_find(site_config)
 
         with patch.object(bettercontact, "start", return_value=Lookup(request_id="req1")):
             assert buy_address(deal) == DealState.FINDING_EMAIL
@@ -101,16 +100,16 @@ class TestEitherFinderResolves:
         assert deal.lookup_request_id == "req1"
         assert deal.lookup_provider == "bettercontact"
 
-    def test_a_sync_miss_is_the_same_terminal_as_an_async_one(self, config, campaign):
+    def test_a_sync_miss_is_the_same_terminal_as_an_async_one(self, config, site_config):
         _keys(config, ap="secret")
-        deal = _ready_to_find(campaign)
+        deal = _ready_to_find(site_config)
 
         with patch.object(apollo, "start", return_value=Lookup(outcome=PollOutcome(running=False))):
             assert buy_address(deal) == DealState.NO_EMAIL_FOUND
 
-    def test_the_contribution_is_stamped_with_the_finder_that_paid(self, config, campaign):
+    def test_the_contribution_is_stamped_with_the_finder_that_paid(self, config, site_config):
         _keys(config, ap="secret")
-        deal = _ready_to_find(campaign)
+        deal = _ready_to_find(site_config)
         hit = Lookup(outcome=PollOutcome(running=False, email="alice@acme.com"))
 
         with patch.object(apollo, "start", return_value=hit), \
@@ -119,10 +118,10 @@ class TestEitherFinderResolves:
 
         assert contribute.call_args.args[2] == "apollo"
 
-    def test_the_free_sources_still_come_first(self, config, campaign):
+    def test_the_free_sources_still_come_first(self, config, site_config):
         """The hub cache must not spend a credit, whichever vendor is configured."""
         _keys(config, ap="secret")
-        deal = _ready_to_find(campaign)
+        deal = _ready_to_find(site_config)
 
         with patch("openoutfind.contacts.service.resolve", return_value="free@acme.com"), \
              patch.object(apollo, "start") as start:

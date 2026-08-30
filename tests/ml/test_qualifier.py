@@ -183,7 +183,7 @@ class TestWarmStart:
             qualifier.predict(rng.randn(384).astype(np.float32))
 
         fits = [r.getMessage() for r in caplog.records
-                if "training this campaign's ranking model" in r.getMessage()]
+                if "training the ranking model" in r.getMessage()]
         assert len(fits) == 1
         assert "23 judged lead(s)" in fits[0] and "3 of them still synthetic" in fits[0]
 
@@ -410,7 +410,7 @@ class TestBuildingOneCostsOneFit:
     labels on the production install where it was caught.
     """
 
-    def _campaign_with_both_classes(self, campaign):
+    def _labelled_deals_with_both_classes(self):
         from openoutfind.crm.models import Deal, DealState, Lead, Outcome
 
         rng = np.random.RandomState(7)
@@ -421,36 +421,35 @@ class TestBuildingOneCostsOneFit:
             )
             fit = i % 2 == 0
             Deal.objects.create(
-                lead=lead, campaign=campaign,
+                lead=lead,
                 state=DealState.QUALIFIED if fit else DealState.FAILED,
                 **({} if fit else {"outcome": Outcome.WRONG_FIT}),
             )
-        return campaign
 
     def _fits(self, caplog) -> list[str]:
         return [r.getMessage() for r in caplog.records
-                if "training this campaign's ranking model" in r.getMessage()]
+                if "training the ranking model" in r.getMessage()]
 
-    def test_a_build_and_its_first_prediction_train_once(self, campaign, caplog):
+    def test_a_build_and_its_first_prediction_train_once(self, site_config, caplog):
         from openoutfind.core.ml.qualifier import qualifier_for
 
-        self._campaign_with_both_classes(campaign)
+        self._labelled_deals_with_both_classes()
 
         with caplog.at_level("INFO"):
-            qualifier = qualifier_for(campaign)
+            qualifier = qualifier_for()
             qualifier.predict(np.random.RandomState(0).randn(384).astype(np.float32))
 
         assert len(self._fits(caplog)) == 1
 
-    def test_building_alone_trains_nothing(self, campaign, caplog):
+    def test_building_alone_trains_nothing(self, site_config, caplog):
         """Nothing is fitted until something is asked — `_score_qualified` builds one
         and may then find an empty pool to score."""
         from openoutfind.core.ml.qualifier import qualifier_for
 
-        self._campaign_with_both_classes(campaign)
+        self._labelled_deals_with_both_classes()
 
         with caplog.at_level("INFO"):
-            qualifier_for(campaign)
+            qualifier_for()
 
         assert self._fits(caplog) == []
 
@@ -465,7 +464,7 @@ class TestOneFitPerLabelSet:
     used to be followed by a full refit to a posterior that could not have changed.
     """
 
-    def _labelled(self, campaign, fit: bool):
+    def _labelled(self, fit: bool):
         from openoutfind.crm.models import Deal, DealState, Lead, Outcome
 
         lead = Lead.objects.create(
@@ -474,55 +473,55 @@ class TestOneFitPerLabelSet:
             .astype(np.float32).tobytes(),
         )
         Deal.objects.create(
-            lead=lead, campaign=campaign,
+            lead=lead,
             state=DealState.QUALIFIED if fit else DealState.FAILED,
             outcome="" if fit else Outcome.WRONG_FIT)
         return lead
 
-    def test_the_same_labels_hand_back_the_same_fitted_model(self, campaign):
+    def test_the_same_labels_hand_back_the_same_fitted_model(self, site_config):
         from openoutfind.core.ml.qualifier import qualifier_for
 
         for fit in (True, False, True, False):
-            self._labelled(campaign, fit)
+            self._labelled(fit)
 
-        first = qualifier_for(campaign)
+        first = qualifier_for()
         first.predict(np.random.RandomState(0).randn(384).astype(np.float32))
-        assert qualifier_for(campaign) is first
+        assert qualifier_for() is first
 
-    def test_a_new_verdict_builds_a_new_model(self, campaign):
+    def test_a_new_verdict_builds_a_new_model(self, site_config):
         from openoutfind.core.ml.qualifier import qualifier_for
 
         for fit in (True, False):
-            self._labelled(campaign, fit)
-        first = qualifier_for(campaign)
+            self._labelled(fit)
+        first = qualifier_for()
 
-        self._labelled(campaign, True)
-        assert qualifier_for(campaign) is not first
+        self._labelled(True)
+        assert qualifier_for() is not first
 
-    def test_moving_a_deal_along_the_pipeline_keeps_the_fit(self, campaign):
+    def test_moving_a_deal_along_the_pipeline_keeps_the_fit(self, site_config):
         """A promotion, an address on order and a resolution all change a deal's state
         and none of them changes its fit verdict — which is the only thing fitted."""
         from openoutfind.core.ml.qualifier import qualifier_for
         from openoutfind.crm.models import Deal, DealState
 
         for fit in (True, False):
-            self._labelled(campaign, fit)
-        first = qualifier_for(campaign)
+            self._labelled(fit)
+        first = qualifier_for()
 
         promoted = Deal.objects.filter(state=DealState.QUALIFIED).first()
         promoted.state = DealState.READY_TO_FIND_EMAIL
         promoted.save(update_fields=["state"])
 
-        assert qualifier_for(campaign) is first
+        assert qualifier_for() is first
 
-    def test_a_first_anchor_set_is_a_new_model(self, campaign):
+    def test_a_first_anchor_set_is_a_new_model(self, site_config):
         """Anchors are fitted alongside the real labels, so writing them is new evidence."""
         from openoutfind.core.ml.qualifier import qualifier_for
 
-        self._labelled(campaign, False)
-        first = qualifier_for(campaign)
+        self._labelled(False)
+        first = qualifier_for()
 
-        campaign.anchor_profiles = ["a founder at a saas company"]
-        campaign.save(update_fields=["anchor_profiles"])
+        site_config.anchor_profiles = ["a founder at a saas company"]
+        site_config.save(update_fields=["anchor_profiles"])
 
-        assert qualifier_for(campaign) is not first
+        assert qualifier_for() is not first

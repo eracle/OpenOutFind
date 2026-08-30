@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 
 @transaction.atomic
-def promote_lead_to_deal(campaign, profile_url: str, reason: str = ""):
+def promote_lead_to_deal(profile_url: str, reason: str = ""):
     """Create a QUALIFIED Deal for a Lead.
 
     Returns the Deal. **Says nothing** — the verdict is announced by the step that
@@ -25,7 +25,6 @@ def promote_lead_to_deal(campaign, profile_url: str, reason: str = ""):
 
     deal = Deal.objects.create(
         lead=lead,
-        campaign=campaign,
         state=DealState.QUALIFIED,
         reason=reason,
     )
@@ -82,7 +81,7 @@ def create_lead(row: dict, country_code: str = "", discovered_by=None,
 
 
 def disqualify_lead(profile_url: str):
-    """Set Lead.disqualified = True (account-level, permanent, cross-campaign)."""
+    """Set Lead.disqualified = True (account-level, permanent)."""
     from openoutfind.crm.models import Lead
 
     lead = Lead.objects.filter(profile_url=profile_url).first()

@@ -1,18 +1,18 @@
-"""Create the pipeline and the campaign, print what was created, and stop.
+"""Onboard the install, print what was configured, and stop.
 
     outfind init                                  # wizard on a TTY, environment otherwise
     outfind init --product-docs p.md --target t.md # the two long fields, from files
-    outfind init --json                           # the same campaign, for a program
+    outfind init --json                           # the same config, for a program
 
 **This phase already happened; it just never had a name.** `find` migrated the database,
-onboarded from the environment, created the campaign and validated the operator before
-doing any of the work it is named after — and announced the campaign with a single INFO
-line between the migration narration and the discovery walk. Setting up and finding leads
-are different jobs with different failure modes, so they are different verbs.
+onboarded from the environment and validated the operator before doing any of the work it
+is named after — and announced the config with a single INFO line between the migration
+narration and the discovery walk. Setting up and finding leads are different jobs with
+different failure modes, so they are different verbs.
 
 `find` still does all of it, because a fully configured environment must keep running end
 to end in one command with no TTY. What changes is that there is now a way to do the setup
-deliberately, see the campaign you actually created, and only then spend anything.
+deliberately, see what you actually configured, and only then spend anything.
 
 **The two long fields come from files, not from flags.** A product description is a page
 of markdown with newlines and apostrophes in it; shell-quoting that on a command line is a
@@ -41,7 +41,7 @@ _FILE_FLAGS = {
 
 
 class Command(OpenOutFindCommand):
-    help = "Create the pipeline and the campaign, then print what was created."
+    help = "Onboard the install, then print what was configured."
 
     # The verb that migrates — that is the whole point of it.
     requires_database = False
@@ -51,9 +51,8 @@ class Command(OpenOutFindCommand):
                             help="File holding the product description (markdown).")
         parser.add_argument("--target", metavar="FILE",
                             help="File holding the target market description (markdown).")
-        parser.add_argument("--name", help="Campaign name. Defaults to the built-in name.")
         parser.add_argument("--json", action="store_true", dest="as_json",
-                            help="Emit the campaign as one JSON object.")
+                            help="Emit the config as one JSON object.")
         parser.add_argument(
             "--log-level",
             choices=("debug", "info", "warning", "error"),
@@ -75,14 +74,13 @@ class Command(OpenOutFindCommand):
         ensure_onboarded()
         validate_operator()
 
-        self._report(_describe(_only_campaign()), options)
+        self._report(_describe(), options)
 
     def _report(self, described: dict, options) -> None:
         if options["as_json"]:
             self.stdout.write(json.dumps(described, indent=2))
             return
 
-        self.stdout.write(f"Campaign: {described['name']}")
         self.stdout.write(f"  country     {described['country_code'] or '—'}")
         self.stdout.write(f"  headcount   {described['headcount_min']}–{described['headcount_max']}")
         self.stdout.write(f"  product     {described['product_docs_chars']} chars")
@@ -112,9 +110,6 @@ def _seed_environment(options) -> None:
             continue
         os.environ.setdefault(ENV_PREFIX + variable, _read(path, option_name))
 
-    if options.get("name"):
-        os.environ.setdefault(ENV_PREFIX + "CAMPAIGN_NAME", options["name"])
-
 
 def _read(path: str, option_name: str) -> str:
     """Read a flag's file, or say which flag could not be satisfied and why."""
@@ -132,33 +127,21 @@ def _read(path: str, option_name: str) -> str:
 
 # ── what was created ─────────────────────────────────────────────
 
-def _only_campaign():
-    """The operator's campaign — the one onboarding just made, or the one already there."""
-    from openoutfind.core.operator import campaigns
-
-    known = campaigns()
-    if len(known) > 1:
-        # Initialising twice against different names is a real thing to do; picking one
-        # silently is not. `find --campaign` is how you choose between them.
-        return sorted(known, key=lambda c: c.pk)[-1]
-    return known[0]
-
-
-def _describe(campaign) -> dict:
-    """The campaign as both readers want it: counts and sizes, never the whole markdown."""
+def _describe() -> dict:
+    """The config as both readers want it: counts and sizes, never the whole markdown."""
     from openoutfind.core.export import export_counts
     from openoutfind.core.models import SiteConfig
     from openoutfind.crm.models import Deal
 
-    exportable, _ = export_counts(campaign)
+    site_config = SiteConfig.load()
+    exportable, _ = export_counts()
     return {
-        "name": campaign.name,
-        "country_code": campaign.country_code,
-        "headcount_min": campaign.headcount_min,
-        "headcount_max": campaign.headcount_max,
-        "product_docs_chars": len(campaign.product_docs),
-        "campaign_target_chars": len(campaign.campaign_target),
-        "ai_model": SiteConfig.load().ai_model,
-        "leads_seen": Deal.objects.filter(campaign=campaign).count(),
+        "country_code": site_config.country_code,
+        "headcount_min": site_config.headcount_min,
+        "headcount_max": site_config.headcount_max,
+        "product_docs_chars": len(site_config.product_docs),
+        "campaign_target_chars": len(site_config.campaign_target),
+        "ai_model": site_config.ai_model,
+        "leads_seen": Deal.objects.count(),
         "exportable": exportable,
     }

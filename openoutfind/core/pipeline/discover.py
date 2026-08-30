@@ -33,7 +33,7 @@ from termcolor import colored
 logger = logging.getLogger(__name__)
 
 
-def _harvest(campaign, node, rows: list[dict]) -> int:
+def _harvest(site_config, node, rows: list[dict]) -> int:
     """Persist a fetched page as first-touch Leads, keyworded by the retrieving node.
 
     Returns the count of leads newly created; a re-surfaced profile keeps its original
@@ -48,14 +48,14 @@ def _harvest(campaign, node, rows: list[dict]) -> int:
     pairs = node.pairs
     terms = keyword_terms(pairs)
     return sum(
-        create_lead(row, country_code=campaign.country_code,
+        create_lead(row, country_code=site_config.country_code,
                     discovered_by=node, query_terms=terms)
         for row in rows
     )
 
 
-def _ensure_frontier(campaign, store) -> list[tuple[str, str]]:
-    """Make sure the campaign has a vocabulary and something to fire. Returns the vocabulary.
+def _ensure_frontier(site_config, store) -> list[tuple[str, str]]:
+    """Make sure there is a vocabulary and something to fire. Returns the vocabulary.
 
     Cold start seeds from the ICP; every pass folds in the words of whatever has qualified
     since. Both are cheap and idempotent — counting, not generation — so there is no
@@ -66,24 +66,24 @@ def _ensure_frontier(campaign, store) -> list[tuple[str, str]]:
     from openoutfind.core.pipeline.icp import generate_seed
 
     vocabulary.seed_seniorities()
-    existing = QueryNode.objects.filter(campaign=campaign).exists()
+    existing = QueryNode.objects.exists()
     if not existing:
-        generate_seed(campaign)
-    vocabulary.refresh(campaign)
+        generate_seed(site_config)
+    vocabulary.refresh(site_config)
 
     keywords = vocabulary.admitted_keywords()
     if not keywords:
         return keywords
 
     if not existing:
-        opened = select.seed_frontier(campaign, keywords)
-        logger.debug("[%s] frontier opened with %d keyword(s)", campaign, opened)
+        opened = select.seed_frontier(keywords)
+        logger.debug("frontier opened with %d keyword(s)", opened)
         return keywords
 
     # The vocabulary grew since the last pass — a new token is only ever a *child* of an
     # already-fired node, so re-expanding those is what lets it reach the frontier at all.
     for node in QueryNode.objects.filter(
-        campaign=campaign, state=QueryNode.State.FIRED,
+        state=QueryNode.State.FIRED,
     ).prefetch_related("keywords"):
         select.expand(node, store, keywords)
     return keywords
@@ -151,12 +151,12 @@ def _handle_empty(node, offset: int, page) -> str | None:
     return verdict
 
 
-def discover(campaign, qualifier=None) -> bool:
+def discover(site_config, qualifier=None) -> bool:
     """Fire frontier nodes until one returns a page. Returns whether the walk moved.
 
     **The answer is "did a page come back", not "how many leads were new"** — bug 8 again,
     one level up. ``_harvest`` counts *newly created* leads, and a page of profiles this
-    campaign already holds counts 0 while still being a perfectly good page: the node's
+    install already holds counts 0 while still being a perfectly good page: the node's
     offset advanced, its children joined the frontier, and the next pass draws the next
     node. Reporting that as nothing left to do stopped a live run dead with 100 rows in
     hand and the frontier wide open (``top_up`` reads this return as *was there work*).
@@ -169,10 +169,10 @@ def discover(campaign, qualifier=None) -> bool:
     queries (§13), and the parameter stays only so the call sites in ``pools`` read the
     same for one release.
 
-    Two gates: a campaign with no finder key cannot reach the index, and one with no
-    product or target has nothing to build a query from. (A third stood here — the
-    freemium promo campaign never searched, because it fed on leads other campaigns
-    had already found. It is gone with that campaign.)
+    Two gates: no finder key means the index can't be reached, and no product or target
+    means there is nothing to build a query from. (A third stood here — the freemium
+    promo campaign never searched, because it fed on leads other campaigns had already
+    found. It is gone with that campaign.)
     """
     from openoutfind.core.pipeline import select
     from openoutfind.discovery import step_line
@@ -180,21 +180,21 @@ def discover(campaign, qualifier=None) -> bool:
 
     if not bettercontact.is_configured():
         return False
-    if not (campaign.product_docs or campaign.campaign_target):
+    if not (site_config.product_docs or site_config.campaign_target):
         return False
 
-    logger.info(colored(f"▶ discover · {campaign}", "blue", attrs=["bold"]))
+    logger.info(colored("▶ discover", "blue", attrs=["bold"]))
 
-    store = select.LabelStore.load(campaign)
-    keywords = _ensure_frontier(campaign, store)
+    store = select.LabelStore.load(site_config)
+    keywords = _ensure_frontier(site_config, store)
 
     retired = 0
     while True:
-        node = select.next_node(campaign, store)
+        node = select.next_node(store)
         if node is None:
             logger.info(colored(
-                f"■ no more people left to find for {campaign} — every search this "
-                f"campaign knows how to make is exhausted", "blue"))
+                "■ no more people left to find — every search this install "
+                "knows how to make is exhausted", "blue"))
             logger.debug("frontier spanned · %d node(s) retired this pass", retired)
             return False
 
@@ -209,7 +209,7 @@ def discover(campaign, qualifier=None) -> bool:
             retired += 1
             continue
 
-        created = _harvest(campaign, node, page.leads)
+        created = _harvest(site_config, node, page.leads)
         select.advance(node, leads_found=page.leads_found)
         grown = select.expand(node, store, keywords)
         logger.info("%s", step_line(

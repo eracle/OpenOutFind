@@ -113,8 +113,8 @@ class LabelStore:
         self._labels = labels
 
     @classmethod
-    def load(cls, campaign) -> "LabelStore":
-        """The campaign's labelled leads, **plus the anchors as positives**.
+    def load(cls, site_config) -> "LabelStore":
+        """The install's labelled leads, **plus the anchors as positives**.
 
         Qualified = any deal that is not a rejection.
 
@@ -136,7 +136,7 @@ class LabelStore:
         matters early and is swamped by real evidence as the campaign grows.
 
         They feed the **vocabulary** too (``vocabulary.refresh``), through a second shape
-        rather than through this one: ``Campaign.anchor_source_fields`` carries the same
+        rather than through this one: ``SiteConfig.anchor_source_fields`` carries the same
         invented people as *lead rows*, each value already under the field it is
         searchable in. The rule this replaces was that anchors must never reach the
         vocabulary, and the reason was sound — an anchor was one flat string, and
@@ -152,7 +152,7 @@ class LabelStore:
 
         verdicts = {}
         for lead_id, state, outcome in (
-            Deal.objects.filter(campaign=campaign, lead_id__isnull=False)
+            Deal.objects.filter(lead_id__isnull=False)
             .values_list("lead_id", "state", "outcome")
         ):
             verdicts[lead_id] = 0 if (state == DealState.FAILED
@@ -167,14 +167,14 @@ class LabelStore:
                 labels.append(verdicts[lead_id])
 
         anchors = 0
-        for profile in campaign.anchor_profiles or []:
+        for profile in site_config.anchor_profiles or []:
             if profile:
                 tokens.append(profile_tokens(profile))
                 labels.append(1)
                 anchors += 1
         if anchors:
-            logger.debug("[%s] label store: %d real verdict(s) + %d anchor(s) as positives",
-                         campaign, len(labels) - anchors, anchors)
+            logger.debug("label store: %d real verdict(s) + %d anchor(s) as positives",
+                         len(labels) - anchors, anchors)
         return cls(tokens, labels)
 
     def __len__(self) -> int:
@@ -299,7 +299,7 @@ def estimate(node, store: LabelStore, cache: dict | None = None) -> float:
 
 # ── the frontier ─────────────────────────────────────────────────────
 
-def frontier(campaign) -> list:
+def frontier() -> list:
     """Every node still worth firing: unfired children, plus fired veins with pages left.
 
     One pool, deliberately. Deepening a proven vein and opening a fresh one are not two
@@ -310,19 +310,18 @@ def frontier(campaign) -> list:
 
     return list(
         QueryNode.objects
-        .filter(campaign=campaign,
-                state__in=(QueryNode.State.FRONTIER, QueryNode.State.FIRED))
+        .filter(state__in=(QueryNode.State.FRONTIER, QueryNode.State.FIRED))
         .prefetch_related("keywords").select_related("parent")
     )
 
 
-def next_node(campaign, store: LabelStore, rng=None):
+def next_node(store: LabelStore, rng=None):
     """The node to fire next, or ``None`` when the frontier is empty.
 
     ``None`` is the saturation signal: nothing left unfired and nothing left to deepen,
     which ``discover`` answers by refreshing the vocabulary and expanding again.
     """
-    candidates = frontier(campaign)
+    candidates = frontier()
     if not candidates:
         return None
 
@@ -342,8 +341,8 @@ def next_node(campaign, store: LabelStore, rng=None):
         # than the conclusion. `a`/`b` are the node's own counts, `lvl` its inherited
         # level, `P̂` the smoothed estimate and `draw` what Thompson actually sampled —
         # a node winning on a low P̂ means its posterior was wide, which is the point.
-        logger.debug("[%s] frontier: %d node(s), base rate %.3f over %d label(s)",
-                     campaign, len(candidates), store.base_rate, len(store))
+        logger.debug("frontier: %d node(s), base rate %.3f over %d label(s)",
+                     len(candidates), store.base_rate, len(store))
         for rank, (drawn, node) in enumerate(scored[:_DEBUG_FRONTIER_ROWS], start=1):
             a, b = store.counts(node.pairs)
             level = estimate(node.parent, store, cache) if node.parent_id else store.base_rate
@@ -359,7 +358,7 @@ def next_node(campaign, store: LabelStore, rng=None):
 
 # ── node lifecycle ───────────────────────────────────────────────────
 
-def _dead_sets(campaign) -> list[frozenset]:
+def _dead_sets() -> list[frozenset]:
     """Keyword sets already proven to match nobody — the anti-monotone prune.
 
     A superset of an empty conjunction is empty, so a dead node convicts every node that
@@ -372,12 +371,12 @@ def _dead_sets(campaign) -> list[frozenset]:
 
     return [
         frozenset(node.pairs) for node in
-        QueryNode.objects.filter(campaign=campaign, state=QueryNode.State.DEAD)
+        QueryNode.objects.filter(state=QueryNode.State.DEAD)
         .prefetch_related("keywords")
     ]
 
 
-def seed_frontier(campaign, keywords) -> int:
+def seed_frontier(keywords) -> int:
     """Open the walk with one depth-1 node per keyword. Returns nodes created.
 
     There is no root. The empty query is never fired — it matches everyone, so its one
@@ -386,12 +385,12 @@ def seed_frontier(campaign, keywords) -> int:
     """
     created = 0
     for pair in keywords:
-        if _upsert(campaign, [pair], parent=None) is not None:
+        if _upsert([pair], parent=None) is not None:
             created += 1
     return created
 
 
-def _upsert(campaign, pairs, parent, store: LabelStore | None = None, cache: dict | None = None):
+def _upsert(pairs, parent, store: LabelStore | None = None, cache: dict | None = None):
     """Create a node, or re-point an existing one at a better parent. ``None`` if pruned.
 
     A node reachable by several paths keeps the parent giving the **highest** estimate.
@@ -401,7 +400,7 @@ def _upsert(campaign, pairs, parent, store: LabelStore | None = None, cache: dic
     from openoutfind.core.models import Keyword, QueryNode
 
     key = token_key(pairs)
-    node = QueryNode.objects.filter(campaign=campaign, token_key=key).first()
+    node = QueryNode.objects.filter(token_key=key).first()
     if node is not None:
         if (parent is not None and node.parent_id != parent.pk
                 and node.state == QueryNode.State.FRONTIER and store is not None):
@@ -410,7 +409,7 @@ def _upsert(campaign, pairs, parent, store: LabelStore | None = None, cache: dic
                 node.save(update_fields=["parent"])
         return None
 
-    node = QueryNode.objects.create(campaign=campaign, token_key=key, parent=parent)
+    node = QueryNode.objects.create(token_key=key, parent=parent)
     node.keywords.set(Keyword.rows_for(pairs))
     return node
 
@@ -422,9 +421,8 @@ def expand(node, store: LabelStore, candidates) -> int:
     (``LabelStore.cooccurring``), that no dead node is a subset of, and that does not push
     any one field past what ``SEARCH_FIELDS`` allows it.
     """
-    campaign = node.campaign
     pairs = node.pairs
-    dead = _dead_sets(campaign)
+    dead = _dead_sets()
     cache: dict = {}
 
     per_field = Counter(field for field, _ in pairs)
@@ -439,7 +437,7 @@ def expand(node, store: LabelStore, candidates) -> int:
         if any(empty <= child_set for empty in dead):
             pruned += 1
             continue
-        if _upsert(campaign, child_pairs, parent=node, store=store, cache=cache) is not None:
+        if _upsert(child_pairs, parent=node, store=store, cache=cache) is not None:
             created += 1
 
     if logger.isEnabledFor(logging.DEBUG):
@@ -519,7 +517,7 @@ def _prune_descendants(node) -> int:
     pruned, generation = 0, [node.pk]
     while generation:
         children = list(
-            QueryNode.objects.filter(campaign=node.campaign, parent_id__in=generation)
+            QueryNode.objects.filter(parent_id__in=generation)
             .exclude(state=QueryNode.State.DEAD).values_list("pk", flat=True)
         )
         if not children:

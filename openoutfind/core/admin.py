@@ -1,7 +1,7 @@
 # openoutfind/core/admin.py
 from django.contrib import admin
 
-from openoutfind.core.models import Campaign, Keyword, QueryNode, SiteConfig
+from openoutfind.core.models import Keyword, QueryNode, SiteConfig
 from openoutfind.crm.models import DealState
 from openoutfind.crm.models.deal import Deal
 from openoutfind.discovery import describe_filters
@@ -9,19 +9,13 @@ from openoutfind.discovery import describe_filters
 
 @admin.register(SiteConfig)
 class SiteConfigAdmin(admin.ModelAdmin):
-    list_display = ("__str__", "ai_model", "llm_api_base")
+    list_display = ("__str__", "ai_model", "llm_api_base", "phase")
 
     def has_add_permission(self, request):
         return not SiteConfig.objects.exists()
 
     def has_delete_permission(self, request, obj=None):
         return False
-
-
-@admin.register(Campaign)
-class CampaignAdmin(admin.ModelAdmin):
-    list_display = ("name", "phase")
-    filter_horizontal = ("users",)
 
     @admin.display(description="phase")
     def phase(self, obj):
@@ -36,7 +30,7 @@ class CampaignAdmin(admin.ModelAdmin):
 
         n_anchors = len(obj.anchor_profiles or [])
         n_real = Deal.objects.filter(
-            campaign=obj, lead_id__isnull=False,
+            lead_id__isnull=False,
         ).exclude(state=DealState.FAILED).count()
         if not n_anchors:
             return "learning (unanchored)"
@@ -55,12 +49,12 @@ class QueryNodeAdmin(admin.ModelAdmin):
     """
 
     list_display = (
-        "id", "query", "campaign", "state", "next_offset", "leads_found",
+        "id", "query", "state", "next_offset", "leads_found",
         "lead_yield", "updated_at",
     )
-    list_filter = ("state", "campaign")
+    list_filter = ("state",)
     readonly_fields = (
-        "campaign", "query", "token_key", "parent", "next_offset", "state",
+        "query", "token_key", "parent", "next_offset", "state",
         "leads_found", "lead_yield", "created_at", "updated_at",
     )
     date_hierarchy = "created_at"

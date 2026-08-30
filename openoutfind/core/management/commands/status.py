@@ -44,7 +44,7 @@ def render(status: dict) -> str:
     """Render the status document as a short human summary."""
     sections = (
         _render_config(status["onboarding"]),
-        _render_pipeline(status["campaigns"], status["totals"]),
+        _render_pipeline(status["totals"]),
         _render_credits(status["credits"]),
         _render_hub(status["hub"]),
         _render_blocked(status["blocked"]),
@@ -62,25 +62,18 @@ def _render_config(onboarding: dict) -> str:
     return "\n".join(lines)
 
 
-def _render_pipeline(campaigns: list[dict], totals: dict) -> str:
-    if not campaigns:
-        return "Pipeline: no campaigns yet."
+def _render_pipeline(totals: dict) -> str:
+    if not totals["leads_seen"]:
+        return "Pipeline: no leads yet."
 
-    lines = [
+    return "\n".join((
         "Pipeline:",
         f"  {totals['leads_seen']} lead(s) seen, {totals['rejected']} rejected by the qualifier",
         f"  {totals['exportable']} exportable — {totals['exportable_with_email']} with an email, "
         f"{totals['exportable_without_email']} without (a row exports either way)",
         f"  {totals['ranked_for_lookup']} ranked for a paid lookup, "
         f"{totals['lookup_in_flight']} in flight",
-    ]
-    if len(campaigns) > 1:
-        lines.append("  by campaign:")
-        lines += [
-            f"    {row['name']}: {row['exportable']} exportable of {row['leads_seen']} seen"
-            for row in campaigns
-        ]
-    return "\n".join(lines)
+    ))
 
 
 def _render_credits(credits: dict) -> str:

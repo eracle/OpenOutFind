@@ -75,7 +75,7 @@ class JobResult:
         return self.stopped_because is None
 
 
-def run_job(campaign, goal: Goal, on_new_lead=None, buy_addresses: bool = False) -> JobResult:
+def run_job(site_config, goal: Goal, on_new_lead=None, buy_addresses: bool = False) -> JobResult:
     """Work the cycle until *goal* is met or nothing can advance.
 
     Never raises on a provider refusal — it stops and reports which one. ``on_new_lead``
@@ -93,26 +93,26 @@ def run_job(campaign, goal: Goal, on_new_lead=None, buy_addresses: bool = False)
     the first-run number stays measured rather than measured once.
     """
     started = time.monotonic()
-    result = _work_to_goal(campaign, goal, on_new_lead, buy_addresses, started)
+    result = _work_to_goal(site_config, goal, on_new_lead, buy_addresses, started)
     result.elapsed = time.monotonic() - started
     return result
 
 
-def _work_to_goal(campaign, goal: Goal, on_new_lead, buy_addresses: bool,
+def _work_to_goal(site_config, goal: Goal, on_new_lead, buy_addresses: bool,
                   started: float) -> JobResult:
     """The loop itself. Every exit is a ``JobResult``; none of them raises."""
     from openoutfind.core.cycle import HALTING_ERRORS, run_one_action
     from openoutfind.enrichment.provider import ProviderUnavailable
 
-    baseline = _unit_ids(campaign, goal.unit)
+    baseline = _unit_ids(site_config, goal.unit)
     result = JobResult(goal=goal)
 
     while result.produced < goal.count:
         try:
             acted = run_one_action(
-                campaign, buy_addresses=buy_addresses,
-                max_new_lookups=_lookup_budget(campaign, goal, result))
-            _collect(campaign, goal, baseline, result, on_new_lead, started)
+                site_config, buy_addresses=buy_addresses,
+                max_new_lookups=_lookup_budget(site_config, goal, result))
+            _collect(site_config, goal, baseline, result, on_new_lead, started)
         except HALTING_ERRORS as exc:
             # A bad LLM key is not a transient fault: every action would raise it. The
             # daemon stopped the loop loudly for this; a job ends with an answer.
@@ -131,8 +131,8 @@ def _work_to_goal(campaign, goal: Goal, on_new_lead, buy_addresses: bool,
             result.detail = f"{result.produced} of {goal} — {exc}"
             return result
         except KeyboardInterrupt:
-            # The operator's own deadline. The one case with no natural bound is a
-            # campaign whose leads are all rejected — the walk keeps finding, the
+            # The operator's own deadline. The one case with no natural bound is an
+            # install whose leads are all rejected — the walk keeps finding, the
             # qualifier keeps saying no, and every row honestly reports that it acted.
             # An interrupt should hand back the rows, not a stack trace.
             result.stopped_because = ErrorType.GOAL_UNREACHED
@@ -141,7 +141,7 @@ def _work_to_goal(campaign, goal: Goal, on_new_lead, buy_addresses: bool,
 
         if not acted and result.produced < goal.count:
             result.stopped_because = ErrorType.GOAL_UNREACHED
-            result.detail = _why_idle(campaign, result, buy_addresses)
+            result.detail = _why_idle(site_config, result, buy_addresses)
             return result
 
     return result
@@ -149,7 +149,7 @@ def _work_to_goal(campaign, goal: Goal, on_new_lead, buy_addresses: bool,
 
 # ── measuring the goal ───────────────────────────────────────────
 
-def _unit_ids(campaign, unit: str) -> set[int]:
+def _unit_ids(site_config, unit: str) -> set[int]:
     """The leads that currently count toward *unit*.
 
     ``leads`` is everything the export would write; ``emails`` narrows that to the rows
@@ -162,24 +162,24 @@ def _unit_ids(campaign, unit: str) -> set[int]:
 
     return {
         record["lead_id"]
-        for record in lead_records(campaign)
+        for record in lead_records()
         if unit != EMAILS or record["email"]
     }
 
 
-def _on_order(campaign) -> int:
-    """How many addresses this campaign is waiting on — submitted, not yet hit or miss.
+def _on_order() -> int:
+    """How many addresses this install is waiting on — submitted, not yet hit or miss.
 
-    Campaign-wide rather than run-scoped, because a lookup already in flight when the
+    Job-wide rather than run-scoped, because a lookup already in flight when the
     job started will count toward the goal the moment it lands (``_unit_ids`` reads the
     address, not who ordered it), so it has to count against the budget too.
     """
     from openoutfind.crm.models import Deal, DealState
 
-    return Deal.objects.filter(campaign=campaign, state=DealState.FINDING_EMAIL).count()
+    return Deal.objects.filter(state=DealState.FINDING_EMAIL).count()
 
 
-def _lookup_budget(campaign, goal: Goal, result: JobResult) -> int | None:
+def _lookup_budget(site_config, goal: Goal, result: JobResult) -> int | None:
     """How many *more* paid lookups this run may still submit, or ``None`` (no cap).
 
     **The budget is counted in addresses, not in submissions**, because that is the unit
@@ -202,15 +202,15 @@ def _lookup_budget(campaign, goal: Goal, result: JobResult) -> int | None:
     """
     if goal.unit != EMAILS:
         return None
-    return max(0, goal.count - result.produced - _on_order(campaign))
+    return max(0, goal.count - result.produced - _on_order())
 
 
-def _collect(campaign, goal: Goal, baseline: set[int], result: JobResult, on_new_lead,
+def _collect(site_config, goal: Goal, baseline: set[int], result: JobResult, on_new_lead,
              started: float) -> None:
     """Record whatever entered the goal since the job started, once each, and say so."""
     from openoutfind.crm.models import Lead
 
-    fresh = _unit_ids(campaign, goal.unit) - baseline - set(result.produced_ids)
+    fresh = _unit_ids(site_config, goal.unit) - baseline - set(result.produced_ids)
     if not fresh:
         return
 
@@ -218,10 +218,10 @@ def _collect(campaign, goal: Goal, baseline: set[int], result: JobResult, on_new
         result.produced_ids.append(lead.pk)
         if on_new_lead is not None:
             on_new_lead(lead)
-        _log_progress(campaign, goal, result, time.monotonic() - started)
+        _log_progress(site_config, goal, result, time.monotonic() - started)
 
 
-def _log_progress(campaign, goal: Goal, result: JobResult, elapsed: float) -> None:
+def _log_progress(site_config, goal: Goal, result: JobResult, elapsed: float) -> None:
     """Distance to the goal, in the unit the operator typed.
 
     **The number they typed is the denominator.** Reporting state-machine names instead
@@ -236,13 +236,13 @@ def _log_progress(campaign, goal: Goal, result: JobResult, elapsed: float) -> No
     if result.produced == 1:
         logger.info("%s", colored(f"★ first {goal.unit[:-1]} · {stamp}", "green", attrs=["bold"]))
 
-    seen = Deal.objects.filter(campaign=campaign).count()
+    seen = Deal.objects.count()
     logger.info("  %s  %d of %d %s · %d seen · %s",
                 colored("·", "cyan", attrs=["bold"]),
                 result.produced, goal.count, goal.unit, seen, stamp)
 
 
-def _why_idle(campaign, result: JobResult, buy_addresses: bool) -> str:
+def _why_idle(site_config, result: JobResult, buy_addresses: bool) -> str:
     """What the job is short by, and what it is waiting on, in one line.
 
     *Nothing may be reported as an empty result*: "7 of 10" alone leaves the reader unable
@@ -253,5 +253,5 @@ def _why_idle(campaign, result: JobResult, buy_addresses: bool) -> str:
 
     return (
         f"{result.produced} of {result.goal} — nothing left to do right now. "
-        f"{pipeline_summary(campaign, buy_addresses=buy_addresses)}"
+        f"{pipeline_summary(site_config, buy_addresses=buy_addresses)}"
     )

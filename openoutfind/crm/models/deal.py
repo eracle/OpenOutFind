@@ -100,7 +100,7 @@ class Deal(models.Model):
         verbose_name = _("Deal")
         verbose_name_plural = _("Deals")
         constraints = [
-            models.UniqueConstraint(fields=["lead", "campaign"], name="unique_deal_per_campaign"),
+            models.UniqueConstraint(fields=["lead"], name="unique_deal_per_lead"),
         ]
         # The cycle's one query: every step selects on state, and the one that waits
         # narrows it by ``not_before``.
@@ -109,9 +109,6 @@ class Deal(models.Model):
         ]
 
     lead = models.ForeignKey("Lead", on_delete=models.CASCADE)
-    campaign = models.ForeignKey(
-        "core.Campaign", on_delete=models.CASCADE, related_name="deals",
-    )
     state = models.CharField(
         max_length=32,
         choices=DealState.choices,

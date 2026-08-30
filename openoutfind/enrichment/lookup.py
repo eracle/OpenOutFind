@@ -57,10 +57,9 @@ def buy_address(deal) -> DealState | None:
     from openoutfind.contacts import service as contacts
 
     logger.info("%s", block_header(
-        f"buy_address · {deal.campaign} · {deal.lead.profile_url}", "cyan"))
+        f"buy_address · {deal.lead.profile_url}", "cyan"))
 
-    # Already in hand — resolved in another campaign, imported, or an earlier hub
-    # give-back (Lead is account-level, Deal is campaign-scoped). No lookup, no credit.
+    # Already in hand — imported, or an earlier hub give-back. No lookup, no credit.
     if deal.lead.email:
         logger.info("%s", step_line(
             "known email", "already resolved → RESOLVED", glyph="✓", color="green"))
@@ -140,7 +139,7 @@ def reclaim_lookup(deal) -> DealState:
     step again, under the same spend gate as everyone else.
     """
     logger.info("%s", block_header(
-        f"reclaim_lookup · {deal.campaign} · {deal.lead.profile_url}", "yellow"))
+        f"reclaim_lookup · {deal.lead.profile_url}", "yellow"))
     deal.not_before = None
     deal.lookup_attempt = 0
     logger.info("%s", step_line(
@@ -160,7 +159,7 @@ def check_lookup(deal) -> DealState | None:
     from openoutfind.enrichment import bettercontact, provider
 
     logger.info("%s", block_header(
-        f"check_lookup · {deal.campaign} · {deal.lead.profile_url}", "magenta",
+        f"check_lookup · {deal.lead.profile_url}", "magenta",
         meta=f"attempt {deal.lookup_attempt}"))
 
     # Back to the vendor that minted the handle, never to whichever key is configured

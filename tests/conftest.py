@@ -51,17 +51,23 @@ def _mock_embeddings(request):
 
 @pytest.fixture(autouse=True)
 def _no_fit_survives_a_test():
-    """``qualifier_for`` keeps the fitted model per campaign, keyed on the labels.
+    """``qualifier_for`` keeps the fitted model, keyed on the labels.
 
     That key cannot go stale inside a run, but a test database reuses primary keys, so
-    two tests can be one campaign with one label set and different intent. Each test
-    starts from an empty cache.
+    two tests can share one label set and different intent. Each test starts from an
+    empty cache.
     """
-    from openoutfind.core.ml.qualifier import _FITTED
+    import openoutfind.core.ml.qualifier as qualifier_module
+    import openoutfind.core.pipeline.vocabulary as vocabulary_module
+    import openoutfind.core.cycle as cycle_module
 
-    _FITTED.clear()
+    qualifier_module._FITTED = None
+    vocabulary_module._refreshed_at = None
+    cycle_module._scored_at = None
     yield
-    _FITTED.clear()
+    qualifier_module._FITTED = None
+    vocabulary_module._refreshed_at = None
+    cycle_module._scored_at = None
 
 
 @pytest.fixture
@@ -71,15 +77,15 @@ def operator(db):
 
 
 @pytest.fixture
-def campaign(db, operator):
-    """The campaign under test, owned by the operator.
+def site_config(db, operator):
+    """The ``SiteConfig`` singleton under test.
 
-    Steps and pipeline functions take a campaign now; the operator is looked up
-    (``core/operator.py``) rather than threaded through, so nothing carries a
-    session object any more.
+    Holds exactly the fields the old ``Campaign`` model held, folded onto the config
+    singleton (2026-08-30) since this install has never run more than one campaign.
+    Steps and pipeline functions take it directly; the operator is looked up
+    (``core/operator.py``) rather than threaded through, so nothing carries a session
+    object either.
     """
-    from openoutfind.core.models import Campaign
+    from openoutfind.core.models import SiteConfig
 
-    row = Campaign.objects.first() or Campaign.objects.create(name="Email Outreach")
-    row.users.add(operator)
-    return row
+    return SiteConfig.load()

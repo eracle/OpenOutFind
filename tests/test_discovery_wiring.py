@@ -12,7 +12,7 @@ from unittest.mock import patch
 import pytest
 
 from openoutfind.core.errors import ErrorType
-from openoutfind.core.models import Campaign, Keyword, QueryNode, SiteConfig
+from openoutfind.core.models import Keyword, QueryNode, SiteConfig
 from openoutfind.core.pipeline import discover as discover_mod
 from openoutfind.core.pipeline import select, vocabulary
 from openoutfind.core.pipeline.discover import discover
@@ -29,14 +29,17 @@ def _finder_key(db):
 
 
 def _campaign(**kw):
-    defaults = dict(name="C", product_docs="p", campaign_target="t")
+    defaults = dict(product_docs="p", campaign_target="t")
     defaults.update(kw)
-    return Campaign.objects.create(**defaults)
+    config = SiteConfig.load()
+    for key, value in defaults.items():
+        setattr(config, key, value)
+    config.save()
+    return config
 
 
 def _node(campaign, pairs, **kw):
-    node = QueryNode.objects.create(
-        campaign=campaign, token_key=select.token_key(pairs), **kw)
+    node = QueryNode.objects.create(token_key=select.token_key(pairs), **kw)
     node.keywords.set(Keyword.rows_for(pairs))
     return node
 
@@ -55,7 +58,7 @@ def _labelled(campaign, profile_text, qualified, source_fields=None):
         profile_url=f"https://x/{Lead.objects.count()}", profile_text=profile_text,
         source_fields=source_fields or {})
     Deal.objects.create(
-        lead=lead, campaign=campaign,
+        lead=lead,
         state=DealState.QUALIFIED if qualified else DealState.FAILED,
         outcome="" if qualified else Outcome.WRONG_FIT)
     return lead
@@ -176,7 +179,7 @@ class TestEmptyPages:
         with patch.object(discover_mod, "_fetch", side_effect=pages):
             assert discover(c) is True
 
-        assert QueryNode.objects.filter(campaign=c, state=QueryNode.State.DEAD).count() == 1
+        assert QueryNode.objects.filter(state=QueryNode.State.DEAD).count() == 1
 
     def test_saturation_is_the_one_false(self, db):
         c = _campaign()

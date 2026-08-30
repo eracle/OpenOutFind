@@ -105,8 +105,8 @@ class Lead(models.Model):
         self.embedding = np.asarray(arr, dtype=np.float32).tobytes()
 
     @classmethod
-    def get_labeled_arrays(cls, campaign) -> tuple[np.ndarray, np.ndarray]:
-        """Labeled embeddings for a campaign as (X, y) numpy arrays for warm start.
+    def get_labeled_arrays(cls) -> tuple[np.ndarray, np.ndarray]:
+        """Labeled embeddings for the install as (X, y) numpy arrays for warm start.
 
         The label is the LLM *fit* verdict, not the pipeline outcome — a qualified
         lead whose enrichment later missed (NO_EMAIL_FOUND) is still a fit
@@ -122,7 +122,7 @@ class Lead(models.Model):
         from openoutfind.crm.models import DealState
 
         deals = Deal.objects.filter(
-            campaign=campaign, lead_id__isnull=False,
+            lead_id__isnull=False,
         ).values_list("lead_id", "state", "outcome")
 
         label_by_lead: dict[int, int] = {}

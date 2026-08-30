@@ -54,43 +54,43 @@ from openoutfind.core.pipeline.qualify import fetch_qualification_candidates, ru
 logger = logging.getLogger(__name__)
 
 
-def top_up(campaign, qualifier: BayesianQualifier) -> bool:
-    """Spend one unit of work filling *campaign*'s pipeline. Returns whether it did.
+def top_up(site_config, qualifier: BayesianQualifier) -> bool:
+    """Spend one unit of work filling the pipeline. Returns whether it did.
 
-    Label a lead, discover leads, or (cold) both. False means the campaign has nothing
-    left to do: nothing worth labelling and nothing left to discover.
+    Label a lead, discover leads, or (cold) both. False means there is nothing left to
+    do: nothing worth labelling and nothing left to discover.
 
     ``qualifier`` is the caller's, not one built here: the cycle's scoring row may
-    already have fitted this campaign's model in the same action, and the fit is the
-    expensive part. See ``cycle._one_model_per_action``.
+    already have fitted the model in the same action, and the fit is the expensive
+    part. See ``cycle._one_model_per_action``.
     """
     # Whatever last pass accepted reaches the frontier here. Discovery refreshes too, but
     # a run that only ever labels would otherwise never fold its own acceptances in — and
     # the walk's ranking is counted from exactly those profiles. Guarded by an accepted
     # count, so a pass that changed nothing costs one `COUNT`.
-    vocabulary.refresh(campaign)
+    vocabulary.refresh(site_config)
 
     if qualifier.is_cold:
         logger.info("  %s cold phase — %d/%d real positive(s), exploiting the anchors' guess",
                    colored("·", "cyan", attrs=["bold"]),
                    qualifier.n_real_positives, ANCHOR_COUNT)
-        discover(campaign, qualifier)
-        candidates = fetch_qualification_candidates(campaign)
+        discover(site_config, qualifier)
+        candidates = fetch_qualification_candidates()
         if not candidates:
             return False
-        return run_qualification(campaign, qualifier, candidates=candidates) is not None
+        return run_qualification(site_config, qualifier, candidates=candidates) is not None
 
     mode = qualifier.acquisition_mode()
-    candidates = fetch_qualification_candidates(campaign)
+    candidates = fetch_qualification_candidates()
 
     if mode == "exploit (p)":
         consumable = _consumable_candidates(qualifier, candidates)
         if consumable:
-            return run_qualification(campaign, qualifier, candidates=consumable) is not None
+            return run_qualification(site_config, qualifier, candidates=consumable) is not None
         # **Exploit finding nothing worth buying for is not evidence the pool is spent.**
         # It is evidence the model cannot tell the pool apart yet — which is the case
         # explore exists for — so reach for the *informative* leads before widening.
-        # Falling straight to discovery here cost a live campaign 14h33m: with 3 real
+        # Falling straight to discovery here cost a live install 14h33m: with 3 real
         # positives no lead could reach `min_gp_confidence` (the whole 26,737-lead pool
         # topped out at P=0.37), so every pass discovered, discovery labels nothing, and
         # the posterior that would have opened the gate never moved. 295 pages, 19
@@ -98,23 +98,23 @@ def top_up(campaign, qualifier: BayesianQualifier) -> bool:
         # this one reaches exactly the leads the first cannot.
         informative = _informative_candidates(qualifier, candidates)
         if informative:
-            return run_qualification(campaign, qualifier, candidates=informative) is not None
+            return run_qualification(site_config, qualifier, candidates=informative) is not None
         # A fired page is the work, however much of it we had already seen. Reading
         # *new leads* here is what stopped a live run with 100 rows in hand: the page
         # was all familiar profiles, so discovery reported nothing and the whole job
         # ended `goal_unreached` with the frontier untouched below it.
-        return discover(campaign, qualifier)
+        return discover(site_config, qualifier)
 
     # Explore — label the most informative lead we have. The GP is fitted here, so it
     # ranks the pool and there is a best lead to pick; an empty pool is the one case
     # with no lead to label, so page one in first.
     if not candidates:
-        if not discover(campaign, qualifier):
+        if not discover(site_config, qualifier):
             return False
-        candidates = fetch_qualification_candidates(campaign)
+        candidates = fetch_qualification_candidates()
         if not candidates:
             return True  # every profile on that page was already ours — still a move
-    return run_qualification(campaign, qualifier, candidates=candidates) is not None
+    return run_qualification(site_config, qualifier, candidates=candidates) is not None
 
 
 def _consumable_candidates(qualifier: BayesianQualifier, candidates: list) -> list:

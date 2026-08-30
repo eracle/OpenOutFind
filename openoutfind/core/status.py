@@ -35,15 +35,13 @@ def build_status() -> dict:
     from openoutfind.core import onboarding
 
     onboarding_state = _onboarding_state(onboarding)
-    campaigns = _campaign_counts()
+    totals = _pipeline_counts()
     credits = _credits()
     hub = _hub_balance()
-    totals = _totals(campaigns)
     blocked = _blocked(onboarding_state, credits, totals)
 
     return {
         "onboarding": onboarding_state,
-        "campaigns": campaigns,
         "totals": totals,
         "credits": credits,
         "hub": hub,
@@ -69,51 +67,36 @@ def _onboarding_state(onboarding) -> dict:
 
 # ── the counts toward the deliverable ────────────────────────────
 
-def _campaign_counts() -> list[dict]:
-    """Per-campaign pipeline counts, oldest campaign first."""
+def _pipeline_counts() -> dict:
+    """The install's pipeline counts."""
     from openoutfind.core.export import export_counts
-    from openoutfind.core.models import Campaign
     from openoutfind.crm.models import Deal, DealState
 
-    rows = []
-    for campaign in Campaign.objects.all().order_by("id"):
-        deals = Deal.objects.filter(campaign=campaign)
-        by_state = {
-            state: deals.filter(state=state).count()
-            for state in (
-                DealState.QUALIFIED,
-                DealState.READY_TO_FIND_EMAIL,
-                DealState.FINDING_EMAIL,
-                DealState.RESOLVED,
-                DealState.NO_EMAIL_FOUND,
-                DealState.FAILED,
-            )
-        }
-        exportable, with_email = export_counts(campaign)
-        rows.append({
-            "name": campaign.name,
-            "leads_seen": deals.count(),
-            "qualified": by_state[DealState.QUALIFIED],
-            "ranked_for_lookup": by_state[DealState.READY_TO_FIND_EMAIL],
-            "lookup_in_flight": by_state[DealState.FINDING_EMAIL],
-            "resolved": by_state[DealState.RESOLVED],
-            "no_email_found": by_state[DealState.NO_EMAIL_FOUND],
-            "rejected": by_state[DealState.FAILED],
-            "exportable": exportable,
-            "exportable_with_email": with_email,
-            "exportable_without_email": exportable - with_email,
-        })
-    return rows
-
-
-def _totals(campaigns: list[dict]) -> dict:
-    """Sum the per-campaign counts, so the top-level answer is one line of arithmetic."""
-    keys = (
-        "leads_seen", "qualified", "ranked_for_lookup", "lookup_in_flight",
-        "resolved", "no_email_found", "rejected",
-        "exportable", "exportable_with_email", "exportable_without_email",
-    )
-    return {key: sum(row[key] for row in campaigns) for key in keys}
+    deals = Deal.objects.all()
+    by_state = {
+        state: deals.filter(state=state).count()
+        for state in (
+            DealState.QUALIFIED,
+            DealState.READY_TO_FIND_EMAIL,
+            DealState.FINDING_EMAIL,
+            DealState.RESOLVED,
+            DealState.NO_EMAIL_FOUND,
+            DealState.FAILED,
+        )
+    }
+    exportable, with_email = export_counts()
+    return {
+        "leads_seen": deals.count(),
+        "qualified": by_state[DealState.QUALIFIED],
+        "ranked_for_lookup": by_state[DealState.READY_TO_FIND_EMAIL],
+        "lookup_in_flight": by_state[DealState.FINDING_EMAIL],
+        "resolved": by_state[DealState.RESOLVED],
+        "no_email_found": by_state[DealState.NO_EMAIL_FOUND],
+        "rejected": by_state[DealState.FAILED],
+        "exportable": exportable,
+        "exportable_with_email": with_email,
+        "exportable_without_email": exportable - with_email,
+    }
 
 
 # ── the balance ──────────────────────────────────────────────────

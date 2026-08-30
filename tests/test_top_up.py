@@ -11,7 +11,7 @@ from openoutfind.core.pipeline.top_up import top_up
 
 
 @pytest.mark.django_db
-def test_the_cold_phase_names_itself_and_the_anchor_progress(campaign, caplog):
+def test_the_cold_phase_names_itself_and_the_anchor_progress(site_config, caplog):
     qualifier = BayesianQualifier(embedding_dim=8)
     qualifier.set_anchors(np.random.RandomState(0).rand(3, 8))
 
@@ -21,7 +21,7 @@ def test_the_cold_phase_names_itself_and_the_anchor_progress(campaign, caplog):
               return_value=[]),
         caplog.at_level("INFO"),
     ):
-        top_up(campaign, qualifier)
+        top_up(site_config, qualifier)
 
     assert "cold phase" in caplog.text
     assert "0/3 real positive" in caplog.text
@@ -41,7 +41,7 @@ class _Candidate:
 
 
 @pytest.mark.django_db
-def test_exploit_qualifies_only_a_lead_clearing_the_spend_gate(campaign):
+def test_exploit_qualifies_only_a_lead_clearing_the_spend_gate(site_config):
     qualifier = _exploiting_qualifier()
 
     with (
@@ -52,18 +52,18 @@ def test_exploit_qualifies_only_a_lead_clearing_the_spend_gate(campaign):
               return_value="https://example.com/in/alice/") as qualify,
         patch("openoutfind.core.pipeline.top_up.discover") as discover,
     ):
-        assert top_up(campaign, qualifier) is True
+        assert top_up(site_config, qualifier) is True
 
     assert qualify.called
     assert not discover.called
 
 
 @pytest.mark.django_db
-def test_exploit_falls_to_the_informative_lead_below_the_spend_gate(campaign):
+def test_exploit_falls_to_the_informative_lead_below_the_spend_gate(site_config):
     """Below the spend gate is not "nothing to do" — it is "the model cannot tell these
     apart yet", which is a reason to *label*, not to widen.
 
-    This is the 14h33m failure. On a live campaign with 3 real positives the whole
+    This is the 14h33m failure. On a live site_config with 3 real positives the whole
     26,737-lead pool topped out at P=0.37, so exploit cleared nobody and discovered every
     pass; discovery labels nothing, so the posterior that would open the gate never moved.
     295 pages, 19 verdicts, 0 addresses, ended by the operator."""
@@ -78,14 +78,14 @@ def test_exploit_falls_to_the_informative_lead_below_the_spend_gate(campaign):
               return_value="https://example.com/in/alice/") as qualify,
         patch("openoutfind.core.pipeline.top_up.discover", return_value=True) as discover,
     ):
-        assert top_up(campaign, qualifier) is True
+        assert top_up(site_config, qualifier) is True
 
     assert qualify.called
     assert not discover.called
 
 
 @pytest.mark.django_db
-def test_exploit_discovers_when_the_pool_teaches_nothing_either(campaign):
+def test_exploit_discovers_when_the_pool_teaches_nothing_either(site_config):
     """Both arms shut is the one honest reason to widen: the model will not pay for these
     leads *and* cannot learn from them, so the pool really is redundant.
 
@@ -101,14 +101,14 @@ def test_exploit_discovers_when_the_pool_teaches_nothing_either(campaign):
         patch("openoutfind.core.pipeline.top_up.run_qualification") as qualify,
         patch("openoutfind.core.pipeline.top_up.discover", return_value=True) as discover,
     ):
-        assert top_up(campaign, qualifier) is True
+        assert top_up(site_config, qualifier) is True
 
     assert not qualify.called
     assert discover.called
 
 
 @pytest.mark.django_db
-def test_explore_counts_a_page_of_familiar_profiles_as_work(campaign):
+def test_explore_counts_a_page_of_familiar_profiles_as_work(site_config):
     """A fired page is the unit of work, whatever fraction of it was new.
 
     A live run ended `goal_unreached` on this shape: the page came back 100 rows all
@@ -125,6 +125,6 @@ def test_explore_counts_a_page_of_familiar_profiles_as_work(campaign):
         patch("openoutfind.core.pipeline.top_up.run_qualification") as qualify,
         patch("openoutfind.core.pipeline.top_up.discover", return_value=True),
     ):
-        assert top_up(campaign, qualifier) is True
+        assert top_up(site_config, qualifier) is True
 
     assert not qualify.called

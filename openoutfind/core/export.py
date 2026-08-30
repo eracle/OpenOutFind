@@ -34,11 +34,11 @@ verdict is the LLM's and it is already here as ``reason``, in language a person 
 Exporting the posterior invited thresholding on a number nobody calibrated, and separated
 nothing: every lead in this file already has a Deal, so it already passed the qualifier.
 
-It also made the export expensive and unsafe. Scoring meant ``qualifier_for(campaign)``,
-which warm-starts over every label and fits a GP — O(n³), minutes on a real campaign
+It also made the export expensive and unsafe. Scoring meant ``qualifier_for()``,
+which warm-starts over every label and fits a GP — O(n³), minutes on a real install
 (2,538 deals on the live install; the docstring there assumes "tens to low hundreds") —
-and which calls ``ensure_anchors``, so a cold campaign would have made **LLM calls and
-mutated campaign state from a read-only export**. This module now touches nothing but the
+and which calls ``ensure_anchors``, so a cold install would have made **LLM calls and
+mutated install state from a read-only export**. This module now touches nothing but the
 database.
 """
 from __future__ import annotations
@@ -86,9 +86,8 @@ JSON_FIELDS = RECORD_FIELDS + ("profile_text",)
 def lead_record(deal) -> dict:
     """One Deal as an export record — the full record, `JSON_FIELDS`.
 
-    The Deal, not the Lead, is the unit: the qualification verdict (``reason``) is
-    per-campaign, and the same person can be a lead in two campaigns with two different
-    answers.
+    The Deal, not the Lead, is the unit: the qualification verdict (``reason``) lives
+    there.
 
     ``reason`` is **operator-facing**: it is evidence for the person running this — the
     justification for a yes/no, third-person and evaluative — never text for the person
@@ -116,30 +115,30 @@ def lead_record(deal) -> dict:
     }
 
 
-def lead_records(campaign) -> Iterable[dict]:
-    """Every lead in ``campaign`` the qualifier **accepted**, as records, oldest first.
+def lead_records() -> Iterable[dict]:
+    """Every lead the qualifier **accepted**, as records, oldest first.
 
     A lead is judged once it has a Deal — that is where the LLM's ``reason`` lives, so
     an unjudged lead has nothing to say in a contract whose selling point is *why this
     lead*. But a Deal is not an endorsement: the two rejections are separate columns and
     both have to be excluded, which is the trap this filter exists to close.
 
-    - **`FAILED`** is the LLM's own rejection, campaign-scoped (`FAILED` + `wrong_fit`).
-      The `reason` on those rows reads *"does not align well with the target market"* —
-      exporting them hands a sender the people the model explicitly said no to.
+    - **`FAILED`** is the LLM's own rejection (`FAILED` + `wrong_fit`). The `reason` on
+      those rows reads *"does not align well with the target market"* — exporting them
+      hands a sender the people the model explicitly said no to.
     - **`Lead.disqualified`** is the permanent, account-level exclusion (an opt-out).
 
     Filtering only on `disqualified` catches the second and misses the first, which is
-    what shipped and what the live install exposed: 1,944 rows exported from a campaign
-    where most deals were rejections.
+    what shipped and what the live install exposed: 1,944 rows exported where most
+    deals were rejections.
 
-    Lazy on purpose: one indexed query streamed straight to the writer, so a campaign
+    Lazy on purpose: one indexed query streamed straight to the writer, so an install
     with thousands of deals never materialises twice.
     """
     from openoutfind.crm.models import Deal, DealState
 
     deals = (
-        Deal.objects.filter(campaign=campaign, lead__disqualified=False)
+        Deal.objects.filter(lead__disqualified=False)
         .exclude(state=DealState.FAILED)
         .select_related("lead", "lead__company")
         .order_by("lead__creation_date")
@@ -222,7 +221,7 @@ class IncrementalWriter:
 
 # ── counting the deliverable ─────────────────────────────────────
 
-def export_counts(campaign) -> tuple[int, int]:
+def export_counts() -> tuple[int, int]:
     """Exportable rows, and how many carry an address.
 
     **An exportable row is not necessarily a mailable one.** The export excludes only the
@@ -232,7 +231,7 @@ def export_counts(campaign) -> tuple[int, int]:
     and a `find` goal agree on what "ten leads" means.
     """
     exportable = with_email = 0
-    for record in lead_records(campaign):
+    for record in lead_records():
         exportable += 1
         with_email += bool(record.get("email"))
     return exportable, with_email

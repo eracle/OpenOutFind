@@ -10,31 +10,34 @@ the retirement rules — the two things the walk's correctness rests on.
 import numpy as np
 import pytest
 
-from openoutfind.core.models import Campaign, Keyword, QueryNode
+from openoutfind.core.models import Keyword, QueryNode, SiteConfig
 from openoutfind.core.pipeline import select
 from openoutfind.core.pipeline.select import REACH_CAP, LabelStore, token_key
 from openoutfind.crm.models import Deal, DealState, Lead, Outcome
 
 
 def _campaign(**kw):
-    defaults = dict(name="C", product_docs="p", campaign_target="t")
+    defaults = dict(product_docs="p", campaign_target="t")
     defaults.update(kw)
-    return Campaign.objects.create(**defaults)
+    config = SiteConfig.load()
+    for key, value in defaults.items():
+        setattr(config, key, value)
+    config.save()
+    return config
 
 
-def _node(campaign, pairs, parent=None, **kw):
-    node = QueryNode.objects.create(
-        campaign=campaign, token_key=token_key(pairs), parent=parent, **kw)
+def _node(_site_config, pairs, parent=None, **kw):
+    node = QueryNode.objects.create(token_key=token_key(pairs), parent=parent, **kw)
     node.keywords.set(Keyword.rows_for(pairs))
     return node
 
 
-def _labelled(campaign, profile_text, qualified):
+def _labelled(_site_config, profile_text, qualified):
     """A lead with a verdict — the only evidence the walk reads."""
     lead = Lead.objects.create(
         profile_url=f"https://x/{Lead.objects.count()}", profile_text=profile_text)
     Deal.objects.create(
-        lead=lead, campaign=campaign,
+        lead=lead,
         state=DealState.QUALIFIED if qualified else DealState.FAILED,
         outcome="" if qualified else Outcome.WRONG_FIT)
     return lead
@@ -223,12 +226,12 @@ class TestFrontier:
         _node(c, [("lead_job_title", "c")], state=QueryNode.State.DEAD)
         _node(c, [("lead_job_title", "d")], state=QueryNode.State.DRAINED)
 
-        assert {n.pk for n in select.frontier(c)} == {fresh.pk, vein.pk}
+        assert {n.pk for n in select.frontier()} == {fresh.pk, vein.pk}
 
     def test_next_node_is_none_when_nothing_is_fireable(self, db):
         c = _campaign()
         _node(c, [("lead_job_title", "a")], state=QueryNode.State.DEAD)
-        assert select.next_node(c, LabelStore.load(c)) is None
+        assert select.next_node(LabelStore.load(c)) is None
 
     @pytest.mark.parametrize("qualified", [True, False])
     def test_a_single_class_store_can_still_be_drawn_from(self, db, qualified):
@@ -242,7 +245,7 @@ class TestFrontier:
         _node(c, [("lead_job_title", "seen")])
         _node(c, [("lead_job_title", "unseen")])
 
-        assert select.next_node(c, store) is not None
+        assert select.next_node(store) is not None
 
     def test_greedy_picks_the_best_estimate(self, db, monkeypatch):
         monkeypatch.setattr(select, "THOMPSON", False)
@@ -255,7 +258,7 @@ class TestFrontier:
         _node(c, [("lead_job_title", "bad")])
         good = _node(c, [("lead_job_title", "good")])
 
-        assert select.next_node(c, store).pk == good.pk
+        assert select.next_node(store).pk == good.pk
 
     def test_thompson_still_favours_the_better_node_on_average(self, db):
         # A draw, not a shuffle: width tracks evidence, so a well-measured good node
@@ -270,7 +273,7 @@ class TestFrontier:
         good = _node(c, [("lead_job_title", "good")])
 
         rng = np.random.default_rng(0)
-        wins = sum(select.next_node(c, store, rng).pk == good.pk for _ in range(50))
+        wins = sum(select.next_node(store, rng).pk == good.pk for _ in range(50))
         assert wins > 45
 
 
@@ -426,6 +429,6 @@ class TestSeedFrontier:
         # famous-company head, so the level comes from the label store instead.
         c = _campaign()
         keywords = [("lead_job_title", "founder"), ("lead_seniority", "founder")]
-        assert select.seed_frontier(c, keywords) == 2
-        assert QueryNode.objects.filter(campaign=c, parent__isnull=True).count() == 2
-        assert select.seed_frontier(c, keywords) == 0
+        assert select.seed_frontier(keywords) == 2
+        assert QueryNode.objects.filter(parent__isnull=True).count() == 2
+        assert select.seed_frontier(keywords) == 0

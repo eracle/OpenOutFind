@@ -34,8 +34,8 @@ def _lead(**kwargs):
     return LeadFactory(embedded=True, **{**defaults, **kwargs})
 
 
-def _deal(campaign, reason="fits the ICP", **lead_kwargs):
-    return DealFactory(campaign=campaign, lead=_lead(**lead_kwargs),
+def _deal(site_config, reason="fits the ICP", **lead_kwargs):
+    return DealFactory(lead=_lead(**lead_kwargs),
                        state=DealState.RESOLVED, reason=reason)
 
 
@@ -44,8 +44,8 @@ def _deal(campaign, reason="fits the ICP", **lead_kwargs):
 
 @pytest.mark.django_db
 class TestLeadRecord:
-    def test_maps_our_columns_onto_the_importers_names(self, campaign):
-        deal = _deal(campaign)
+    def test_maps_our_columns_onto_the_importers_names(self, site_config):
+        deal = _deal(site_config)
 
         record = export.lead_record(deal)
 
@@ -58,42 +58,42 @@ class TestLeadRecord:
         assert record["reason"] == "fits the ICP"
         assert record["lead_id"] == deal.lead.pk
 
-    def test_a_lead_with_no_company_exports_nulls_not_blanks(self, campaign):
-        record = export.lead_record(_deal(campaign, company=None))
+    def test_a_lead_with_no_company_exports_nulls_not_blanks(self, site_config):
+        record = export.lead_record(_deal(site_config, company=None))
 
         assert record["company"] is None and record["website"] is None
 
-    def test_an_unenriched_lead_exports_null_name_parts(self, campaign):
+    def test_an_unenriched_lead_exports_null_name_parts(self, site_config):
         """A hub-cache hit resolves an address and no identity. Nothing is invented."""
-        deal = _deal(campaign, first_name=None, last_name=None)
+        deal = _deal(site_config, first_name=None, last_name=None)
 
         record = export.lead_record(deal)
 
         assert record["first_name"] is None and record["last_name"] is None
 
-    def test_the_record_carries_exactly_the_contract_fields(self, campaign):
-        assert set(export.lead_record(_deal(campaign))) == set(export.JSON_FIELDS)
+    def test_the_record_carries_exactly_the_contract_fields(self, site_config):
+        assert set(export.lead_record(_deal(site_config))) == set(export.JSON_FIELDS)
 
-    def test_the_record_carries_the_text_the_qualifier_judged_on(self, campaign):
+    def test_the_record_carries_the_text_the_qualifier_judged_on(self, site_config):
         """The facts a sender writes a message from cross as raw text, not as an
         extraction: summarising for a message is the receiver's job."""
-        deal = _deal(campaign, profile_text="cto at acme, devtools, 40 staff")
+        deal = _deal(site_config, profile_text="cto at acme, devtools, 40 staff")
 
         assert export.lead_record(deal)["profile_text"] == "cto at acme, devtools, 40 staff"
 
-    def test_a_lead_with_no_profile_text_carries_an_empty_string(self, campaign):
+    def test_a_lead_with_no_profile_text_carries_an_empty_string(self, site_config):
         """Empty, never absent — a receiver keying on the field should not have to tell
         *no text* from *no such key*."""
-        record = export.lead_record(_deal(campaign, profile_text=""))
+        record = export.lead_record(_deal(site_config, profile_text=""))
 
         assert record["profile_text"] == ""
 
-    def test_every_row_carries_when_it_was_qualified(self, campaign):
+    def test_every_row_carries_when_it_was_qualified(self, site_config):
         """Provenance the file keeps: a caller tells which rows its own call produced by
         comparing against the time it started, and a sequencer imports only what is newer
         than its last import. A `new` flag would go stale the second time the file is
         read; a timestamp is true forever."""
-        deal = _deal(campaign)
+        deal = _deal(site_config)
 
         stamped = export.lead_record(deal)["qualified_at"]
 
@@ -106,48 +106,48 @@ class TestLeadRecord:
 
 @pytest.mark.django_db
 class TestLeadRecords:
-    def test_a_lead_the_qualifier_rejected_is_never_exported(self, campaign):
+    def test_a_lead_the_qualifier_rejected_is_never_exported(self, site_config):
         """The bug the live install exposed: a Deal is not an endorsement.
 
-        An LLM rejection is `FAILED` + `wrong_fit`, campaign-scoped — it does **not**
+        An LLM rejection is `FAILED` + `wrong_fit`, site_config-scoped — it does **not**
         set `Lead.disqualified`, which is the permanent account-level exclusion. Filtering
-        on `disqualified` alone exported 1,944 rows from a campaign where most deals were
+        on `disqualified` alone exported 1,944 rows from a site_config where most deals were
         rejections, with `reason` reading "does not align well with the target market".
         """
-        _deal(campaign)
-        DealFactory(campaign=campaign, lead=_lead(), state=DealState.FAILED,
+        _deal(site_config)
+        DealFactory(lead=_lead(), state=DealState.FAILED,
                     outcome="wrong_fit", reason="does not align with the target market")
 
-        records = list(export.lead_records(campaign))
+        records = list(export.lead_records())
 
         assert len(records) == 1
         assert "does not align" not in records[0]["reason"]
 
-    def test_an_opted_out_lead_is_never_exported(self, campaign):
-        _deal(campaign)
-        _deal(campaign, disqualified=True)
+    def test_an_opted_out_lead_is_never_exported(self, site_config):
+        _deal(site_config)
+        _deal(site_config, disqualified=True)
 
-        assert len(list(export.lead_records(campaign))) == 1
+        assert len(list(export.lead_records())) == 1
 
-    def test_the_export_never_touches_the_qualifier(self, campaign):
+    def test_the_export_never_touches_the_qualifier(self, site_config):
         """A read-only export must not fit a GP, and must not spend an LLM call.
 
         Scoring used to mean ``qualifier_for``, which is an O(n^3) fit over every label
-        (minutes on a real campaign) and which calls ``ensure_anchors`` — so a cold
-        campaign would have generated anchors, mutating campaign state from an export.
+        (minutes on a real site_config) and which calls ``ensure_anchors`` — so a cold
+        site_config would have generated anchors, mutating site_config state from an export.
         """
-        _deal(campaign)
+        _deal(site_config)
 
         with patch("openoutfind.core.ml.qualifier.qualifier_for") as qualifier_for:
-            assert len(list(export.lead_records(campaign))) == 1
+            assert len(list(export.lead_records())) == 1
 
         qualifier_for.assert_not_called()
 
-    def test_an_unembedded_lead_is_still_exported(self, campaign):
-        DealFactory(campaign=campaign, lead=LeadFactory(email="a@b.com"),
+    def test_an_unembedded_lead_is_still_exported(self, site_config):
+        DealFactory(lead=LeadFactory(email="a@b.com"),
                     state=DealState.RESOLVED)
 
-        assert len(list(export.lead_records(campaign))) == 1
+        assert len(list(export.lead_records())) == 1
 
 
 # ── serialisation ─────────────────────────────────────────────────
@@ -155,48 +155,48 @@ class TestLeadRecords:
 
 @pytest.mark.django_db
 class TestWriters:
-    def test_csv_headers_are_the_contract_in_order(self, campaign):
-        _deal(campaign)
+    def test_csv_headers_are_the_contract_in_order(self, site_config):
+        _deal(site_config)
         stream = io.StringIO()
 
-        export.write_csv(export.lead_records(campaign), stream)
+        export.write_csv(export.lead_records(), stream)
 
         stream.seek(0)
         assert next(csv.reader(stream)) == list(export.RECORD_FIELDS)
 
-    def test_csv_writes_a_missing_field_as_an_empty_cell(self, campaign):
-        _deal(campaign, first_name=None)
+    def test_csv_writes_a_missing_field_as_an_empty_cell(self, site_config):
+        _deal(site_config, first_name=None)
         stream = io.StringIO()
 
-        export.write_csv(export.lead_records(campaign), stream)
+        export.write_csv(export.lead_records(), stream)
 
         stream.seek(0)
         assert next(csv.DictReader(stream))["first_name"] == ""
 
-    def test_the_row_count_is_reported(self, campaign):
-        _deal(campaign)
-        _deal(campaign, email="second@acme.com")
+    def test_the_row_count_is_reported(self, site_config):
+        _deal(site_config)
+        _deal(site_config, email="second@acme.com")
 
-        assert export.write_csv(export.lead_records(campaign), io.StringIO()) == 2
+        assert export.write_csv(export.lead_records(), io.StringIO()) == 2
 
-    def test_the_csv_is_a_projection_and_leaves_the_profile_text_out(self, campaign):
+    def test_the_csv_is_a_projection_and_leaves_the_profile_text_out(self, site_config):
         """A paragraph in a custom variable is useless to an importer, and would cost the
         property that makes the CSV worth having: it imports with no column mapping."""
-        _deal(campaign, profile_text="cto at acme, devtools, 40 staff")
+        _deal(site_config, profile_text="cto at acme, devtools, 40 staff")
         stream = io.StringIO()
 
-        export.write_csv(export.lead_records(campaign), stream)
+        export.write_csv(export.lead_records(), stream)
 
         assert "profile_text" not in stream.getvalue()
 
-    def test_json_lines_writes_the_whole_record_one_object_per_line(self, campaign):
+    def test_json_lines_writes_the_whole_record_one_object_per_line(self, site_config):
         """A truncated stream stays usable — every complete record before the break has
         already been delivered."""
-        _deal(campaign, profile_text="cto at acme")
-        _deal(campaign, email="second@acme.com", profile_text="head of eng at beta")
+        _deal(site_config, profile_text="cto at acme")
+        _deal(site_config, email="second@acme.com", profile_text="head of eng at beta")
         stream = io.StringIO()
 
-        count = export.write_json_lines(export.lead_records(campaign), stream)
+        count = export.write_json_lines(export.lead_records(), stream)
 
         lines = stream.getvalue().splitlines()
         assert count == 2 and len(lines) == 2
@@ -209,28 +209,28 @@ class TestIncrementalWriter:
     """The writer `find` uses for its default, progressive output: same two shapes as
     the batch writers above, but fed one record at a time and flushed after each."""
 
-    def test_csv_writes_the_header_once_on_the_first_record(self, campaign):
+    def test_csv_writes_the_header_once_on_the_first_record(self, site_config):
         stream = io.StringIO()
         writer = export.IncrementalWriter(stream, as_json=False)
 
-        writer.write(export.lead_record(_deal(campaign)))
-        writer.write(export.lead_record(_deal(campaign, email="second@acme.com")))
+        writer.write(export.lead_record(_deal(site_config)))
+        writer.write(export.lead_record(_deal(site_config, email="second@acme.com")))
 
         rows = stream.getvalue().splitlines()
         assert rows[0] == ",".join(export.RECORD_FIELDS)
         assert len(rows) == 3  # header + two records, and no repeated header
 
-    def test_json_writes_one_object_per_call_with_no_header(self, campaign):
+    def test_json_writes_one_object_per_call_with_no_header(self, site_config):
         stream = io.StringIO()
         writer = export.IncrementalWriter(stream, as_json=True)
 
-        writer.write(export.lead_record(_deal(campaign)))
+        writer.write(export.lead_record(_deal(site_config)))
 
         lines = stream.getvalue().splitlines()
         assert len(lines) == 1
         assert json.loads(lines[0])["email"] == "ada@acme.com"
 
-    def test_the_count_is_the_number_of_records_written(self, campaign):
+    def test_the_count_is_the_number_of_records_written(self, site_config):
         writer = export.IncrementalWriter(io.StringIO(), as_json=True)
 
         writer.write({"email": "a@acme.com"})
@@ -238,7 +238,7 @@ class TestIncrementalWriter:
 
         assert writer.count == 2
 
-    def test_each_write_flushes_the_stream(self, campaign):
+    def test_each_write_flushes_the_stream(self, site_config):
         """The property streaming exists for: a reader on the other end of a pipe sees
         a record as soon as it is written, not batched behind the stream's own buffer."""
         flushes = []
@@ -264,16 +264,16 @@ class TestExportCounts:
     """One definition of *exportable*, so `status` and a `find` goal cannot disagree
     about what "ten leads" means."""
 
-    def test_it_counts_the_rows_the_export_would_write(self, campaign):
-        _deal(campaign)
-        DealFactory(campaign=campaign, lead=_lead(email="x@y.com"), state=DealState.FAILED,
+    def test_it_counts_the_rows_the_export_would_write(self, site_config):
+        _deal(site_config)
+        DealFactory(lead=_lead(email="x@y.com"), state=DealState.FAILED,
                     outcome="wrong_fit", reason="no fit")
 
-        assert export.export_counts(campaign) == (1, 1)
+        assert export.export_counts() == (1, 1)
 
-    def test_a_row_without_an_address_still_counts_as_exportable(self, campaign):
+    def test_a_row_without_an_address_still_counts_as_exportable(self, site_config):
         """Exportable is not mailable: an address is an enrichment, never a
         precondition."""
-        _deal(campaign, email=None)
+        _deal(site_config, email=None)
 
-        assert export.export_counts(campaign) == (1, 0)
+        assert export.export_counts() == (1, 0)

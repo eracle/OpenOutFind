@@ -124,15 +124,15 @@ def profile_tokens(profile_text: str) -> frozenset[str]:
 
 # ── growing the vocabulary ───────────────────────────────────────────
 
-# Per-campaign count of accepted leads as of the last refresh, so a pass that changed
-# nothing costs one `COUNT` instead of a tokenize over the whole accepted set.
-# Process-local by design, exactly like `cycle._scored_at`: one process per job, and a
-# second job simply counts once more than it had to.
-_refreshed_at: dict[int, int] = {}
+# Count of accepted leads as of the last refresh, so a pass that changed nothing costs
+# one `COUNT` instead of a tokenize over the whole accepted set. Process-local by design,
+# exactly like `cycle._scored_at`: one process per job, and a second job simply counts
+# once more than it had to.
+_refreshed_at: tuple[int, int] | None = None
 
 
-def _accepted_count(campaign) -> int:
-    """How many leads this campaign has accepted — what the vocabulary is derived from.
+def _accepted_count() -> int:
+    """How many leads have been accepted — what the vocabulary is derived from.
 
     The whole of the refresh's input state: the admission rule is a document frequency
     over accepted profiles, so nothing but their number can change the answer.
@@ -140,23 +140,23 @@ def _accepted_count(campaign) -> int:
     from openoutfind.crm.models import Deal, DealState, Outcome
 
     return (
-        Deal.objects.filter(campaign=campaign, lead_id__isnull=False)
+        Deal.objects.filter(lead_id__isnull=False)
         .exclude(state=DealState.FAILED, outcome=Outcome.WRONG_FIT)
         .count()
     )
 
 
-def _anchor_source_fields(campaign) -> list[dict]:
-    """The campaign's synthetic ideal leads as rows the vocabulary can count.
+def _anchor_source_fields(site_config) -> list[dict]:
+    """The synthetic ideal leads as rows the vocabulary can count.
 
-    Empty for a campaign anchored before the fields were asked for — its flat profiles
+    Empty for an install anchored before the fields were asked for — its flat profiles
     stay GP observations only, because recovering the fields from the line is exactly the
     guess this avoids.
     """
-    return [fields for fields in (campaign.anchor_source_fields or []) if fields]
+    return [fields for fields in (site_config.anchor_source_fields or []) if fields]
 
 
-def _qualified_source_fields(campaign) -> list[dict]:
+def _qualified_source_fields() -> list[dict]:
     """Per-field raw text of the leads the LLM accepted — the vocabulary's only source.
 
     Qualified mirrors the GP's own labelling: any deal that is not an LLM rejection
@@ -168,7 +168,7 @@ def _qualified_source_fields(campaign) -> list[dict]:
     from openoutfind.crm.models import Deal, DealState, Lead, Outcome
 
     lead_ids = (
-        Deal.objects.filter(campaign=campaign, lead_id__isnull=False)
+        Deal.objects.filter(lead_id__isnull=False)
         .exclude(state=DealState.FAILED, outcome=Outcome.WRONG_FIT)
         .values_list("lead_id", flat=True)
     )
@@ -179,7 +179,7 @@ def _qualified_source_fields(campaign) -> list[dict]:
     ]
 
 
-def refresh(campaign) -> int:
+def refresh(site_config) -> int:
     """Fold the qualified leads' words into the vocabulary. Returns tokens added.
 
     Cheap enough to run on every pass — it is a tokenize and a count over a few hundred
@@ -195,27 +195,28 @@ def refresh(campaign) -> int:
     it has already superseded. Callers may therefore call this whenever they like; the
     signature below makes a redundant call one indexed ``COUNT``.
     """
+    global _refreshed_at
     from openoutfind.core.models import Keyword
 
-    signature = (_accepted_count(campaign), len(campaign.anchor_source_fields or []))
-    if _refreshed_at.get(campaign.pk) == signature:
+    signature = (_accepted_count(), len(site_config.anchor_source_fields or []))
+    if _refreshed_at == signature:
         return 0
-    _refreshed_at[campaign.pk] = signature
+    _refreshed_at = signature
 
     # **Anchors count as documents, not as a special case.** They are invented ideal leads
     # written in a lead row's own shape, so the df floor applies to them exactly as it does
     # to real acceptances, and their influence dilutes on its own as real profiles arrive —
-    # 3 anchors among 122 acceptances decide nothing. Without them a campaign with no
-    # acceptances has no vocabulary at all beyond the seed, which is how one live campaign
+    # 3 anchors among 122 acceptances decide nothing. Without them an install with no
+    # acceptances has no vocabulary at all beyond the seed, which is how one live install
     # came to fire 63 queries off a corpus of 3 profiles: at df>=2 a word had to appear in
     # two of three, so what survived was whatever generic token they happened to share.
-    profiles = _anchor_source_fields(campaign) + _qualified_source_fields(campaign)
+    profiles = _anchor_source_fields(site_config) + _qualified_source_fields()
     if not profiles:
         # The cold-phase reality, and worth naming: with nothing qualified yet there are
         # no words to count, so the vocabulary is whatever the ICP seed put there and the
         # frontier cannot grow past its depth-1 nodes until the first lead is accepted.
-        logger.debug("[%s] vocabulary: no qualified lead carries per-field text yet — "
-                     "nothing to grow from (seed vocabulary stands)", campaign)
+        logger.debug("vocabulary: no qualified lead carries per-field text yet — "
+                     "nothing to grow from (seed vocabulary stands)")
         return 0
 
     # Document frequency per (field, token): how many qualified profiles carry it.
@@ -225,8 +226,8 @@ def refresh(campaign) -> int:
             frequency[pair] = frequency.get(pair, 0) + 1
 
     admitted = [pair for pair, df in frequency.items() if df >= MIN_DOCUMENT_FREQUENCY]
-    logger.debug("[%s] vocabulary: %d qualified profile(s) → %d distinct token(s) → "
-                 "%d admitted at df>=%d", campaign, len(profiles), len(frequency),
+    logger.debug("vocabulary: %d qualified profile(s) → %d distinct token(s) → "
+                 "%d admitted at df>=%d", len(profiles), len(frequency),
                  len(admitted), MIN_DOCUMENT_FREQUENCY)
     if not admitted:
         return 0
@@ -235,8 +236,8 @@ def refresh(campaign) -> int:
     fresh = [pair for pair in admitted if pair not in known]
     if fresh:
         Keyword.rows_for(fresh)
-        logger.info("[%s] vocabulary: +%d keyword(s) from %d qualified profile(s)",
-                    campaign, len(fresh), len(profiles))
+        logger.info("vocabulary: +%d keyword(s) from %d qualified profile(s)",
+                    len(fresh), len(profiles))
     return len(fresh)
 
 

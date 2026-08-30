@@ -28,9 +28,10 @@ def test_missing_keys_starts_with_every_step():
 
 @pytest.mark.django_db
 def test_satisfied_step_drops_out_of_missing_keys():
-    from openoutfind.core.models import Campaign
+    from openoutfind.core.models import SiteConfig
 
-    Campaign.objects.create(name="C", product_docs="p", campaign_target="o")
+    SiteConfig.load()
+    SiteConfig.objects.update(product_docs="p", campaign_target="o")
     assert "campaign" not in onboarding.missing_keys()
 
 
@@ -60,9 +61,10 @@ def test_account_is_created_without_a_mailbox():
     """
     from django.contrib.auth.models import User
 
-    from openoutfind.core.models import Campaign, SiteConfig
+    from openoutfind.core.models import SiteConfig
 
-    Campaign.objects.create(name="C", product_docs="p", campaign_target="o")
+    SiteConfig.load()
+    SiteConfig.objects.update(product_docs="p", campaign_target="o")
 
     # wiz.text is asked twice: operator email, then country.
     with patch("openoutfind.core.onboarding.wiz.text", side_effect=["diego.r@posteo.eu", "US"]), \
@@ -85,9 +87,10 @@ def test_the_account_step_mints_the_hub_token():
     It used to be a side effect of a first contribution, which meant an install that
     never contributes had no identity at all and was invisible to the hub for life.
     """
-    from openoutfind.core.models import Campaign
+    from openoutfind.core.models import SiteConfig
 
-    Campaign.objects.create(name="C", product_docs="p", campaign_target="o")
+    SiteConfig.load()
+    SiteConfig.objects.update(product_docs="p", campaign_target="o")
 
     with patch("openoutfind.core.onboarding.wiz.text", side_effect=["me@x.com", "US"]), \
          patch("openoutfind.core.onboarding.wiz.confirm", side_effect=[True, True]), \
@@ -102,9 +105,10 @@ def test_a_hub_outage_does_not_block_onboarding():
     """Best-effort, like every other hub call: the next run retries."""
     from django.contrib.auth.models import User
 
-    from openoutfind.core.models import Campaign
+    from openoutfind.core.models import SiteConfig
 
-    Campaign.objects.create(name="C", product_docs="p", campaign_target="o")
+    SiteConfig.load()
+    SiteConfig.objects.update(product_docs="p", campaign_target="o")
 
     with patch("openoutfind.core.onboarding.wiz.text", side_effect=["me@x.com", "US"]), \
          patch("openoutfind.core.onboarding.wiz.confirm", side_effect=[True, True]), \
@@ -136,9 +140,10 @@ def test_account_not_done_for_blank_email_user():
 def test_account_gates_on_legal_notice():
     """The account step runs the Legal Notice acceptance gate before finalizing —
     no rendered §4/§6 excerpt any more, just the link the gate's own prompt carries."""
-    from openoutfind.core.models import Campaign
+    from openoutfind.core.models import SiteConfig
 
-    Campaign.objects.create(name="C", product_docs="p", campaign_target="o")
+    SiteConfig.load()
+    SiteConfig.objects.update(product_docs="p", campaign_target="o")
 
     with patch("openoutfind.core.onboarding.wiz.text", side_effect=["me@posteo.eu", "US"]), \
          patch("openoutfind.core.onboarding.wiz.confirm", side_effect=[True, True]), \
@@ -153,9 +158,10 @@ def test_account_gates_on_legal_notice():
 def test_declined_legal_aborts_without_creating_account():
     from django.contrib.auth.models import User
 
-    from openoutfind.core.models import Campaign
+    from openoutfind.core.models import SiteConfig
 
-    Campaign.objects.create(name="C", product_docs="p", campaign_target="o")
+    SiteConfig.load()
+    SiteConfig.objects.update(product_docs="p", campaign_target="o")
 
     # newsletter yes, then legal declined, then cancel the legal re-ask.
     with patch("openoutfind.core.onboarding.wiz.text", return_value="US"), \
@@ -220,8 +226,8 @@ def test_partial_environment_leaves_the_rest_missing(env, llm_ok):
     assert onboarding.hydrate_from_env() == {"bettercontact"}
     assert onboarding.missing_keys() == {"campaign", "llm", "account"}
 
-    from openoutfind.core.models import Campaign
-    assert not Campaign.objects.exists()
+    from openoutfind.core.models import SiteConfig
+    assert not SiteConfig.load().product_docs
 
 
 @pytest.mark.django_db

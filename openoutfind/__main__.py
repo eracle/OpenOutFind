@@ -36,7 +36,7 @@ import sys
 OVERVIEW = """\
 OpenOutFind — find B2B leads that fit, with the reason written out.
 
-  outfind init             create the campaign and the database
+  outfind init             onboard and create the database
   outfind find 10          ten more qualified leads → CSV on stdout
   outfind find 10 emails   ...with a verified work email (1 credit each)
   outfind status           what is configured, blocked and counted

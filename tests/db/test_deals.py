@@ -16,7 +16,7 @@ from openoutfind.core.db.leads import promote_lead_to_deal
 from openoutfind.crm.models import DealState
 
 
-def _make_deal(session, slug="alice"):
+def _make_deal(slug="alice"):
     from openoutfind.crm.models import Lead
 
     url = f"https://www.linkedin.com/in/{slug}/"
@@ -25,15 +25,15 @@ def _make_deal(session, slug="alice"):
         profile_text="engineer at acme",
         embedding=np.ones(384, dtype=np.float32).tobytes(),
     )
-    promote_lead_to_deal(session, url)
+    promote_lead_to_deal(url)
     return url
 
 
 @pytest.mark.django_db
-def test_no_email_miss_logs_muted_not_failed(campaign, caplog):
-    url = _make_deal(campaign)
+def test_no_email_miss_logs_muted_not_failed(site_config, caplog):
+    url = _make_deal()
     with caplog.at_level(logging.INFO, logger="openoutfind.core.db.deals"):
-        set_profile_state(campaign, url, DealState.NO_EMAIL_FOUND.value)
+        set_profile_state(url, DealState.NO_EMAIL_FOUND.value)
 
     line = caplog.text
     assert "NO EMAIL" in line
@@ -41,10 +41,10 @@ def test_no_email_miss_logs_muted_not_failed(campaign, caplog):
 
 
 @pytest.mark.django_db
-def test_true_failure_still_logs_failed(campaign, caplog):
-    url = _make_deal(campaign)
+def test_true_failure_still_logs_failed(site_config, caplog):
+    url = _make_deal()
     with caplog.at_level(logging.INFO, logger="openoutfind.core.db.deals"):
-        set_profile_state(campaign, url, DealState.FAILED.value, reason="wrong fit")
+        set_profile_state(url, DealState.FAILED.value, reason="wrong fit")
 
     assert "FAILED" in caplog.text
     assert "NO EMAIL" not in caplog.text

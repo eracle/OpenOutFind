@@ -19,7 +19,7 @@ from openoutfind.core.errors import ErrorType, OpenOutFindError
 @pytest.fixture
 def bootstrapped():
     """Migrating and onboarding have their own tests; `init` is asserted on what it
-    reports about the campaign that came out the other side."""
+    reports about the site_config that came out the other side."""
     with patch("openoutfind.core.management.commands.init.ensure_database"), \
             patch("openoutfind.core.management.commands.init.ensure_onboarded"), \
             patch("openoutfind.core.management.commands.init.validate_operator"), \
@@ -35,17 +35,16 @@ def _run(*args) -> str:
 
 @pytest.mark.django_db
 class TestItReportsWhatWasCreated:
-    def test_the_campaign_is_named_on_stdout(self, campaign, bootstrapped):
-        assert campaign.name in _run()
+    def test_the_config_is_reported_on_stdout(self, site_config, bootstrapped):
+        assert "country" in _run()
 
-    def test_json_is_one_object_a_program_can_read(self, campaign, bootstrapped):
+    def test_json_is_one_object_a_program_can_read(self, site_config, bootstrapped):
         described = json.loads(_run("--json"))
 
-        assert described["name"] == campaign.name
-        assert described["product_docs_chars"] == len(campaign.product_docs)
+        assert described["product_docs_chars"] == len(site_config.product_docs)
         assert described["exportable"] == 0
 
-    def test_it_spends_nothing(self, campaign, bootstrapped):
+    def test_it_spends_nothing(self, site_config, bootstrapped):
         """`init` is the verb you can always run: no discovery, no qualification, no
         lookup — so nothing it does can cost a credit or an LLM call."""
         with patch("openoutfind.core.cycle.run_one_action") as action:
@@ -53,10 +52,10 @@ class TestItReportsWhatWasCreated:
 
         action.assert_not_called()
 
-    def test_running_it_twice_is_not_an_error(self, campaign, bootstrapped):
+    def test_running_it_twice_is_not_an_error(self, site_config, bootstrapped):
         """Re-running setup should tell you where you are, not refuse."""
-        assert campaign.name in _run()
-        assert campaign.name in _run()
+        assert "country" in _run()
+        assert "country" in _run()
 
 
 @pytest.mark.django_db
@@ -87,14 +86,14 @@ class TestTheFileFlags:
         import os
         assert os.environ["OPENOUTFIND_PRODUCT_DESCRIPTION"] == "from the environment"
 
-    def test_a_missing_file_is_a_typed_error_naming_the_flag(self, campaign, bootstrapped):
+    def test_a_missing_file_is_a_typed_error_naming_the_flag(self, site_config, bootstrapped):
         with pytest.raises(OpenOutFindError) as exc:
             call_command("init", "--product-docs", "/nope/absent.md", stdout=io.StringIO())
 
         assert exc.value.error_type == ErrorType.BAD_CONFIG
         assert "--product-docs" in str(exc.value)
 
-    def test_an_empty_file_is_refused(self, tmp_path, campaign, bootstrapped):
+    def test_an_empty_file_is_refused(self, tmp_path, site_config, bootstrapped):
         """An empty file would hydrate nothing and send the operator to the wizard with
         no idea why."""
         doc = tmp_path / "product.md"

@@ -57,28 +57,28 @@ def hub():
 # ── the counts ───────────────────────────────────────────────────
 
 @pytest.mark.django_db
-def test_counts_the_deliverable_the_way_the_export_writes_it(campaign, configured, has_key, balance):
+def test_counts_the_deliverable_the_way_the_export_writes_it(site_config, configured, has_key, balance):
     """``exportable`` must agree with the CSV's rows, or the number is a different number."""
-    DealFactory(campaign=campaign, lead=LeadFactory(), state=DealState.RESOLVED, reason="fits")
-    DealFactory(campaign=campaign, lead=LeadFactory(), state=DealState.QUALIFIED, reason="fits")
-    DealFactory(campaign=campaign, lead=LeadFactory(), state=DealState.FAILED, reason="no fit")
+    DealFactory(lead=LeadFactory(), state=DealState.RESOLVED, reason="fits")
+    DealFactory(lead=LeadFactory(), state=DealState.QUALIFIED, reason="fits")
+    DealFactory(lead=LeadFactory(), state=DealState.FAILED, reason="no fit")
 
     with balance(value=40):
         document = status_module.build_status()
 
     from openoutfind.core.export import lead_records
-    assert document["totals"]["exportable"] == sum(1 for _ in lead_records(campaign)) == 2
+    assert document["totals"]["exportable"] == sum(1 for _ in lead_records()) == 2
     assert document["totals"]["rejected"] == 1
 
 
 @pytest.mark.django_db
 def test_exportable_separates_the_rows_that_carry_an_address(
-    campaign, configured, has_key, balance
+    site_config, configured, has_key, balance
 ):
     """An exportable row is not necessarily a mailable one, and the count says so."""
-    DealFactory(campaign=campaign, lead=LeadFactory(email="ada@acme.com"),
+    DealFactory(lead=LeadFactory(email="ada@acme.com"),
                 state=DealState.RESOLVED, reason="fits")
-    DealFactory(campaign=campaign, lead=LeadFactory(email=""),
+    DealFactory(lead=LeadFactory(email=""),
                 state=DealState.QUALIFIED, reason="fits")
 
     with balance(value=40):
@@ -92,7 +92,7 @@ def test_exportable_separates_the_rows_that_carry_an_address(
 # ── the balance, and the difference between unknown and zero ─────
 
 @pytest.mark.django_db
-def test_a_rejected_key_is_not_a_balance_of_zero(campaign, configured, has_key, balance):
+def test_a_rejected_key_is_not_a_balance_of_zero(site_config, configured, has_key, balance):
     with balance(error="BetterContact rejected the API key (401)",
                  error_type=ErrorType.PROVIDER_AUTH):
         document = status_module.build_status()
@@ -103,7 +103,7 @@ def test_a_rejected_key_is_not_a_balance_of_zero(campaign, configured, has_key, 
 
 
 @pytest.mark.django_db
-def test_an_unreachable_provider_is_its_own_answer(campaign, configured, has_key, balance):
+def test_an_unreachable_provider_is_its_own_answer(site_config, configured, has_key, balance):
     with balance(error="BetterContact unreachable: timed out"):
         document = status_module.build_status()
 
@@ -111,7 +111,7 @@ def test_an_unreachable_provider_is_its_own_answer(campaign, configured, has_key
 
 
 @pytest.mark.django_db
-def test_no_key_reports_no_credential(campaign, configured):
+def test_no_key_reports_no_credential(site_config, configured):
     document = status_module.build_status()
 
     assert document["credits"]["error"] == ErrorType.NO_CREDENTIAL
@@ -119,8 +119,8 @@ def test_no_key_reports_no_credential(campaign, configured):
 
 
 @pytest.mark.django_db
-def test_zero_credits_with_leads_waiting_is_blocked(campaign, configured, has_key, balance):
-    DealFactory(campaign=campaign, lead=LeadFactory(), state=DealState.READY_TO_FIND_EMAIL)
+def test_zero_credits_with_leads_waiting_is_blocked(site_config, configured, has_key, balance):
+    DealFactory(lead=LeadFactory(), state=DealState.READY_TO_FIND_EMAIL)
 
     with balance(value=0):
         document = status_module.build_status()
@@ -133,7 +133,7 @@ def test_zero_credits_with_leads_waiting_is_blocked(campaign, configured, has_ke
 # ── the next action ──────────────────────────────────────────────
 
 @pytest.mark.django_db
-def test_next_action_is_onboarding_when_setup_is_incomplete(campaign):
+def test_next_action_is_onboarding_when_setup_is_incomplete(site_config):
     document = status_module.build_status()
 
     action = document["next_action"]
@@ -142,7 +142,7 @@ def test_next_action_is_onboarding_when_setup_is_incomplete(campaign):
 
 
 @pytest.mark.django_db
-def test_nothing_is_asked_of_a_run_that_has_qualified_nobody(campaign, configured, has_key, balance):
+def test_nothing_is_asked_of_a_run_that_has_qualified_nobody(site_config, configured, has_key, balance):
     """Never before value: an empty pipeline at zero credits is asked for no money — it
     is told to go and find some leads, which costs nothing."""
     with balance(value=0):
@@ -153,10 +153,10 @@ def test_nothing_is_asked_of_a_run_that_has_qualified_nobody(campaign, configure
 
 @pytest.mark.django_db
 def test_printing_the_rows_is_the_next_action_once_credits_are_not_the_blocker(
-    campaign, configured, has_key, balance
+    site_config, configured, has_key, balance
 ):
     """The leads exist; getting them out costs nothing and spends nothing."""
-    DealFactory(campaign=campaign, lead=LeadFactory(), state=DealState.RESOLVED, reason="fits")
+    DealFactory(lead=LeadFactory(), state=DealState.RESOLVED, reason="fits")
 
     with balance(value=40):
         action = status_module.build_status()["next_action"]
@@ -167,8 +167,8 @@ def test_printing_the_rows_is_the_next_action_once_credits_are_not_the_blocker(
 
 
 @pytest.mark.django_db
-def test_credit_ask_carries_the_count_and_the_attributed_url(campaign, configured, has_key, balance):
-    DealFactory(campaign=campaign, lead=LeadFactory(), state=DealState.READY_TO_FIND_EMAIL)
+def test_credit_ask_carries_the_count_and_the_attributed_url(site_config, configured, has_key, balance):
+    DealFactory(lead=LeadFactory(), state=DealState.READY_TO_FIND_EMAIL)
 
     with balance(value=0):
         action = status_module.build_status()["next_action"]
@@ -182,7 +182,7 @@ def test_credit_ask_carries_the_count_and_the_attributed_url(campaign, configure
 
 @pytest.mark.django_db
 def test_a_campaign_with_nothing_yet_is_told_to_go_and_find_some(
-    campaign, configured, has_key, balance
+    site_config, configured, has_key, balance
 ):
     with balance(value=40):
         action = status_module.build_status()["next_action"]
@@ -193,7 +193,7 @@ def test_a_campaign_with_nothing_yet_is_told_to_go_and_find_some(
 # ── the hub balance — a different number than the provider's own ──
 
 @pytest.mark.django_db
-def test_hub_balance_is_its_own_key_not_folded_into_credits(campaign, configured, has_key, balance, hub):
+def test_hub_balance_is_its_own_key_not_folded_into_credits(site_config, configured, has_key, balance, hub):
     with balance(value=40), hub(balance=3, known=True):
         document = status_module.build_status()
 
@@ -202,7 +202,7 @@ def test_hub_balance_is_its_own_key_not_folded_into_credits(campaign, configured
 
 
 @pytest.mark.django_db
-def test_unknown_hub_balance_is_not_reported_as_zero(campaign, configured, has_key, balance, hub):
+def test_unknown_hub_balance_is_not_reported_as_zero(site_config, configured, has_key, balance, hub):
     with balance(value=40), hub(balance=None, known=False):
         document = status_module.build_status()
 
@@ -212,7 +212,7 @@ def test_unknown_hub_balance_is_not_reported_as_zero(campaign, configured, has_k
 # ── rendering ────────────────────────────────────────────────────
 
 @pytest.mark.django_db
-def test_json_is_one_object_and_nothing_else(campaign, configured, has_key, balance, hub, capsys):
+def test_json_is_one_object_and_nothing_else(site_config, configured, has_key, balance, hub, capsys):
     from django.core.management import call_command
 
     with balance(value=40), hub(balance=0, known=True):
@@ -220,13 +220,13 @@ def test_json_is_one_object_and_nothing_else(campaign, configured, has_key, bala
 
     document = json.loads(capsys.readouterr().out)  # would raise on any stray line
     assert set(document) == {
-        "onboarding", "campaigns", "totals", "credits", "hub", "blocked", "next_action",
+        "onboarding", "totals", "credits", "hub", "blocked", "next_action",
     }
 
 
 @pytest.mark.django_db
-def test_human_summary_reports_the_balance_and_the_next_action(campaign, configured, has_key, balance, hub):
-    DealFactory(campaign=campaign, lead=LeadFactory(), state=DealState.RESOLVED, reason="fits")
+def test_human_summary_reports_the_balance_and_the_next_action(site_config, configured, has_key, balance, hub):
+    DealFactory(lead=LeadFactory(), state=DealState.RESOLVED, reason="fits")
 
     with balance(value=38), hub(balance=0, known=True):
         text = render(status_module.build_status())
@@ -238,7 +238,7 @@ def test_human_summary_reports_the_balance_and_the_next_action(campaign, configu
 
 @pytest.mark.django_db
 def test_human_summary_distinguishes_the_hub_balance_from_bettercontact_credits(
-    campaign, configured, has_key, balance, hub
+    site_config, configured, has_key, balance, hub
 ):
     """The give-to-get counter must never be shown as, or beside, the ``Credits:``
     line — that is BetterContact's own prepaid balance, a different service."""
@@ -250,7 +250,7 @@ def test_human_summary_distinguishes_the_hub_balance_from_bettercontact_credits(
 
 
 @pytest.mark.django_db
-def test_human_summary_names_a_permanent_zero_hub_balance(campaign, configured, has_key, balance, hub):
+def test_human_summary_names_a_permanent_zero_hub_balance(site_config, configured, has_key, balance, hub):
     with balance(value=40), hub(balance=0, known=True):
         text = render(status_module.build_status())
 
@@ -258,7 +258,7 @@ def test_human_summary_names_a_permanent_zero_hub_balance(campaign, configured, 
 
 
 @pytest.mark.django_db
-def test_human_summary_names_an_unknown_hub_balance(campaign, configured, has_key, balance, hub):
+def test_human_summary_names_an_unknown_hub_balance(site_config, configured, has_key, balance, hub):
     with balance(value=40), hub(balance=None, known=False):
         text = render(status_module.build_status())
 

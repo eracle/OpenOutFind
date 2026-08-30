@@ -189,12 +189,12 @@ class BayesianQualifier:
     """
 
     def __init__(self, seed: int = 42, embedding_dim: int = 384, n_mc_samples: int = 100,
-                 campaign=None):
+                 site_config=None):
         self.embedding_dim = embedding_dim
         self._seed = seed
         self._n_mc_samples = n_mc_samples
         self._pipeline = None  # Pipeline([('scaler', StandardScaler), ('gpr', GPR)])
-        self._campaign = campaign
+        self._site_config = site_config
         self._X: list[np.ndarray] = []
         self._y: list[int] = []
         # Synthetic ideal-lead embeddings, all label 1 — kept apart from the real
@@ -346,7 +346,7 @@ class BayesianQualifier:
         # expensive step and it grows as O(n³) in the label count — 17s at 1,220
         # labels — so a line that only appears on completion means the longest stall
         # in the loop is the one stretch with nothing on screen to explain it.
-        logger.info("training this campaign's ranking model on %d judged lead(s)%s "
+        logger.info("training the ranking model on %d judged lead(s)%s "
                     "— the slowest thing a run does, please wait",
                     n, f", {len(self._anchor_X)} of them still synthetic"
                        if self._anchor_X else "")
@@ -393,17 +393,17 @@ class BayesianQualifier:
         return X[keep], y[keep]
 
     def _persist_pipeline(self):
-        """Persist the fitted pipeline to the Campaign.model_blob DB field."""
-        if self._campaign is None or self._pipeline is None:
+        """Persist the fitted pipeline to the SiteConfig.model_blob DB field."""
+        if self._site_config is None or self._pipeline is None:
             return
         import io
         import joblib
 
         buf = io.BytesIO()
         joblib.dump(self._pipeline, buf, compress=3)
-        self._campaign.model_blob = buf.getvalue()
-        self._campaign.save(update_fields=["model_blob"])
-        logger.debug("Pipeline saved to DB for campaign %s", self._campaign)
+        self._site_config.model_blob = buf.getvalue()
+        self._site_config.save(update_fields=["model_blob"])
+        logger.debug("Pipeline saved to DB")
 
     # ------------------------------------------------------------------
     # Prediction  (needs posterior std — uses _gpr_predict)
@@ -597,13 +597,12 @@ class BayesianQualifier:
 
 # ── On-demand construction ────────────────────────────────────────
 
-# The fitted model per campaign, kept under the fingerprint of the evidence it was fitted
-# on: ``{campaign_pk: (fingerprint, qualifier)}``. Process-local and unbounded, which is
-# bounded in practice — a run works one campaign, so this holds one model.
-_FITTED: dict[int, tuple[str, "BayesianQualifier"]] = {}
+# The fitted model, kept under the fingerprint of the evidence it was fitted on.
+# Process-local — one install, one qualifier — so this holds at most one model.
+_FITTED: tuple[str, "BayesianQualifier"] | None = None
 
 
-def _label_fingerprint(campaign) -> str:
+def _label_fingerprint() -> str:
     """A digest of everything the fit reads: which lead carries which verdict, and the
     anchors.
 
@@ -613,15 +612,16 @@ def _label_fingerprint(campaign) -> str:
     on. This projects the deals down to exactly what ``Lead.get_labeled_arrays`` keeps,
     so two fingerprints are equal precisely when a refit would land on the same numbers.
 
-    One small query against rows already indexed by campaign — microseconds against a fit
-    that is seconds, and grows as O(n³) while this grows linearly.
+    One small query — microseconds against a fit that is seconds, and grows as O(n³)
+    while this grows linearly.
     """
+    from openoutfind.core.models import SiteConfig
     from openoutfind.crm.models import Deal, DealState, Outcome
 
     labels = sorted(
         (lead_id, 0 if outcome == Outcome.WRONG_FIT else 1)
         for lead_id, state, outcome in Deal.objects.filter(
-            campaign=campaign, lead_id__isnull=False,
+            lead_id__isnull=False,
         ).values_list("lead_id", "state", "outcome")
         # Same three-way reading as ``get_labeled_arrays``: a rejection is a 0, anything
         # not FAILED is a 1, and a FAILED deal that failed for some other reason is not
@@ -629,19 +629,19 @@ def _label_fingerprint(campaign) -> str:
         if state != DealState.FAILED or outcome == Outcome.WRONG_FIT
     )
     digest = hashlib.sha256(repr(labels).encode())
-    # The anchors are fitted alongside the real labels, so a campaign that grows or first
-    # generates its anchor set has genuinely changed the training data.
-    digest.update(repr(campaign.anchor_profiles or []).encode())
+    # The anchors are fitted alongside the real labels, so a first anchor-set generation
+    # has genuinely changed the training data.
+    digest.update(repr(SiteConfig.load().anchor_profiles or []).encode())
     return digest.hexdigest()
 
 
-def qualifier_for(campaign):
-    """This campaign's qualifier, ready to score. **Fitted once per label set.**
+def qualifier_for():
+    """The install's qualifier, ready to score. **Fitted once per label set.**
 
     Built where it is needed rather than warm-started at boot and held for the life of
     the process. A resident model is a model that silently goes stale: the daemon used to
-    fit every campaign's GP at startup, so a label written an hour later did not move the
-    posterior until the next restart.
+    fit the GP at startup, so a label written an hour later did not move the posterior
+    until the next restart.
 
     **The cache answers that objection instead of reopening it**, because its key *is*
     the evidence (``_label_fingerprint``). A model can only be handed back when a refit
@@ -657,24 +657,25 @@ def qualifier_for(campaign):
 
     It used to be able to return ``None``, for the one case where the freemium
     campaign's downloaded kit was unavailable. With that campaign gone there is no
-    such case: every campaign fits on its own labels, and a campaign with none fits
-    on its anchors.
+    such case: the install fits on its own labels, or on its anchors when it has none.
     """
+    global _FITTED
     from openoutfind.core.conf import CAMPAIGN_CONFIG
+    from openoutfind.core.models import SiteConfig
     from openoutfind.core.pipeline.icp import ensure_anchors, stored_anchors
     from openoutfind.crm.models import Lead
 
-    cached = _FITTED.get(campaign.pk)
-    if cached is not None and cached[0] == _label_fingerprint(campaign):
-        logger.debug("[%s] ranking model: reusing the fit — no verdict since", campaign)
-        return cached[1]
+    if _FITTED is not None and _FITTED[0] == _label_fingerprint():
+        logger.debug("ranking model: reusing the fit — no verdict since")
+        return _FITTED[1]
 
+    site_config = SiteConfig.load()
     qualifier = BayesianQualifier(
         seed=42,
         n_mc_samples=CAMPAIGN_CONFIG["qualification_n_mc_samples"],
-        campaign=campaign,
+        site_config=site_config,
     )
-    X, y = Lead.get_labeled_arrays(campaign)
+    X, y = Lead.get_labeled_arrays()
     if len(X) > 0:
         qualifier.warm_start(X, y)
 
@@ -682,12 +683,12 @@ def qualifier_for(campaign):
     # acceptance at all the labels are one class and the GP cannot fit, so generate
     # the anchors; once real positives have started arriving, restore the same
     # stored set rather than inventing more — it never grows or shrinks again.
-    anchors = stored_anchors(campaign) if qualifier.has_real_positive else ensure_anchors(campaign)
+    anchors = stored_anchors(site_config) if qualifier.has_real_positive else ensure_anchors(site_config)
     if anchors is not None:
         qualifier.set_anchors(anchors)
 
     # Fingerprinted *after* the build, because ``ensure_anchors`` may have just written
-    # the campaign's first anchor set — keying on the pre-build state would miss on the
-    # very next call and refit for nothing.
-    _FITTED[campaign.pk] = (_label_fingerprint(campaign), qualifier)
+    # the first anchor set — keying on the pre-build state would miss on the very next
+    # call and refit for nothing.
+    _FITTED = (_label_fingerprint(), qualifier)
     return qualifier

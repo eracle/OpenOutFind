@@ -1,6 +1,11 @@
 # Configuration
 
-Configuration lives in two places: the **`SiteConfig`** DB singleton and per-campaign **`Campaign`** rows (both managed via interactive onboarding or Django Admin), plus a few hardcoded defaults in **`core/conf.py`**. There are no social-network credentials — OpenOutFind is browserless and uses no such account.
+Configuration lives in one place, the **`SiteConfig`** DB singleton (managed via interactive
+onboarding or Django Admin), plus a few hardcoded defaults in **`core/conf.py`**. This install has
+never run more than one campaign in practice, so the campaign content that used to live on a
+separate `Campaign` model was folded onto `SiteConfig` (2026-08-30) — one row holds keys, the
+operator's country, and the product/target text. There are no social-network credentials —
+OpenOutFind is browserless and uses no such account.
 
 ## Configure without a terminal
 
@@ -12,7 +17,6 @@ container, CI) never needs the wizard. Set these and run `outfind init` — or g
 |:---------|:-----|:------|
 | `OPENOUTFIND_PRODUCT_DESCRIPTION` | campaign | what it does, who it's for, the problem it solves |
 | `OPENOUTFIND_CAMPAIGN_TARGET` | campaign | who you're going after and the outcome you want |
-| `OPENOUTFIND_CAMPAIGN_NAME` | campaign | optional — defaults to "Email Outreach" |
 | `OPENOUTFIND_AI_MODEL` | llm | `provider:model`, e.g. `anthropic:claude-sonnet-4-5-20250929` |
 | `OPENOUTFIND_LLM_API_KEY` | llm | live-verified at boot; a bad key stops the run |
 | `OPENOUTFIND_LLM_API_BASE` | llm | required for `openai_compatible:*`, ignored otherwise |
@@ -26,9 +30,11 @@ A step takes effect only when *all* of its variables are set; anything left over
 a terminal, or exits listing exactly what is missing. `OPENOUTFIND_DB` (or `--db PATH`) points any
 command at a different SQLite file.
 
-## Operator / LLM / keys (`SiteConfig` singleton, pk=1)
+## The `SiteConfig` singleton (pk=1)
 
-Set during onboarding, editable in Django Admin. `SiteConfig` is the single source of truth for keys and the one persisted operator setting (country).
+Set during onboarding, editable in Django Admin. `SiteConfig` is the single source of truth for
+keys, the operator's country, and the campaign content — one row, since this install runs exactly
+one campaign.
 
 | Field | Description | Default |
 |:------|:------------|:--------|
@@ -37,24 +43,16 @@ Set during onboarding, editable in Django Admin. `SiteConfig` is the single sour
 | `llm_api_base` | Base URL — **only** for `openai_compatible:*`. | (none) |
 | `bettercontact_api_key` | [BetterContact](https://bettercontact.rocks?fpr=openoutreach) key — **free account, 40 credits, no card** (affiliate link, no markup to you). Powers **both** Lead Finder discovery (billed nothing) **and** work-email enrichment (one credit per verified address, only with `--emails`). **Blank disables discovery + enrichment.** | (empty) |
 | `contacts_api_token` / `contacts_api_url` | Cross-operator contacts-store token (earned on first contribution) and URL (blank → default hub). | (empty) |
-| `country_code` | ISO-3166 alpha-2. The only persisted operator setting — decides the newsletter opt-in default (`geo.is_gdpr_protected`) and whether this install contributes to the contacts store at all (`geo.is_eea_located`). | (from onboarding) |
+| `country_code` | ISO-3166 alpha-2. Decides the newsletter opt-in default (`geo.is_gdpr_protected`), whether this install contributes to the contacts store (`geo.is_eea_located`), and the target country stamped on every discovered lead. | (from onboarding) |
+| `product_docs` | Product/service description. Feeds ICP generation and qualification — **the whole input**. | (required) |
+| `campaign_target` | Who you're going after + the outcome. Feeds the same. | (required) |
+| `headcount_min` / `headcount_max` | Company-size band, applied to every discovery query. | `1` / `10000` |
+| `anchor_profiles` / `anchor_embeddings` | Synthetic ideal profiles (JSON / binary) standing in for positives until real acceptances replace them, one per acceptance. | (empty) |
+| `model_blob` | The trained GP model (joblib, binary). | (empty) |
 
-The operator's own email and name live on the Django `User` (created at onboarding), not on `SiteConfig`.
-
-## Campaign Settings (`Campaign` model)
-
-Managed via Django Admin (`/admin/`) or created during onboarding.
-
-| Field | Type | Description |
-|:------|:-----|:------------|
-| `product_docs` | text | Product/service description. Feeds ICP generation and qualification — **the whole input**. |
-| `campaign_target` | text | Who you're going after + the outcome. Feeds the same. |
-| `country_code` | string | ISO-3166 alpha-2 target country for this campaign's leads. |
-| `headcount_min` / `headcount_max` | integer | Company-size band, applied to every discovery query. |
-| `anchor_profiles` / `anchor_embeddings` | JSON / binary | Synthetic ideal profiles standing in for positives until real acceptances replace them, one per acceptance. |
-| `model_blob` | binary | The per-campaign trained GP model (joblib). |
-
-Discovery keeps no filter spec or page cursor on the campaign: the keyword sets it has fired, and how far each was paged, live in their own `Keyword` / node rows.
+The operator's own email and name live on the Django `User` (created at onboarding), not on
+`SiteConfig`. Discovery keeps no filter spec or page cursor here either: the keyword sets it has
+fired, and how far each was paged, live in their own `Keyword` / `QueryNode` rows.
 
 ## Sending mailboxes — there are none
 
