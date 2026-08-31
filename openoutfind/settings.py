@@ -2,7 +2,6 @@
 """
 Minimal Django settings for the OpenOutFind ORM + Django Admin.
 """
-import sys
 from pathlib import Path
 
 from openoutfind import defaults
@@ -100,5 +99,3 @@ LANGUAGES = [("en", "English")]
 TIME_ZONE = "UTC"
 USE_I18N = True
 USE_TZ = True
-
-TESTING = sys.argv[1:2] == ["test"]
