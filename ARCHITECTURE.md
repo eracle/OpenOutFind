@@ -2,7 +2,7 @@
 
 Detailed module documentation for OpenOutFind. See `CLAUDE.md` for rules and quick reference.
 
-OpenOutFind is a browserless **lead finder**: it learns a campaign's ICP and runs the
+OpenOutFind is a browserless **lead finder**: it learns your ICP and runs the
 funnel — **define ICP → discover → qualify → rank → (optionally) resolve an address →
 export** — off licensed data, with no social-network account and no scraping.
 
@@ -62,13 +62,13 @@ Three verbs, chosen rather than accumulated — they are what the two readers ac
 
 | verb | |
 |:-----|:--|
-| `init [--product-docs F] [--target F] [--name N] [--json]` | create the pipeline and the campaign, print what it made, spend nothing. Safe to run twice. |
-| `find N [emails] [--emails] [--campaign N] [--new] [--json] [--batch] [--open] [--debug]` | find that many more, print the campaign as CSV, exit. |
+| `init [--product-docs F] [--target F] [--json]` | create the pipeline, print what it made, spend nothing. Safe to run twice. |
+| `find N [emails] [--emails] [--new] [--json] [--batch] [--open] [--debug]` | find that many more, print every lead as CSV, exit. |
 | `status [--json]` | what is configured, blocked, counted, and the next action — including the command that prints the CSV. |
 
-**`--campaign` is optional**: `find` takes the only campaign when there is one and raises a
-`bad_config` listing them all when there are several. Ambiguity is an error, never a guess — picking
-one would spend the operator's credits on the wrong ICP.
+**There is no `--campaign` flag, and no campaign to name.** This install has never run more than one,
+so `Campaign` was folded onto the `SiteConfig` singleton and every `campaign=` scoping FK went with
+it. A second ICP is a second store — `--db PATH`, or `OPENOUTFIND_DB`.
 
 **The CSV is not a verb and not a file the tool writes** — it is the stdout of `find`, so redirecting
 the command is what produces it. `export_leads` was deleted as a second way to do one thing, and the
@@ -82,17 +82,17 @@ A failure answers in the caller's format too: `--json` turns the `error:` line i
 the state directory already does: everything an install writes hangs off one root
 (`settings.state_dir()`), so **`rm -rf ~/.openoutfind` followed by `outfind find` is the
 reset**, and configuration comes back from the environment. What that costs is real and worth
-naming: the ICP seed only runs for a campaign with **no** query nodes, so there is now no way to
+naming: the ICP seed only runs when there are **no** query nodes yet, so there is now no way to
 re-seed a walk *while keeping* its leads and verdicts. Changing the ICP text means starting the
 evidence over too.
 
 Others were removed rather than renamed. **`setup_crm`** was an implementation detail with a verb
 around it — `find` calls the function directly, so nothing is lost. **`reset_data`** deleted every
-lead and deal across every campaign, which `reset` already did with a backup first; both are gone now.
+lead and deal in the store, which `reset` already did with a backup first; both are gone now.
 
 ### `find` management command (`management/commands/find.py`)
 
-    outfind find 10 [emails] [--emails] [--campaign N] [--new] [--json] [--batch] [--open] [--debug]
+    outfind find 10 [emails] [--emails] [--new] [--json] [--batch] [--open] [--debug]
 
 **Finding is free, and the free thing is the default.** A bare `find 10` cannot spend a credit,
 however many deals have queued up past the confidence gate; `--emails` permits the lookup and the
@@ -125,11 +125,10 @@ Startup sequence, inherited whole from the deleted `run`:
 1. **Configure logging** — level from `--verbosity`, banner, noisy third-party loggers silenced (`core/logging.py`).
 2. **Ensure DB** — `migrate --no-input` (narrated to stderr; the custom migrate, see below) + the idempotent CRM bootstrap (`core/management/setup_crm.py`, a function — the verb around it is gone).
 3. **Onboard** — if `missing_keys()` is non-empty: `hydrate_from_env()` first, then the interactive wizard on a TTY, else exit **naming the variables** that would have satisfied it (no TTY, no silent partial start). See *The environment path* below.
-4. **Validate the operator** — `llm_api_key` set, an active operator `User` exists, at least one campaign. All three exit loudly rather than starting work that cannot go anywhere.
-5. **Select the campaign** — the named one, or the only one. Several campaigns and no `--campaign` is a typed error listing them; nothing is ever guessed.
-6. **Run the job** — `core/job.py:run_job`, then print.
+4. **Validate the operator** — `llm_api_key` set, an active operator `User` exists, and the `SiteConfig` carries what an ICP needs. Each exits loudly rather than starting work that cannot go anywhere.
+5. **Run the job** — `core/job.py:run_job`, then print.
 
-**stdout carries the whole campaign, not just this run's rows.** That is what makes `> leads.csv`
+**stdout carries every lead in the store, not just this run's rows.** That is what makes `> leads.csv`
 correct by construction: the newest file supersedes every earlier one, and a lead whose address
 resolved since last time comes back with it filled in. It is one file you overwrite, not a batch per
 run. `--new` narrows to what this run produced — the escape hatch for a caller reading stdout into a
@@ -160,7 +159,7 @@ Docker's `start` script `exec`s `outfind find "$@"` — one job, then the contai
 
 ### The other two verbs
 
-- `init` — **the phase that already happened, given a name.** Migrate, bootstrap the CRM, onboard, create the campaign, validate the operator — then stop and print what it made. It cannot spend, so it is the one verb always safe to run.
+- `init` — **the phase that already happened, given a name.** Migrate, bootstrap the CRM, onboard, write the config, validate the operator — then stop and print what it made. It cannot spend, so it is the one verb always safe to run.
 - `status` — **what is in the database, without running a job.** Human summary by default, `--json` for a program. See *Status* below.
 
 ## The Output Contract (`core/management/base.py`, `core/errors.py`)
@@ -183,7 +182,7 @@ What a program depends on, and the reason both exist as one place rather than a 
   outfind_core_siteconfig`.
   `OpenOutFindCommand.requires_database` (default `True`; `run` sets it `False`) checks for the
   schema in `execute()` — **after** argument parsing, so `--help` still answers — and raises
-  `not_initialized`, naming the database path. Reporting zero campaigns instead would be precisely
+  `not_initialized`, naming the database path. Reporting zero leads instead would be precisely
   the empty-result failure `core/errors.py` exists to prevent: nothing was found because nothing has
   ever run.
 - **A failure answers in the caller's format.** `run_from_argv` renders `OpenOutFindError` through
@@ -231,7 +230,7 @@ each get their own line, so silence never reads as "nothing decided" when a deci
 
 The beats, in order:
 
-- **Minute 0 states the deal** — campaign, the goal the operator typed, and whether this run may
+- **Minute 0 states the deal** — who you sell to, the goal the operator typed, and whether this run may
   spend (`find._announce_the_run`). Spending is opt-in at every layer, which is a good default and an
   invisible one; an operator who expected addresses learns it in the first line, not from an empty
   column at the end.
@@ -276,7 +275,7 @@ the job.
 | key | what it carries |
 |:----|:----------------|
 | `onboarding` | `complete`, the satisfied steps, and per-step the variables that would satisfy the rest |
-| `campaigns` / `totals` | the pipeline counts, per campaign and summed |
+| `totals` | the pipeline counts |
 | `credits` | `balance` + `error` — `GET /api/v2/account` → `credits_left` |
 | `hub` | `balance` + `known` — the give-to-get counter (`contacts.service.hub_balance`), a different number on a different service than `credits` |
 | `blocked` | what stands between now and more qualified rows, typed from `core/errors.py` |
@@ -294,7 +293,7 @@ Three decisions inside it:
 - **`next_action` is ordered by what blocks progress**, so `add_credits` sits above `print_leads`:
   a ranked lead cannot advance without credits, while printing what exists costs nothing. This does
   not break the *never before value* rule — `ranked_for_lookup > 0` is itself the proof that
-  qualified leads with written reasons exist, and a campaign that has qualified nobody is asked for
+  qualified leads with written reasons exist, and an install that has qualified nobody is asked for
   no money, only told to go and find some (`find_leads`).
 - **The hub balance is not the `Credits:` line.** `credits` is BetterContact's own prepaid balance
   (`GET /api/v2/account`); `hub` is the give-to-get counter on the contacts store — a different
@@ -315,7 +314,7 @@ a satisfied step is never revisited. There is no end-of-wizard `apply()` that co
 step is its own commit point.
 
 ```
-campaign        product description + target → Campaign row
+campaign        product description + target → SiteConfig fields
 llm             LLM creds, live-verified via verify_llm_credentials (retries in place on failure)
 bettercontact   API key (mandatory — the SAME key powers Lead Finder discovery AND enrichment)
 account         your email (contacts key + newsletter target) → country → newsletter (opt-in) → legal (required gate) → operator User + subscribe
@@ -335,7 +334,7 @@ An agent-driven install has no TTY, so **this is the main path, not a fallback**
 that would have satisfied it**. Every field is an `OPENOUTFIND_*` variable:
 
 ```
-campaign        OPENOUTFIND_PRODUCT_DESCRIPTION, OPENOUTFIND_CAMPAIGN_TARGET  (+ CAMPAIGN_NAME)
+campaign        OPENOUTFIND_PRODUCT_DESCRIPTION, OPENOUTFIND_CAMPAIGN_TARGET
 llm             OPENOUTFIND_AI_MODEL, OPENOUTFIND_LLM_API_KEY  (+ LLM_API_BASE, required for openai_compatible:*)
 bettercontact   OPENOUTFIND_BETTERCONTACT_API_KEY
 account         OPENOUTFIND_OPERATOR_EMAIL, OPENOUTFIND_COUNTRY, OPENOUTFIND_ACCEPT_LEGAL_NOTICE  (+ NEWSLETTER)
@@ -410,8 +409,8 @@ anything but itself.
 The loop is `core/job.py`, and it is four lines:
 
 ```python
-while produced(campaign) < goal.count:
-    if not run_one_action(campaign):
+while produced(site_config) < goal.count:
+    if not run_one_action(site_config):
         break          # every remaining deal is waiting on its own not_before
 ```
 
@@ -428,7 +427,7 @@ for both units, which matters because an `emails` goal is usually satisfied by l
 already exportable and merely gained an address, something no timestamp on the row would identify.
 
 **What ends a job short, in the vocabulary of `core/errors.py`:** `goal_unreached` (nothing left to
-do, or `Ctrl-C` — the operator's own deadline, since the one case with no natural bound is a campaign
+do, or `Ctrl-C` — the operator's own deadline, since the one case with no natural bound is a store
 whose leads are all rejected), or `bad_config` when a `HALTING_ERRORS` exception says the model
 rejected the request. Provider refusals keep their own types.
 
@@ -451,7 +450,7 @@ Deleted with it: `Task`/`TaskQuerySet`, `core/scheduler.py` (558 lines), `core/q
 
 ### The hierarchy
 
-`run_one_action(campaign)` walks one ordered list and stops at the first thing it can do, so
+`run_one_action(site_config)` walks one ordered list and stops at the first thing it can do, so
 priority is exactly the order these are written in:
 
 | # | State | Step | Condition |
@@ -459,7 +458,7 @@ priority is exactly the order these are written in:
 | 1 | `FINDING_EMAIL` | `check_lookup` / `reclaim_lookup` | `not_before` elapsed |
 | 2 | `QUALIFIED` | `promote_to_ready` | — |
 | 3 | `READY_TO_FIND_EMAIL` | `buy_address` | a provider is configured |
-| 4 | *(the campaign itself)* | `top_up` | — |
+| 4 | *(nothing queued)* | `top_up` | — |
 
 A state that is not listed is terminal, and terminal costs nothing: `RESOLVED`,
 `NO_EMAIL_FOUND`, `FAILED`.
@@ -481,7 +480,7 @@ and sending a first email (`READY_TO_EMAIL`, a mailbox free) — along with both
 side-effects the loop used to run before every action: the mail pass (IMAP into each box every five
 minutes) and the daily warmth re-measure. They live in OpenOutSend now.
 
-Row 2 is the only **per-campaign** step: building a qualifier dominates the cost of using it, so it
+Row 2 is the only step that fits a model: building a qualifier dominates the cost of using it, so it
 scores the whole `QUALIFIED` pool in one pass and drops the model (`qualifier_for`). There is no
 `Lead.is_ranked` column — "worth paying for" is what `READY_TO_FIND_EMAIL` already means.
 `promote_to_ready` logs the promotion itself, carrying the score that
@@ -507,10 +506,11 @@ consequence (`no finder key, so not buying addresses`, not a boolean). Function 
 belong in the code and the diagrams; a log line is read by someone asking what is happening to their
 pipeline.
 
-**Campaigns no longer take turns.** `_rotate` round-robined them because a process that never ends
-has to decide, forever, whose work to do next. A job names its campaign (`--campaign`, or the only
-one), so the fairness question has nobody to be fair between and the scheduler that answered it is
-gone.
+**Campaigns no longer take turns, and then there stopped being more than one.** `_rotate`
+round-robined them because a process that never ends has to decide, forever, whose work to do next;
+a bounded job left the fairness question with nobody to be fair between, and the scheduler that
+answered it went. The `Campaign` model itself followed — one install, one implicit campaign, folded
+onto `SiteConfig`.
 
 ### Steps
 
@@ -530,7 +530,7 @@ A third and fourth step stood here — `send_first_email` and `answer_reply` —
 `emails/*`. Note what did **not** follow them: `_store_identity` in `check_lookup` still writes the
 `first_name`/`last_name` the provider echoes back with the address, because those are export
 columns (a sequencer's `{{first_name}}` merge tag) rather than send machinery.
-3. **`top_up`** (`core/pipeline/top_up.py`) — the one step whose queue is a campaign, because a lead nobody has discovered yet has no row to find. One acquisition move per call, chosen by the qualifier's own cold/explore/exploit strategy (unchanged — see **Qualification ML Pipeline**). It used to have a second path for the freemium promo campaign, whose leads were already in the account; that campaign is gone, so every campaign now takes the one path.
+3. **`top_up`** (`core/pipeline/top_up.py`) — the one step with no queue to walk, because a lead nobody has discovered yet has no row to find. One acquisition move per call, chosen by the qualifier's own cold/explore/exploit strategy (unchanged — see **Qualification ML Pipeline**).
 
 ### Pacing and capacity — removed with the sending leg
 
@@ -550,7 +550,7 @@ This project **has no opt-out mechanism, and needs none**, because it contacts n
 What was here: a `List-Unsubscribe` header pointing at a `+unsub` alias of the operator's own
 sending address, a visible reply-line in every body, a mailbox scan that caught client-generated
 unsubscribes the threaded reader could never see, and an outreach agent with a `suppress` action
-for worded requests — all enforced permanently on `Lead.disqualified`, cross-campaign. Every one of
+for worded requests — all enforced permanently on `Lead.disqualified`. Every one of
 those is a **sending** mechanism, so all of them moved to OpenOutSend with `emails/*`, and
 `core.db.leads.suppress_email` went with them.
 
@@ -560,7 +560,7 @@ suppressed address at import.
 
 **Two things survive, and they are not the same thing.**
 
-- **`Lead.disqualified` stays.** It is the permanent, account-level, cross-campaign exclusion that eleven candidate queries already filter and that `core/export.py` filters too. What is gone is the *inbound* path that used to set it from mail we received; nothing writes it automatically any more.
+- **`Lead.disqualified` stays.** It is the permanent, account-level exclusion that eleven candidate queries already filter and that `core/export.py` filters too. What is gone is the *inbound* path that used to set it from mail we received; nothing writes it automatically any more.
 - **The hub store's own suppression is untouched and unrelated.** A person objecting to the shared contacts store is removed store-wide through the hub's endpoint. That obligation arises from contributing vectors and addresses, runs between the data subject and the hub, and involves no sequencer at any point.
 
 **The one duty the split hands to the operator**, which no code here can discharge: turn on the
@@ -578,11 +578,11 @@ stays open at no cost.
 
 GPR (sklearn, `ConstantKernel * RBF` inside `Pipeline(StandardScaler, GPR)`) with BALD active
 learning, over 384-dim FastEmbed embeddings (`BAAI/bge-small-en-v1.5`) stored on `Lead.embedding`;
-per-campaign models persisted in `Campaign.model_blob` (joblib, `compress=3`).
+the fitted model persisted in `SiteConfig.model_blob` (joblib, `compress=3`).
 
-1. **Discovery** feeds the pool as **one counted, add-only walk over keyword sets** (`core/pipeline/select.py`, replacing the retired GP-scored maximal walk). A **node** is a set of `(field, token)` `Keyword` rows; its children are itself plus one more token; there is no remove move, because the frontier is global (every unfired child of every fired node, in one pool) so a shallow node's untried siblings stay reachable without one. Firing a node pages Lead Finder for the conjunction into first-touch `Lead`s via `Lead.discovered_by`. `discovery.filters_for(keywords, headcount)` is the only place a node becomes provider JSON, and it is where the index's three operators are chosen between: tokens in the **same field are joined with a space** (words inside one string AND — the walk's narrowing move, and the generator of the best queries measured: `"founder cto"` counts 9,027 at near-perfect precision), different fields AND as separate keys, and the include-list OR stays **unused** because a union reaches one ~10k window where the same values as separate queries reach one each. The campaign's headcount band rides every node unchanged and is never searched. Dedup is `(campaign, token_key)` (`token_key` = sha256 of the sorted `(field, token)` set, a column because no unique constraint spans an M2M); add-only over three fields makes most nodes reachable several ways, so a node is created once and keeps the parent giving the **highest** estimate.
+1. **Discovery** feeds the pool as **one counted, add-only walk over keyword sets** (`core/pipeline/select.py`, replacing the retired GP-scored maximal walk). A **node** is a set of `(field, token)` `Keyword` rows; its children are itself plus one more token; there is no remove move, because the frontier is global (every unfired child of every fired node, in one pool) so a shallow node's untried siblings stay reachable without one. Firing a node pages Lead Finder for the conjunction into first-touch `Lead`s via `Lead.discovered_by`. `discovery.filters_for(keywords, headcount)` is the only place a node becomes provider JSON, and it is where the index's three operators are chosen between: tokens in the **same field are joined with a space** (words inside one string AND — the walk's narrowing move, and the generator of the best queries measured: `"founder cto"` counts 9,027 at near-perfect precision), different fields AND as separate keys, and the include-list OR stays **unused** because a union reaches one ~10k window where the same values as separate queries reach one each. The ICP's headcount band rides every node unchanged and is never searched. Dedup is `token_key` (sha256 of the sorted `(field, token)` set, a column because no unique constraint spans an M2M); add-only over three fields makes most nodes reachable several ways, so a node is created once and keeps the parent giving the **highest** estimate.
 
-   **A node's value is arithmetic over labels — no model is involved.** `P̂(node) = (a + 2·P̂(parent)) / (a + b + 2)`, where `a`/`b` are the qualified/rejected leads in the store whose `profile_text` contains all of this node's tokens (`select.LabelStore`, loaded once per pass and held in memory — the store is hundreds of rows, so counting a node is a set-containment scan costing microseconds). That is ordinary Laplace smoothing with the prior pointed at the **parent's rate** rather than at 0.5: the parent supplies the level, the child's own counts move it off, and a thin-evidence child stays near its parent instead of swinging to 0 or 1. **The `LabelStore` counts the campaign's anchors as positives**, and that is what makes the cold phase work at all: expansion only offers a token that has shared a *qualified* profile with the node, so a campaign that has never accepted anybody had no qualified profile, could not grow past its one-token seed nodes, fired queries too broad to qualify anyone, and therefore still had no qualified profile — a closed loop in which the seed's own tokens could never be conjoined into the precise query the walk exists to find. The synthetic ideal profiles are written in `profile_text`'s shape, so they tokenize like any lead and say which words describe the people this campaign wants — the same bargain the GP already takes, on the same evidence: `BayesianQualifier` keeps the anchor profiles permanently, so `Campaign.anchor_profiles` is a fixed set once written and this store needs no phase check to read it. They feed the **vocabulary** as well, through a second shape rather than through this one: `Campaign.anchor_source_fields` carries the same invented people as *lead rows*, each value already under the field it is searchable in, and `vocabulary.refresh` counts them as documents so the `df ≥ 2` floor applies to them exactly as to real acceptances (and their influence dilutes on its own — 3 anchors among 122 acceptances decide nothing). The rule this replaces was that anchors must never reach the vocabulary, on the grounds that an anchor is one flat string and splitting it by guess would file `united states` as a job title. That argues against *splitting*, not against *asking*: `icp._AnchorProfile` has the model write `job_title` / `location_state` / `location_country` out itself, so nothing is inferred from the line. What it buys is the case the `LabelStore` cannot reach — a campaign with no acceptances has no vocabulary beyond the seed, so its frontier cannot grow past depth-1 however well this ranks it. A live campaign fired **63 queries off a corpus of 3 accepted profiles**, where at `df ≥ 2` a word had to appear in two of three and what survived was whatever generic token they happened to share. Selection draws `θ ~ Beta(a + 2·P̂(parent), b + 2·(1 − P̂(parent)))` per frontier node and fires the argmax — Thompson sampling, but the Beta parameters *are* the smoothed estimate, so it is one line with nothing to tune (`select.THOMPSON = False` gives greedy). Width tracks evidence, so an untried node gets tried and a node measured bad three times stops appearing. **The GP no longer selects queries.** Measured head-to-head on ~4,100 parent→child edges with the GP fit on half the labels and every truth measured on the other half, counting wins outright (pearson 0.661 vs 0.450) and the GP adds *nothing* on top of it (0.660); residual anchoring (`P(parent) + λ·GP delta`) is real but worth 0.02 at λ≈0.15 and *worse than doing nothing* at λ=1. The GP remains the qualifier — it is what produces the `a`/`b` this walk counts. There is **no counting-call gate, no phase split, no clause lattice, no maximals, no `EmptyClauseSet`, and no λ**. Per-node state (keyword set, offset, state, `leads_found`, lead count) is inspectable in Django Admin, as is the `Keyword` vocabulary. See the roadmap card `p1-e3-leadfinder-index-semantics-and-query-model-rethink`.
+   **A node's value is arithmetic over labels — no model is involved.** `P̂(node) = (a + 2·P̂(parent)) / (a + b + 2)`, where `a`/`b` are the qualified/rejected leads in the store whose `profile_text` contains all of this node's tokens (`select.LabelStore`, loaded once per pass and held in memory — the store is hundreds of rows, so counting a node is a set-containment scan costing microseconds). That is ordinary Laplace smoothing with the prior pointed at the **parent's rate** rather than at 0.5: the parent supplies the level, the child's own counts move it off, and a thin-evidence child stays near its parent instead of swinging to 0 or 1. **The `LabelStore` counts the campaign's anchors as positives**, and that is what makes the cold phase work at all: expansion only offers a token that has shared a *qualified* profile with the node, so a campaign that has never accepted anybody had no qualified profile, could not grow past its one-token seed nodes, fired queries too broad to qualify anyone, and therefore still had no qualified profile — a closed loop in which the seed's own tokens could never be conjoined into the precise query the walk exists to find. The synthetic ideal profiles are written in `profile_text`'s shape, so they tokenize like any lead and say which words describe the people this campaign wants — the same bargain the GP already takes, on the same evidence: `BayesianQualifier` keeps the anchor profiles permanently, so `SiteConfig.anchor_profiles` is a fixed set once written and this store needs no phase check to read it. They feed the **vocabulary** as well, through a second shape rather than through this one: `SiteConfig.anchor_source_fields` carries the same invented people as *lead rows*, each value already under the field it is searchable in, and `vocabulary.refresh` counts them as documents so the `df ≥ 2` floor applies to them exactly as to real acceptances (and their influence dilutes on its own — 3 anchors among 122 acceptances decide nothing). The rule this replaces was that anchors must never reach the vocabulary, on the grounds that an anchor is one flat string and splitting it by guess would file `united states` as a job title. That argues against *splitting*, not against *asking*: `icp._AnchorProfile` has the model write `job_title` / `location_state` / `location_country` out itself, so nothing is inferred from the line. What it buys is the case the `LabelStore` cannot reach — a campaign with no acceptances has no vocabulary beyond the seed, so its frontier cannot grow past depth-1 however well this ranks it. A live campaign fired **63 queries off a corpus of 3 accepted profiles**, where at `df ≥ 2` a word had to appear in two of three and what survived was whatever generic token they happened to share. Selection draws `θ ~ Beta(a + 2·P̂(parent), b + 2·(1 − P̂(parent)))` per frontier node and fires the argmax — Thompson sampling, but the Beta parameters *are* the smoothed estimate, so it is one line with nothing to tune (`select.THOMPSON = False` gives greedy). Width tracks evidence, so an untried node gets tried and a node measured bad three times stops appearing. **The GP no longer selects queries.** Measured head-to-head on ~4,100 parent→child edges with the GP fit on half the labels and every truth measured on the other half, counting wins outright (pearson 0.661 vs 0.450) and the GP adds *nothing* on top of it (0.660); residual anchoring (`P(parent) + λ·GP delta`) is real but worth 0.02 at λ≈0.15 and *worse than doing nothing* at λ=1. The GP remains the qualifier — it is what produces the `a`/`b` this walk counts. There is **no counting-call gate, no phase split, no clause lattice, no maximals, no `EmptyClauseSet`, and no λ**. Per-node state (keyword set, offset, state, `leads_found`, lead count) is inspectable in Django Admin, as is the `Keyword` vocabulary. See the roadmap card `p1-e3-leadfinder-index-semantics-and-query-model-rethink`.
 
    **Growth is counting, not generation; retirement is a corpus fact, never a model fact.** The vocabulary (`core/pipeline/vocabulary.py`) is simply *the words appearing in profiles the LLM already accepted*, one word per keyword, admitted at **df ≥ 2** over the qualified profiles — a floor that drops 65% of the vocabulary (3,485 → 1,208 tokens on the label store) and loses **zero** good tokens, while removing a singleton tail that is mostly company names and typos and that would otherwise be 56% of the *top* of any embedding-based ranking. It runs every pass: a tokenize-and-count over a few hundred profiles needs no cadence knob and no high-water mark, which is what replaced LLM clause minting (the LLM wrote prose — `Head of Content Strategy` — and every extra word is another AND, so those values were near-empty before being conjoined with anything). A token's **field** is read from the lead-row fields that *are* that axis (`discovery.KEYWORD_SOURCE_FIELDS`, stored per lead in `Lead.source_fields`) — and `lead_job_title` reads **`contact_job_title` alone**: the headline is marketing prose, its words repeat across people so they cleared the df≥2 floor, and a live campaign grew `user`, `agents`, `agile`, `shipping` and `ai-powered` as job-title tokens on the strength of it, keeping the per-field vocabularies nearly disjoint for free; `lead_seniority` is seeded whole from the provider's closed 12-value list and never grown. Expansion offers only tokens that have shared a **qualified** profile with the node (`LabelStore.cooccurring`) and refuses a third token in any one field (`select.MAX_TOKENS_PER_FIELD` = 2 — same-field words are ANDed *inside* that field, so a third asks for a title carrying all three, and a live campaign reached 183 depth-4 nodes asking for titles like `ai-powered cto founder user` before this existed), which bounds the frontier without a top-K cap and keeps every child a proposition the evidence can speak to. Nothing is ever retired for scoring badly — the qualifier refits constantly and a barren yield is a verdict about a view — so only **emptiness** retires a node, and which kind depends on the offset, because the provider answers `0` for all of them: an empty page at **offset 0** means the index matches nobody → `dead`, and its whole subtree with it, since a superset matches a subset of people; an empty page **below the 10k reach cap** means the vein drained completely → `drained`, subtree pruned too (every match is already a `Lead` here); an empty page **at the cap** means Elasticsearch's `max_result_window`, not the end of the population → `drained` but the **subtree stays**, because adding a token opens a fresh 10k window. The fourth case is not an answer at all: rows empty while `summary.leads_found` is positive is a **transport artifact** (a burst answered a 71-million-lead query with an empty page in 0.0s), and it never retires anything — the old walk wrote those down as "matches nobody", permanently and for every campaign. `search()` returns a `Page(leads, leads_found)` and the count is read **only at offset 0**, because past the end of *any* result set the API reports 0 (at 10,100 for a huge query, at 500 for a 397-row one). **Keyword injection** survives but is now vestigial: `db/leads.create_lead` still embeds a lead as `profile_text + keyword_terms(retrieving node)` while `profile_text` — the LLM qualifier's input — stays clean. Its original job was letting the GP score a never-run query by its keywords; that job is gone, and what keeps it is the vector space itself, since every cached `Lead.embedding` was built this way.
 
@@ -650,7 +650,7 @@ rather than pinned to a single hallucination.
 - **`select.LabelStore` counts the anchor profiles as qualified permanently**, for the same
   reason the GP keeps them: a campaign that has never accepted anybody has no qualified profile at
   all, so the discovery walk's co-occurrence expansion could never grow past its one-token seed
-  nodes without them. Reading `Campaign.anchor_profiles` needs no phase check any more — the set
+  nodes without them. Reading `SiteConfig.anchor_profiles` needs no phase check any more — the set
   is fixed once written, so there's nothing about it that changes with the phase.
 
 ## Django Apps
@@ -809,8 +809,9 @@ contacted twice unless the operator enables it — say so in every adapter's doc
   hundreds"), which also calls `ensure_anchors` — so a cold campaign would have made **LLM calls and
   mutated campaign state from a read-only export**. `lead_records` now streams one indexed query
   straight to the writer.
-- **The Deal is the unit, not the Lead** — the qualification `reason` is per-campaign, and the
-  same person can be a lead in two campaigns with two different verdicts.
+- **The Deal is the unit, not the Lead** — the `reason` is a verdict on this person *against this
+  install's ICP*, which is what the export carries. One install, one implicit campaign, so it is
+  one deal per lead; a second ICP is a second store, and its verdicts never share a row with these.
 - **A Deal is not an endorsement**, and this is the trap the live install exposed. There are *two*
   rejections and they live in different columns: `DealState.FAILED` (+ `wrong_fit`) is the LLM's
   own campaign-scoped rejection, and `Lead.disqualified` is the permanent account-level exclusion
@@ -833,13 +834,16 @@ contacted twice unless the operator enables it — say so in every adapter's doc
 
 ## CRM Data Model
 
-- **SiteConfig** (`core/models.py`) — Singleton (pk=1). `ai_model` (pydantic-ai `provider:model`; valid providers openai/anthropic/google/groq/mistral/cohere/openai_compatible), `llm_api_key`, `llm_api_base` (only for `openai_compatible:*`), `bettercontact_api_key` (blank disables discovery + enrichment), `contacts_api_token`/`contacts_api_url` (token earned on first contribution; blank URL → default hub), `country_code` (ISO-3166 alpha-2 — the only persisted operator setting; drives the email-jurisdiction rules via `core/geo`). `SiteConfig.load()`; `core/llm.get_llm_model()` turns it into a `pydantic_ai.models.Model`.
-- **Campaign** (`core/models.py`) — `name` (unique), `users` (M2M to `User`), `product_docs`, `campaign_target`, `model_blob` (per-campaign GP), `country_code` (the ICP's target country, stamped on discovered leads for the geo-gate), `headcount_min`/`headcount_max` (**the ICP size band** — a fixed constraint riding every discovery query unchanged and never a search axis, since loosening a bound queries off-ICP and the provider fills a half-open band with any-size companies rather than returning nothing; a column rather than keywords because it is a *number* the provider takes as a bare scalar). All set by `icp.generate_seed` on cold start. Discovery state lives in `QueryNode` rows, not on the campaign. *(Dropped with the sending leg: `booking_link` — a meeting URL only the outreach agent's prompt ever read — and `is_freemium`/`seed_public_ids`, which marked and seeded the promo campaign.)*
-- **Keyword** (`core/models.py`) — one `(field, token)` pair (`lead_job_title = cto`), globally unique and shared across campaigns. A **single word**, never a phrase: every extra word in a Lead Finder value is another AND (`Manager` → `Content Manager` is a ~300× narrowing), so the multi-word values the old pool held were near-empty before being conjoined with anything. Joining is still how the walk narrows, but it happens at query time against measured feedback, one token per move. `field` is constrained to `discovery.SEARCH_FIELDS`; `token` is deliberately unconstrained (outside `lead_seniority` these are free-text search terms and a token the index lacks is just an empty page). `Keyword.rows_for(pairs)` is the one place rows are minted (get-or-create, idempotent).
-- **QueryNode** (`core/models.py`) — one node in the walk: `campaign` FK, `keywords` (M2M) + `token_key` (sha256 of the sorted set, the dedup key), `parent` (self-FK — **the level, not provenance**: a child inherits its parent's measured rate as the prior its own counts move off), `next_offset`, `state` (`frontier` / `fired` / `drained` / `dead`), `leads_found` (the provider's corpus count at offset 0, diagnostic only). Unique on `(campaign, token_key)`. **No value column** — the estimate is counted from the label store every time it is needed (`select.estimate`), so there is no counter to drift, nothing to migrate, and nothing to reconcile after a crash; it is also the *same* estimator before and after firing, which is what makes a bad page self-correcting (a node that looked good from the store and returned nobody useful has its own misses land in the counters that made it look good). `pairs` renders the sorted `(field, token)` tuples; `to_filters()` maps onto provider JSON. *(Replaces `Clause`, `DiscoveryQuery` and `EmptyClauseSet`, all dropped in `0013`/`0014`. The anti-monotone prune survives without a blacklist table: a child is skipped at creation if any `dead` node's keyword set is a subset of it — which is the half of the prune that still works once dedup makes the lattice a DAG rather than a tree.)*
+- **SiteConfig** (`core/models.py`) — **the one row this install runs on** (singleton, pk=1). Two halves that used to be two models:
+  - *The keys and the operator*: `ai_model` (pydantic-ai `provider:model`; valid providers openai/anthropic/google/groq/mistral/cohere/openai_compatible), `llm_api_key`, `llm_api_base` (only for `openai_compatible:*`), `bettercontact_api_key` (blank disables discovery + enrichment), `contacts_api_token`/`contacts_api_url` (token minted at onboarding; blank URL → default hub), `country_code` (ISO-3166 alpha-2 — drives the email-jurisdiction rules via `core/geo`, and is stamped on discovered leads for the geo-gate).
+  - *The campaign content*, folded here from the deleted `Campaign` model: `product_docs`, `campaign_target`, `model_blob` (the fitted GP), `anchor_profiles`/`anchor_embeddings`/`anchor_source_fields` (the synthetic ideal profiles), `headcount_min`/`headcount_max` (**the ICP size band** — a fixed constraint riding every discovery query unchanged and never a search axis, since loosening a bound queries off-ICP and the provider fills a half-open band with any-size companies rather than returning nothing; a column rather than keywords because it is a *number* the provider takes as a bare scalar). Set by `icp.generate_seed` on cold start.
+
+  **There is no `Campaign` model and no campaign identity.** This install has never run more than one, so a separate row bought nothing but a selection step nobody used; a second ICP is a second store (`--db`). Discovery state lives in `QueryNode` rows. `SiteConfig.load()`; `core/llm.get_llm_model()` turns it into a `pydantic_ai.models.Model`. *(Dropped with the sending leg: `booking_link`, and `is_freemium`/`seed_public_ids`, which marked and seeded the retired promo campaign.)*
+- **Keyword** (`core/models.py`) — one `(field, token)` pair (`lead_job_title = cto`), globally unique. A **single word**, never a phrase: every extra word in a Lead Finder value is another AND (`Manager` → `Content Manager` is a ~300× narrowing), so the multi-word values the old pool held were near-empty before being conjoined with anything. Joining is still how the walk narrows, but it happens at query time against measured feedback, one token per move. `field` is constrained to `discovery.SEARCH_FIELDS`; `token` is deliberately unconstrained (outside `lead_seniority` these are free-text search terms and a token the index lacks is just an empty page). `Keyword.rows_for(pairs)` is the one place rows are minted (get-or-create, idempotent).
+- **QueryNode** (`core/models.py`) — one node in the walk: `keywords` (M2M) + `token_key` (sha256 of the sorted set, the dedup key), `parent` (self-FK — **the level, not provenance**: a child inherits its parent's measured rate as the prior its own counts move off), `next_offset`, `state` (`frontier` / `fired` / `drained` / `dead`), `leads_found` (the provider's corpus count at offset 0, diagnostic only). Unique on `token_key`. **No value column** — the estimate is counted from the label store every time it is needed (`select.estimate`), so there is no counter to drift, nothing to migrate, and nothing to reconcile after a crash; it is also the *same* estimator before and after firing, which is what makes a bad page self-correcting (a node that looked good from the store and returned nobody useful has its own misses land in the counters that made it look good). `pairs` renders the sorted `(field, token)` tuples; `to_filters()` maps onto provider JSON. *(Replaces `Clause`, `DiscoveryQuery` and `EmptyClauseSet`, all dropped in `0013`/`0014`. The anti-monotone prune survives without a blacklist table: a child is skipped at creation if any `dead` node's keyword set is a subset of it — which is the half of the prune that still works once dedup makes the lattice a DAG rather than a tree.)*
 - **Company** (`crm/models/company.py`) — the employer, stored once and shared by every `Lead` at that firm. Identity is `key` (unique): the lowercased `domain`, or `name:<lowercased name>` when the provider reported no domain — a single computed column, because no constraint can express "the domain when there is one, the name otherwise". `name`/`domain` are nullable; `from_row(name, domain)` get-or-creates and returns `None` when the row named no company. **What the provider said, not verified truth**: Lead Finder fuzzy-matches this record (a boutique law firm's founder comes back as Meta — see `discovery.TEXT_FIELDS`), so anything treating a Company as an *account* inherits that error. Known limitation of the simple key: a firm seen once with a domain and once without produces two rows (`acme.com` and `name:acme`); reconciling them is a later pass, not merge logic at write time.
-- **Lead** (`crm/models/lead.py`) — Keyed on `profile_url` (unique — the discovery provider's per-person URL, the opaque identity/lookup key, **stored, never fetched**). `country_code` (stamped from the discovery ICP; drives the contacts-store geo-gate; blank → never contributed). `embedding` (384-dim float32 BinaryField, built at discovery). `profile_text` (the firmographic text — headline/location/industry/title/company/company-description, plus seniority, company-industry, location state+country, and company-keywords folded in *when the row carries them* — built from the Lead Finder row at discovery, the LLM qualifier's input; no re-scrape). `email` (the finder result; null = not found/unresolved — populated by the two-leg buy/check lookup or a free hub-cache hit, never on the model itself). `disqualified` (the permanent, account-level exclusion the export filters — nothing sets it automatically now that the inbound opt-out path is gone). **Identity fields** — `full_name`, `first_name`, `last_name`, `job_title` (all nullable, `NULL` = the provider never told us) and `company` (FK). They exist for the **lead export** and for the record the product keeps, and are deliberately kept out of `profile_text` and the embedding: a name carries no ICP signal and would only give the GP noise to learn on. **The two name sources are distinct and neither is a guess** — discovery reports one `contact_full_name`; the paid enrichment response reports the real `contact_first_name`/`contact_last_name`, which `enrichment/lookup.py` writes on a hit. A lead resolved from the free hub cache never reaches that provider, so its name parts stay `NULL` rather than being split in-house, because they feed a sequencer's `{{first_name}}` merge tag where a wrong guess lands in someone's cold email. `to_profile_dict()` → `{lead_id, profile_url}`; `embedding_array` for numpy; `get_labeled_arrays(campaign)` → (X, y) for GP warm start (non-FAILED → 1, FAILED+wrong_fit → 0, other FAILED → skipped). Created browserless via `core/db/leads.create_lead(row, country_code)` — there are no scrape accessors.
-- **Deal** (`crm/models/deal.py`) — campaign-scoped (`unique(lead, campaign)`). `state` (`DealState`), `outcome` (`Outcome` — now only `wrong_fit`/`unknown`), `reason` (**the product**: why the LLM chose or rejected this lead, in its own words, and the only fit signal that leaves in the export). `not_before` (**the only schedule a deal carries** — "do not touch this row before this time", written by the lookup backoff, null = always eligible), `lookup_request_id`/`lookup_attempt` (the in-flight paid job and its backoff exponent), `creation_date`, `update_date`.
+- **Lead** (`crm/models/lead.py`) — Keyed on `profile_url` (unique — the discovery provider's per-person URL, the opaque identity/lookup key, **stored, never fetched**). `country_code` (stamped from the discovery ICP; drives the contacts-store geo-gate; blank → never contributed). `embedding` (384-dim float32 BinaryField, built at discovery). `profile_text` (the firmographic text — headline/location/industry/title/company/company-description, plus seniority, company-industry, location state+country, and company-keywords folded in *when the row carries them* — built from the Lead Finder row at discovery, the LLM qualifier's input; no re-scrape). `email` (the finder result; null = not found/unresolved — populated by the two-leg buy/check lookup or a free hub-cache hit, never on the model itself). `disqualified` (the permanent, account-level exclusion the export filters — nothing sets it automatically now that the inbound opt-out path is gone). **Identity fields** — `full_name`, `first_name`, `last_name`, `job_title` (all nullable, `NULL` = the provider never told us) and `company` (FK). They exist for the **lead export** and for the record the product keeps, and are deliberately kept out of `profile_text` and the embedding: a name carries no ICP signal and would only give the GP noise to learn on. **The two name sources are distinct and neither is a guess** — discovery reports one `contact_full_name`; the paid enrichment response reports the real `contact_first_name`/`contact_last_name`, which `enrichment/lookup.py` writes on a hit. A lead resolved from the free hub cache never reaches that provider, so its name parts stay `NULL` rather than being split in-house, because they feed a sequencer's `{{first_name}}` merge tag where a wrong guess lands in someone's cold email. `to_profile_dict()` → `{lead_id, profile_url}`; `embedding_array` for numpy; `get_labeled_arrays()` → (X, y) for GP warm start (non-FAILED → 1, FAILED+wrong_fit → 0, other FAILED → skipped). Created browserless via `core/db/leads.create_lead(row, country_code)` — there are no scrape accessors.
+- **Deal** (`crm/models/deal.py`) — one per lead (`unique(lead)` — with one implicit campaign there is one verdict per person). `state` (`DealState`), `outcome` (`Outcome` — now only `wrong_fit`/`unknown`), `reason` (**the product**: why the LLM chose or rejected this lead, in its own words, and the only fit signal that leaves in the export). `not_before` (**the only schedule a deal carries** — "do not touch this row before this time", written by the lookup backoff, null = always eligible), `lookup_request_id`/`lookup_attempt` (the in-flight paid job and its backoff exponent), `creation_date`, `update_date`.
 
   *Dropped with the sending leg:* `mailbox` and `thread` (FKs into the `emails` app), `email_subject`, `email_sent_at`, and `chat_summary` — every one of them a fact about a conversation.
 
@@ -852,7 +856,7 @@ Paths relative to `openoutfind/`.
 
 - **`core/job.py`** — the bounded run: `Goal` (count + unit, a **delta** not a total), `JobResult`, `run_job(campaign, goal, on_new_lead)`, `_unit_ids` (progress as a set, per unit). No timeout, by decision — see **The Cycle**.
 - **`core/cycle.py`** — the hierarchy, and no loop at all: `run_one_action` (rows 1–4, first match wins), `_apply` (one save per transition), `pipeline_summary` (also the reason a job stopped short), `HALTING_ERRORS`. *(Gone with the daemon: `run_daemon`, `_rotate`, `CYCLE_SECONDS`, `IDLE_LOG_INTERVAL_S`. Gone with the sending leg: `unanswered_replies` — the follow-up trigger — `room_to_send_today` — the spend gate — and `read_mail_if_due`/`refresh_capacities_if_due`, the two periodic side-effects.)*
-- **`core/operator.py`** — who is running this install: `get_active_user()`, `campaigns()` (what `--campaign` picks from), `self_profile()`, `seller_name()`/`seller_full_name()`. Nothing is cached across calls — both reads are one indexed row, and a cache would only let a renamed operator keep signing with the old name until restart. Replaces the browser era's `OperatorSession`, which by the end held nothing session-like: just the Django `User` and whichever campaign the handler was on (now a real FK on the deal).
+- **`core/operator.py`** — who is running this install: `get_active_user()`, `self_profile()`, `seller_name()`/`seller_full_name()`. Nothing is cached across calls — the read is one indexed row, and a cache would only let a renamed operator keep signing with the old name until restart. Replaces the browser era's `OperatorSession`, which by the end held nothing session-like: just the Django `User` and whichever campaign the handler was on.
 - **`discovery.py`** — Lead Finder client and the provider contract. `search(filters, limit, offset)` → `Page(leads, leads_found)`: the rows plus the corpus count from `summary.leads_found`, surfaced **only at offset 0** (past the end of *any* result set the API reports 0). `SEARCH_FIELDS` is the three axes a node may add tokens to — `lead_industry` is absent because it is **inert** (a nonsense value returns the identical count to no filter), `lead_function` because it and `lead_department` are one field under two names whose values are ORed (naming both *widens* the query), and `lead_department` because no lead row carries a department, so no vocabulary could ever grow for it. `filters_for(keywords, headcount)` is the only place a node becomes provider JSON (same-field tokens space-joined = AND; different fields = separate keys; the include-list OR deliberately unused). `KEYWORD_SOURCE_FIELDS` maps each axis to the row fields that *are* that axis, and `source_fields_for(row)` stores exactly those on the Lead. `profile_text_for(row)` builds the qualifier's text from `TEXT_FIELDS`; `keyword_terms(keywords)` is what rides the embedding. A field earns its `TEXT_FIELDS` slot by **varying between leads**: the GP ranks the pool's candidates against each other, so a field constant across them adds nothing however accurate. That test excludes the `company_*` free text — Lead Finder staples a fuzzy-matched company record onto every row (a law firm's founder comes back as Meta, mission statement and all; 1–4 distinct records per 100-row page), so `company_description` (59% of the old text) and `company_keywords` (21%) were 80% of every vector at ~zero bits; `contact_location` is absent from every response. **Changing `TEXT_FIELDS` moves the vector space — every `Lead` must be re-embedded**, and the raw rows are not persisted, so in practice that means re-discovering. `embed_query`/`embed_queries` were removed with the GP-scored walk. Shares `submit_and_poll` with `enrichment/bettercontact.py`.
 - **`core/pipeline/`** — `icp.py` (the two cold-start priors, same inputs, two shapes — `generate_seed`: one LLM pass → the campaign's opening **keywords** and size band. It is the *only* LLM call discovery makes about queries: with no qualified leads there are no profiles to count words from, so the ICP text is the one available source. The spec's phrases are **split into single-word tokens** (the LLM writes `"Head of Growth"`, which Lead Finder reads as three ANDed tokens — narrow enough to be empty before the walk has learned anything), letting measurement decide which pair is worth conjoining; `generate_anchors`/`ensure_anchors`: the ICP as synthetic ideal *profiles*, embedded as the GP's positives so a campaign whose every verdict is a rejection can fit at all, kept permanently once written), `vocabulary.py` (`tokenize`/`profile_tokens`, `refresh` — grow the keyword table from qualified leads' `source_fields` at df≥2, `seed_seniorities` — the closed 12-value list, `admitted_keywords`), `select.py` (**the selector, and it is arithmetic**: `LabelStore` (token sets + verdicts, loaded once per pass), `estimate`/`_beta_params` (the parent-smoothed rate), `frontier`/`next_node` (one pool, Thompson draw, argmax), `expand` (add-only children over co-occurring tokens, dead-subset pruned), `seed_frontier`, `advance`/`retire`/`_prune_descendants`, `token_key`), `discover.py` (`discover(campaign, qualifier)`: ensure vocabulary + frontier → draw a node → page it → harvest into first-touch `Lead`s with keyword-injected embeddings and expand its children (`_harvest`), or classify the empty page and retire (`_handle_empty`) and try the next node; `qualifier` is accepted and ignored), `qualify.py` (`run_qualification` / `fetch_qualification_candidates` — reads `Lead.profile_text`, no scrape), `ready_pool.py` (GP gate: `promote_to_ready`, `find_ready_candidate`; `min_gp_confidence` is the spend gate **and nothing else**), `top_up.py` (`top_up` — **one** acquisition move per call, the cold/explore/exploit strategy ported verbatim from the old `pools._advance`; `_consumable_candidates` is the exploit gate — see its module docstring. The `while True` that used to wrap it is gone: the cycle is the loop). *(`mint.py` is gone — LLM clause minting was replaced by `vocabulary.py`'s counting. `freemium_pool.py` went with the promo campaign.)*
 - **`core/ml/`** — `qualifier.py` (`Qualifier` protocol, `BayesianQualifier`, `qualify_with_llm`, `format_prediction`), `embeddings.py` (`embed_text`/`embed_texts`, cached FastEmbed model). *(`KitQualifier` and `hub.py` — the HuggingFace campaign kit — went with the promo campaign, which had no labels of its own to fit on.)*

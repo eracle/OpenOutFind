@@ -32,10 +32,10 @@ The lead's `profile_text` (headline, company description, title, seniority, indu
 
 **Where:** `core/pipeline/qualify.py`, `core/ml/qualifier.py`
 
-Embedded leads with no Deal are the pool. The GP selects which candidate to evaluate next — **exploit** (highest predicted probability) when negatives outnumber positives, else **explore** (highest BALD). Every decision is an LLM call over the stored `profile_text`. A campaign with no acceptances yet fits against **synthetic ideal profiles** written from its ICP (`icp.generate_anchors`, stored on `Campaign.anchor_profiles`), retired one per real acceptance.
+Embedded leads with no Deal are the pool. The GP selects which candidate to evaluate next — **exploit** (highest predicted probability) when negatives outnumber positives, else **explore** (highest BALD). Every decision is an LLM call over the stored `profile_text`. An install with no acceptances yet fits against **synthetic ideal profiles** written from its ICP (`icp.generate_anchors`, stored on `SiteConfig.anchor_profiles`). They are permanent — real acceptances outnumber them rather than retiring them.
 
 - **Accepted** → `Lead` promoted to a `Deal` at `QUALIFIED`.
-- **Rejected** → `FAILED` Deal with `wrong_fit` outcome (campaign-scoped; not `Lead.disqualified`).
+- **Rejected** → `FAILED` Deal with `wrong_fit` outcome (a verdict on this deal; not `Lead.disqualified`).
 
 ## 4. Rank gate (QUALIFIED → READY_TO_FIND_EMAIL)
 
@@ -60,13 +60,13 @@ The provider's response also carries `contact_first_name`/`contact_last_name`, w
 
 ## 6. Export — the end of the line
 
-**Where:** `core/export.py`, printed by `outfind find` on stdout — the whole campaign, every time, so `find 10 emails > leads.csv` always leaves the current truth in that file
+**Where:** `core/export.py`, printed by `outfind find` on stdout — every lead you have, every time, so `find 10 emails > leads.csv` always leaves the current truth in that file
 
 ```
 email, first_name, last_name, company, title, website, linkedin_url, reason, lead_id, qualified_at
 ```
 
-The whole campaign prints every time, so the file you redirect into is always the current truth: an address resolved since your last run comes back with the row filled in. The column names are the **importers'**, not ours, so a file imports into Instantly or Smartlead without column mapping. A `QUALIFIED` deal is already exportable — an address is an enrichment on top, never a precondition. **Two rejections are always excluded**: `FAILED` (the LLM's campaign-scoped verdict) and `Lead.disqualified` (the permanent account-level exclusion). There is **no score column**: the GP posterior is a spend gate, not a quality signal, and the fit verdict is already in the file as `reason`, in language a person reads.
+Everything prints every time, so the file you redirect into is always the current truth: an address resolved since your last run comes back with the row filled in. The column names are the **importers'**, not ours, so a file imports into Instantly or Smartlead without column mapping. A `QUALIFIED` deal is already exportable — an address is an enrichment on top, never a precondition. **Two rejections are always excluded**: `FAILED` (the LLM's fit verdict) and `Lead.disqualified` (the permanent account-level exclusion). There is **no score column**: the GP posterior is a spend gate, not a quality signal, and the fit verdict is already in the file as `reason`, in language a person reads.
 
 The boundary is **one-way**. Leads leave; nothing comes back. There is no inbound endpoint, and the opt-out duty belongs to whoever does the contacting.
 
@@ -74,9 +74,9 @@ The boundary is **one-way**. Leads leave; nothing comes back. There is no inboun
 
 - **RESOLVED** — an address is in hand. Where a fully-enriched deal comes to rest.
 - **NO_EMAIL_FOUND** — no address could be resolved. Blank outcome, ML-skipped: the lead was a fit, only reachability failed.
-- **FAILED** — an LLM qualification rejection (`wrong_fit`, campaign-scoped).
+- **FAILED** — an LLM qualification rejection (`wrong_fit`), on this deal only.
 
-`Lead.disqualified=True` is a separate, permanent account-level exclusion (never given a new deal in any campaign) and is filtered by the export. Nothing sets it automatically any more: the inbound path that used to — an unsubscribe read out of the mailbox — left with the sending leg.
+`Lead.disqualified=True` is a separate, permanent account-level exclusion (never given a new deal again) and is filtered by the export. Nothing sets it automatically any more: the inbound path that used to — an unsubscribe read out of the mailbox — left with the sending leg.
 
 ## What used to follow
 

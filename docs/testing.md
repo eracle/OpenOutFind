@@ -15,7 +15,7 @@ make test                 # full suite (native — tests do not run in Docker)
 
 ```
 tests/
-├── conftest.py                 # shared fixtures: operator (Django User), campaign, stubbed
+├── conftest.py                 # shared fixtures: operator (Django User), site_config, stubbed
 │                               #   embeddings
 ├── factories.py                # factory-boy factories (LeadFactory → profile_url, etc.)
 ├── contacts/test_service.py    # the hub client (resolve / contribute), best-effort degradation

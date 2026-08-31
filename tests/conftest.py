@@ -80,8 +80,8 @@ def operator(db):
 def site_config(db, operator):
     """The ``SiteConfig`` singleton under test.
 
-    Holds exactly the fields the old ``Campaign`` model held, folded onto the config
-    singleton (2026-08-30) since this install has never run more than one campaign.
+    One row holds the keys, the operator's country and the product/target text: an
+    install runs exactly one ICP, so there is nothing to name or select between.
     Steps and pipeline functions take it directly; the operator is looked up
     (``core/operator.py``) rather than threaded through, so nothing carries a session
     object either.

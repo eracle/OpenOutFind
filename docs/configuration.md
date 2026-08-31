@@ -1,10 +1,9 @@
 # Configuration
 
 Configuration lives in one place, the **`SiteConfig`** DB singleton (managed via interactive
-onboarding or Django Admin), plus a few hardcoded defaults in **`core/conf.py`**. This install has
-never run more than one campaign in practice, so the campaign content that used to live on a
-separate `Campaign` model was folded onto `SiteConfig` (2026-08-30) — one row holds keys, the
-operator's country, and the product/target text. There are no social-network credentials —
+onboarding or Django Admin), plus a few hardcoded defaults in **`core/conf.py`**. One row holds the
+keys, the operator's country, and the product/target text: an install runs exactly one ICP, so
+there is nothing to name and nothing to select between. There are no social-network credentials —
 OpenOutFind is browserless and uses no such account.
 
 ## Configure without a terminal
@@ -33,8 +32,8 @@ command at a different SQLite file.
 ## The `SiteConfig` singleton (pk=1)
 
 Set during onboarding, editable in Django Admin. `SiteConfig` is the single source of truth for
-keys, the operator's country, and the campaign content — one row, since this install runs exactly
-one campaign.
+keys, the operator's country, and the product/target text — one row, since an install runs exactly
+one ICP.
 
 | Field | Description | Default |
 |:------|:------------|:--------|
@@ -47,7 +46,7 @@ one campaign.
 | `product_docs` | Product/service description. Feeds ICP generation and qualification — **the whole input**. | (required) |
 | `campaign_target` | Who you're going after + the outcome. Feeds the same. | (required) |
 | `headcount_min` / `headcount_max` | Company-size band, applied to every discovery query. | `1` / `10000` |
-| `anchor_profiles` / `anchor_embeddings` | Synthetic ideal profiles (JSON / binary) standing in for positives until real acceptances replace them, one per acceptance. | (empty) |
+| `anchor_profiles` / `anchor_embeddings` | Synthetic ideal profiles (JSON / binary) standing in for positives before any real acceptance exists. Once a lead qualifies the set is permanent — real acceptances outnumber it rather than retiring it. | (empty) |
 | `model_blob` | The trained GP model (joblib, binary). | (empty) |
 
 The operator's own email and name live on the Django `User` (created at onboarding), not on
@@ -66,7 +65,7 @@ At onboarding you enter your `country_code`. If it is **not** an opt-in jurisdic
 
 ## Hardcoded Defaults (`core/conf.py`)
 
-Not user-configurable per campaign; edit the source to change.
+Not user-configurable; edit the source to change.
 
 | Key | Value | Description |
 |:----|:------|:------------|

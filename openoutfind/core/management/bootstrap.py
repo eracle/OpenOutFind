@@ -64,7 +64,7 @@ def ensure_onboarded() -> None:
         "Set these and run again:\n"
         f"{onboarding.env_help()}\n"
         "Optional: "
-        f"{onboarding.ENV_PREFIX}CAMPAIGN_NAME, {onboarding.ENV_PREFIX}LLM_API_BASE "
+        f"{onboarding.ENV_PREFIX}LLM_API_BASE "
         f"(required for openai_compatible:*), {onboarding.ENV_PREFIX}NEWSLETTER.\n"
         f"{onboarding.ENV_PREFIX}ACCEPT_LEGAL_NOTICE must be set to 'true' — it "
         f"records that you accept {onboarding.LEGAL_NOTICE_URL}.",

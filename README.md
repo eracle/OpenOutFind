@@ -39,8 +39,8 @@ It has **zero platform-ToS surface**: browserless, no social-network account, no
 1. **You provide** a product description and a campaign objective (e.g. "SaaS analytics platform" targeting "VP of Engineering at Series B startups")
 2. **An LLM turns that into opening search keywords** and pages matching firmographic profiles from a **licensed discovery source** (BetterContact **Lead Finder**) — no emails yet, billed nothing
 3. **Discovery walks the keyword index by counting**, adding one word at a time and spending its next query where the accepted-lead counts say the best ones came from. No model, no cadence knob
-4. **An LLM qualifies each candidate** against your ICP and **writes down why**. A per-campaign model (Gaussian Process over profile embeddings) learns from those verdicts and picks who to qualify next
-5. **The whole campaign prints as CSV when the run ends** — name, title, company, website, profile URL, and the `reason` — so `> leads.csv` is the only file there is. Ask for addresses (`find 10 emails`, or `--emails`) and the best-fit leads get a **paid email lookup** first, one credit per verified hit, gated on the model's confidence so the spend goes to the leads most likely to fit
+4. **An LLM qualifies each candidate** against your ICP and **writes down why**. A model of your ICP (Gaussian Process over profile embeddings) learns from those verdicts and picks who to qualify next
+5. **Every lead you have prints as CSV when the run ends** — name, title, company, website, profile URL, and the `reason` — so `> leads.csv` is the only file there is. Ask for addresses (`find 10 emails`, or `--emails`) and the best-fit leads get a **paid email lookup** first, one credit per verified hit, gated on the model's confidence so the spend goes to the leads most likely to fit
 
 Searching the licensed source is free, so the system can afford to look at a lot and spend paid lookups only on the best fits. *(The learning loop is an active experiment — it is not yet shown to beat picking at random, and no claim is made that it does.)*
 
@@ -55,7 +55,7 @@ amount, and you get it back:
 outfind find 10 emails > leads.csv
 ```
 
-It runs until it has ten more leads carrying an address, prints **the whole campaign** as CSV, and
+It runs until it has ten more leads carrying an address, prints **every lead you have** as CSV, and
 exits — so the file you just wrote is always the current truth, and there is nothing to poll and
 nothing to supervise. Exit 0 means it got what you asked for; anything short still prints its rows
 and says why it stopped.
@@ -76,7 +76,7 @@ Those column names are **the importers', not ours**. Instantly and Smartlead bot
 - **`reason` is the point.** Everybody exports rows; almost nobody exports *why this lead*.
 - **There is no score column, on purpose.** The model's confidence is a spend gate for the paid lookup, not a quality signal, and thresholding on it would be reading a number that was never calibrated to mean "good lead". The fit verdict is the LLM's, and it is already in the file as a sentence.
 - **A lead with no email still exports.** If you have no email-finder credits, you still get the qualified person, their employer and the reason.
-- **A rejected lead never exports.** Both rejections are excluded, always: the LLM's campaign-scoped "wrong fit" and the permanent account-level opt-out.
+- **A rejected lead never exports.** Both rejections are excluded, always: the LLM's "wrong fit" verdict and the permanent account-level opt-out.
 
 The export is a **one-way boundary**. Leads leave; nothing comes back. There is no inbound endpoint, no reply vocabulary and no callback to register — whoever sends owns the conversation, the suppression list and the opt-out duty. That is what keeps every integration equal: a sequencer, a CRM and a spreadsheet all read the same rows, and our own sender gets no private door.
 
@@ -101,14 +101,14 @@ outfind find 50 --json | outsend
 outsend send                        # a separate invocation, on the mailbox's clock
 ```
 
-`--json` is **JSON Lines**: one record per line on stdout — the ten CSV columns plus `profile_text`, the raw firmographic text the qualifier judged on — with the run's metadata as a single JSON object on stderr and nothing else there. The receiver ingests idempotently, keyed on `(lead_id, campaign)`, so re-running the pipe is a correction rather than a second contact.
+`--json` is **JSON Lines**: one record per line on stdout — the ten CSV columns plus `profile_text`, the raw firmographic text the qualifier judged on — with the run's metadata as a single JSON object on stderr and nothing else there. The receiver ingests idempotently, keyed on `lead_id`, so re-running the pipe is a correction rather than a second contact.
 
 Two things that are *not* privileges, and that is the point:
 
 - **The CSV is still the integration** for every third-party platform. `profile_text` rides the JSON only because a sender writes an opener from it — summarising *for a message* is the sender's job, so the text crosses raw rather than being extracted twice.
 - **The boundary stays one-way.** No inbound endpoint, no reply vocabulary, no callback: `outsend` reads the same rows a spreadsheet does, and owns the conversation, the suppression list and the opt-out duty once they arrive.
 
-`find 0` re-prints the campaign without doing any work, which is the re-emit path — there is no `export` verb.
+`find 0` re-prints everything you already have without doing any work, which is the re-emit path — there is no `export` verb.
 
 > Want one install and one command instead of two? [OpenOutreach](https://github.com/eracle/OpenOutreach) bundles OpenOutFind and OpenOutSend behind a single wizard and a single binary. This repo stays the agent-first, no-wizard shape underneath it.
 
@@ -162,16 +162,16 @@ or, if you would rather install it:
 pip install openoutfind && outfind find 10
 ```
 
-The interactive onboarding walks you through the inputs above on first run — four steps: product/objective → LLM key (live-verified) → BetterContact key → your email, country and the legal notice. `find` does it for you if it hasn't happened yet; `outfind init` does it deliberately, prints the campaign it created and stops before spending anything. Either way every answer can come from the environment instead (`OPENOUTFIND_*`), which is what makes a headless install possible. Everything lives in `~/.openoutfind/data`, so stopping and starting loses nothing: the number you ask for is *more than you already have*, so running it again continues where it left off. No browser, no daemon manager, no container.
+The interactive onboarding walks you through the inputs above on first run — four steps: product/objective → LLM key (live-verified) → BetterContact key → your email, country and the legal notice. `find` does it for you if it hasn't happened yet; `outfind init` does it deliberately, prints what it set up and stops before spending anything. Either way every answer can come from the environment instead (`OPENOUTFIND_*`), which is what makes a headless install possible. Everything lives in `~/.openoutfind/data`, so stopping and starting loses nothing: the number you ask for is *more than you already have*, so running it again continues where it left off. No browser, no daemon manager, no container.
 
 **The three verbs:**
 
 ```bash
-outfind init                # set up the pipeline and the campaign, print it, stop
+outfind init                # set up the pipeline, print what it made, stop
 outfind find 10             # ten more qualified leads — free, and cannot spend
 outfind find 10 --emails    # ...and buy an address for whatever is ready
 outfind find 10 emails      # ten more *with* a work email (one credit each)
-outfind find 0              # no work — just print what the campaign already has
+outfind find 0              # no work — just print what you already have
 outfind find 1 --open       # ...and open each new profile in your browser as it lands
 outfind find 1 --debug      # ...and show the discovery walk's reasoning as it goes
 outfind status              # what is configured, blocked and counted
@@ -220,7 +220,7 @@ make setup
 ```bash
 make find N=10          # or: python manage.py find 10 emails
 ```
-The interactive onboarding prompts for your LLM key, BetterContact key, and campaign details on first run. Fully resumable — the goal is *more than you have*, so stopping and running it again continues rather than restarting.
+The interactive onboarding prompts for your LLM key, BetterContact key, and what you sell on first run. Fully resumable — the goal is *more than you have*, so stopping and running it again continues rather than restarting.
 
 ### 3. Read the Verdicts (CRM Admin)
 
@@ -239,14 +239,14 @@ Browse Leads, Companies and Deals — every qualification decision, with its rea
 
 ### 4. Collect the file
 
-The run prints the whole campaign as CSV on **stdout**, so the file is wherever you redirect it —
+The run prints every lead you have as CSV on **stdout**, so the file is wherever you redirect it —
 the tool writes nothing for you and there is no path to go looking for:
 
 ```bash
 make find N=10 > leads.csv          # or: python manage.py find 0 > leads.csv
 ```
 
-`find 0` does no work and prints what the campaign already has, which is how you re-export without
+`find 0` does no work and prints what you already have, which is how you re-export without
 spending anything. A row exports as soon as the qualifier accepts it — an email address is an
 enrichment on top, never a precondition — so the file can carry rows with a blank `email`.
 `outfind status` counts both.
@@ -283,7 +283,7 @@ Only step 3 costs money, and its only gate is whether you configured a provider.
 
 The run ends when the goal is met, or when **nothing can advance right now** — every lead is waiting on a lookup that is not due yet, or the search has drained. There is no timeout to configure, because each thing being waited on carries its own.
 
-**Discover → qualify → gate → resolve → export.** One LLM pass turns your campaign into opening search keywords; from there the keyword vocabulary grows by counting the words that appear in profiles the LLM has accepted, and the walk keeps firing the most promising set. Qualification runs the GP + LLM loop over the stored firmographic text and writes the `reason`. The GP confidence gate promotes `QUALIFIED → READY_TO_FIND_EMAIL`, **rationing the paid lookup** so only the best-fit leads cost a credit. A miss ends the deal as `NO_EMAIL_FOUND` with a blank outcome (so the labeler skips it — an unfindable address is not a fit signal).
+**Discover → qualify → gate → resolve → export.** One LLM pass turns your product description into opening search keywords; from there the keyword vocabulary grows by counting the words that appear in profiles the LLM has accepted, and the walk keeps firing the most promising set. Qualification runs the GP + LLM loop over the stored firmographic text and writes the `reason`. The GP confidence gate promotes `QUALIFIED → READY_TO_FIND_EMAIL`, **rationing the paid lookup** so only the best-fit leads cost a credit. A miss ends the deal as `NO_EMAIL_FOUND` with a blank outcome (so the labeler skips it — an unfindable address is not a fit signal).
 
 **The qualification loop in detail:**
 
@@ -294,9 +294,9 @@ Discovered profiles are embedded (384-dim FastEmbed vectors) from the licensed f
 
 All qualification decisions go through the LLM. The GP model selects which candidate to evaluate next and gates promotion from `QUALIFIED` to `READY_TO_FIND_EMAIL`. Every LLM decision feeds back into the model, making candidate selection progressively smarter. **Only the LLM's fit verdict trains it** — no signal from a send has ever entered that loop.
 
-**Cold start:** a campaign with no acceptances yet has nothing to fit on, so the ICP is also written out as a handful of **synthetic ideal profiles** and embedded as the model's positives. Each real acceptance retires one of them, so the invented evidence thins out at the rate ground truth replaces it. When the unlabelled pool empties, discovery pages a fresh batch.
+**Cold start:** an install with no acceptances yet has nothing to fit on, so the ICP is also written out as a handful of **synthetic ideal profiles** and embedded as the model's positives. They stay — real acceptances simply outnumber them, so a few invented profiles decide less and less as ground truth arrives. When the unlabelled pool empties, discovery pages a fresh batch.
 
-Configure behavior via Django Admin (`SiteConfig` + `Campaign`).
+Configure behavior via Django Admin — `SiteConfig`, the one row this install runs on.
 
 ---
 
@@ -307,7 +307,7 @@ Configure behavior via Django Admin (`SiteConfig` + `Campaign`).
 ├── openoutfind/                      # single source package; Django apps nested inside
 │   ├── __main__.py                  # the `outfind` console script — the entry point
 │   ├── settings.py                  # Django settings (SQLite at ~/.openoutfind/data/db.sqlite3)
-│   ├── core/                        # engine app: the job + cycle, Campaign/SiteConfig,
+│   ├── core/                        # engine app: the job + cycle, SiteConfig,
 │   │                                #   LLM factory, onboarding, ML + discovery/qualify
 │   │                                #   pipeline, the lead export
 │   ├── enrichment/                  # the one paid step: provider client + buy/check lookup
