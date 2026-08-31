@@ -1,5 +1,5 @@
 # openoutfind/core/management/bootstrap.py
-"""The three things that must be true before any campaign work can start.
+"""The things that must be true before any finding can start.
 
 These used to be private methods on the `find` command, which made *getting ready* and
 *finding leads* one verb with one exit code. They are shared now because `init` exists to
@@ -7,8 +7,7 @@ do exactly this and nothing else — and a phase worth its own verb is a phase w
 in one place rather than two.
 
 The order matters and is not arbitrary: there is no schema to onboard into until the
-migrations run, no operator to validate until onboarding has made one, and no campaign to
-work until the operator owns one.
+migrations run, and no operator to validate until onboarding has made one.
 """
 from __future__ import annotations
 
@@ -72,13 +71,13 @@ def ensure_onboarded() -> None:
 
 
 def validate_operator() -> None:
-    """Fail loudly on the three things a job cannot run without.
+    """Fail loudly on the two things a job cannot run without.
 
     Each exits with a typed line rather than a log record: these are answers to the
     reader, and a program needs to branch on them.
     """
     from openoutfind.core.models import SiteConfig
-    from openoutfind.core.operator import campaigns, get_active_user
+    from openoutfind.core.operator import get_active_user
 
     if not SiteConfig.load().llm_api_key:
         raise OpenOutFindError(
@@ -90,7 +89,3 @@ def validate_operator() -> None:
     if get_active_user() is None:
         raise OpenOutFindError(
             ErrorType.ONBOARDING_INCOMPLETE, "no active operator account.")
-
-    if not campaigns():
-        raise OpenOutFindError(
-            ErrorType.ONBOARDING_INCOMPLETE, "no campaigns for this operator.")
