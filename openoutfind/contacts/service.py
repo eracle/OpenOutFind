@@ -27,16 +27,19 @@ logger = logging.getLogger(__name__)
 DEFAULT_API_URL = "https://hub.openoutreach.app"
 _TIMEOUT_S = 30
 
-# Where a contributed address came from — the wire values the hub maps to its
-# Contribution.Origin (an unrecognized value degrades to "unknown" server-side).
+# Where a contributed address came from — sent to the hub as this **string**, not as
+# a number, so a provider we do not list here is still labelled by whatever name it
+# gives itself.
 ORIGIN_BETTERCONTACT = "bettercontact"  # paid BetterContact hit
 ORIGIN_APOLLO = "apollo"  # paid Apollo people/match hit
 ORIGIN_PROFILE_INFO = "profile_info"  # 1st-degree contact-info overlay
 
 # These match ``enrichment.provider``'s module ``NAME``s, which is what ``lookup``
 # actually passes — a finder stamps its own contributions and no caller maps between
-# the two vocabularies. **The hub needs the matching Contribution.Origin entry**, or
-# an Apollo give-back degrades to "unknown" server-side (still stored, just unlabelled).
+# the two vocabularies. **A fork adding a finder does not need to touch this list**:
+# the hub stores the name it was sent verbatim, so a new vendor is grouped under its
+# own label from its first give-back. Upstream's Contribution.Origin small-int is only
+# a compact fast path for the vendors this client ships, never the gate on legibility.
 
 
 def resolve(lead) -> str | None:

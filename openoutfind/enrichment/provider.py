@@ -25,6 +25,21 @@ implements:
     credit_balance() int — raises ProviderUnavailable if it cannot be read
     start(url)      Lookup — resolved outright, or a handle
     poll_once(id)   PollOutcome — async providers only; sync ones never see a call
+
+**Adding a provider (including in a fork).** Write the module against the six names
+above, then add it to the three registries below (``active``, ``by_name``,
+``configured``) — that is the whole integration; nothing else in the codebase names
+a vendor.
+
+``NAME`` is the part that leaves the machine. ``lookup`` passes it straight to
+``contacts.contribute`` as the give-back's ``origin``, and it travels to the hub as
+that **string**, never as a number — so pick a short lowercase slug for your vendor
+(``"hunter"``, ``"dropcontact"``) and keep it stable, because it is what your
+contributions are grouped by forever after. The hub stores it verbatim whether or not
+it has ever heard of you, so a fork's own finder stays legible on the analytics side
+with no change needed there; only the small-int fast path in the hub's
+``Contribution.Origin`` is limited to the vendors upstream ships. Do not reuse another
+vendor's ``NAME`` to "fit in" — that silently merges your spend into theirs.
 """
 from __future__ import annotations
 
