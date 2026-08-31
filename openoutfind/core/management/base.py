@@ -80,7 +80,11 @@ def require_initialized_database() -> None:
     from django.db import connection
     from django.db.migrations.executor import MigrationExecutor
 
-    if "core_siteconfig" not in connection.introspection.table_names():
+    from openoutfind.core.models import SiteConfig
+
+    # Asked of the model rather than spelled out: the app label is namespaced when
+    # OpenOutreach hosts these apps, and a literal table name would go stale silently.
+    if SiteConfig._meta.db_table not in connection.introspection.table_names():
         raise OpenOutFindError(
             ErrorType.NOT_INITIALIZED,
             f"no pipeline yet at {settings.DATABASE_PATH} — run `outfind init` to create it",

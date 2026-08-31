@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 from django.conf import settings
 from django.test import override_settings
 
-from openoutfind.settings import state_dir
+from openoutfind.defaults import state_dir
 
 
 # ── the checkout / installed split ───────────────────────────────

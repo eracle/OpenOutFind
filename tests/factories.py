@@ -18,7 +18,7 @@ class UserFactory(factory.django.DjangoModelFactory):
 
 class LeadFactory(factory.django.DjangoModelFactory):
     class Meta:
-        model = "crm.Lead"
+        model = "outfind_crm.Lead"
 
     profile_url = factory.Sequence(lambda n: f"https://www.linkedin.com/in/lead-{n}/")
 
@@ -35,6 +35,6 @@ class LeadFactory(factory.django.DjangoModelFactory):
 
 class DealFactory(factory.django.DjangoModelFactory):
     class Meta:
-        model = "crm.Deal"
+        model = "outfind_crm.Deal"
 
     lead = factory.SubFactory(LeadFactory)

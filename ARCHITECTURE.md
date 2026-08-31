@@ -13,22 +13,24 @@ sequence, the opt-out — belongs to whatever tool the operator already sends wi
 ## Project Layout
 
 All source lives in the single `openoutfind/` package; Django apps are nested inside it
-(dotted `AppConfig.name`, short labels). Two apps, and that is the whole of it:
+(dotted `AppConfig.name`, labels namespaced `outfind_*` so OpenOutreach can host these apps
+in one registry beside OpenOutSend's). Two apps, and that is the whole of it:
 
 ```
 manage.py
 tests/
 openoutfind/
-  settings.py        # Django settings (SQLite at data/db.sqlite3)
+  settings.py        # Django settings (SQLite at data/db.sqlite3) — one host of the apps
+  defaults.py        # what any host must splat: APPS, state_dir(), app_settings()
   urls.py
   discovery.py       # Lead Finder client (ICP search + row embedding) — the top of the funnel
-  core/              # engine app (label: core) — the cycle, operator lookup,
-                     #   Campaign/SiteConfig models, llm.py, conf.py, onboarding,
+  core/              # engine app (label: outfind_core) — the cycle, operator lookup,
+                     #   the SiteConfig singleton, llm.py, conf.py, onboarding,
                      #   ML (qualifier/embeddings), discovery+qualify pipeline,
                      #   the lead export, db/ helpers, geo, management commands
   enrichment/        # the one paid step (not an app — no models) — the BetterContact
                      #   client and the two-step buy/check lookup
-  crm/               # app (label: crm) — Lead, Company, Deal
+  crm/               # app (label: outfind_crm) — Lead, Company, Deal
   contacts/          # central contacts-store client (service.py only — no models, not an app)
 ```
 
@@ -177,7 +179,8 @@ What a program depends on, and the reason both exist as one place rather than a 
   deliberately **not** a `CommandError` — Django prefixes that with the exception's class name, which
   would put noise in front of the line an agent parses.
 - **A fresh install is an answer too.** `settings.py` creates the data *directory*, but only `run`
-  migrates, so on a wheel every other verb used to die on a raw `no such table: core_campaign`.
+  migrates, so on a wheel every other verb used to die on a raw `no such table:
+  outfind_core_siteconfig`.
   `OpenOutFindCommand.requires_database` (default `True`; `run` sets it `False`) checks for the
   schema in `execute()` — **after** argument parsing, so `--help` still answers — and raises
   `not_initialized`, naming the database path. Reporting zero campaigns instead would be precisely

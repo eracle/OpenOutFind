@@ -2,14 +2,12 @@
 """
 Minimal Django settings for the OpenOutFind ORM + Django Admin.
 """
-import os
 import sys
 from pathlib import Path
 
-# The agents drive async pydantic-ai from a sync boundary (core/llm.py), so an
-# event loop can be live on the thread when the ORM is touched. We only use the
-# ORM synchronously, so Django's async-safety guard is safe to relax.
-os.environ.setdefault("DJANGO_ALLOW_ASYNC_UNSAFE", "true")
+from openoutfind import defaults
+
+defaults.allow_async_unsafe()
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 
@@ -29,8 +27,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
-    "openoutfind.crm.apps.CrmConfig",
-    "openoutfind.core.apps.CoreConfig",
+    *defaults.APPS,
 ]
 
 MIDDLEWARE = [
@@ -62,26 +59,13 @@ TEMPLATES = [
     },
 ]
 
-# Installed from a wheel, ROOT_DIR is inside site-packages — which is no place for an
-# operator's CRM or a model cache, and may not be writable. Both therefore live under the
-# home directory, and a checkout keeps its own `data/` and `.cache/` only because it
-# already has them.
-def state_dir(root: Path) -> Path:
-    """Where the operator's own files live: the checkout, or `~/.openoutfind` installed."""
-    return root if (root / "manage.py").exists() else Path.home() / ".openoutfind"
+STATE_DIR = defaults.state_dir(ROOT_DIR)
 
+# Splatted rather than spelled out, so a name the apps start reading arrives here and in
+# OpenOutreach's settings module from one definition instead of two that can drift.
+globals().update(defaults.app_settings(STATE_DIR))
 
-STATE_DIR = state_dir(ROOT_DIR)
-
-# `--db PATH` sets OPENOUTFIND_DB; otherwise the operator's data dir.
-DEFAULT_DATA_DIR = STATE_DIR / "data"
-
-# Deliberately *not* derived from DATABASE_PATH: `--db /tmp/scratch.sqlite3` must not send
-# fastembed off to re-download its weights beside a throwaway database.
-FASTEMBED_CACHE_DIR = STATE_DIR / ".cache" / "fastembed"
-
-DATABASE_PATH = Path(os.environ.get("OPENOUTFIND_DB") or DEFAULT_DATA_DIR / "db.sqlite3").expanduser()
-DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
+DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)  # noqa: F821 — splatted above
 
 DATABASES = {
     "default": {

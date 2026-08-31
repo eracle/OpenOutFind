@@ -64,7 +64,7 @@ class Lead(models.Model):
     # Provenance + discovery-steering ONLY — never read by qualify/promote/enrich.
     # A lead advances on its own P over the global pool, independent of its node.
     discovered_by = models.ForeignKey(
-        "core.QueryNode", null=True, blank=True,
+        "outfind_core.QueryNode", null=True, blank=True,
         on_delete=models.SET_NULL, related_name="leads",
     )
     creation_date = models.DateTimeField(default=timezone.now)
