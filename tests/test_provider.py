@@ -18,16 +18,12 @@ from tests.factories import DealFactory, LeadFactory
 
 
 @pytest.fixture
-def config(db):
-    from openoutfind.core.models import SiteConfig
-    return SiteConfig.load()
+def config(db, configure):
+    return configure
 
 
-def _keys(config, *, bc="", ap="", preferred=""):
-    config.bettercontact_api_key = bc
-    config.apollo_api_key = ap
-    config.email_finder = preferred
-    config.save()
+def _keys(configure, *, bc="", ap="", preferred=""):
+    configure(bettercontact_api_key=bc, apollo_api_key=ap, email_finder=preferred)
 
 
 def _ready_to_find(site_config):

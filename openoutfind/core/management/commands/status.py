@@ -43,7 +43,7 @@ class Command(OpenOutFindCommand):
 def render(status: dict) -> str:
     """Render the status document as a short human summary."""
     sections = (
-        _render_config(status["onboarding"]),
+        _render_config(status["config"]),
         _render_pipeline(status["totals"]),
         _render_credits(status["credits"]),
         _render_hub(status["hub"]),
@@ -53,12 +53,12 @@ def render(status: dict) -> str:
     return "\n".join(section for section in sections if section)
 
 
-def _render_config(onboarding: dict) -> str:
-    if onboarding["complete"]:
+def _render_config(config: dict) -> str:
+    if config["complete"]:
         return "Configuration: complete."
     lines = ["Configuration: incomplete."]
-    for step, variables in onboarding["missing"].items():
-        lines.append(f"  {step}: set {', '.join(variables)}")
+    for group, variables in config["missing"].items():
+        lines.append(f"  {group}: set {', '.join(variables)}")
     return "\n".join(lines)
 
 

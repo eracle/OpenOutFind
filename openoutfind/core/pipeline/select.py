@@ -113,7 +113,7 @@ class LabelStore:
         self._labels = labels
 
     @classmethod
-    def load(cls, site_config) -> "LabelStore":
+    def load(cls) -> "LabelStore":
         """The install's labelled leads, **plus the anchors as positives**.
 
         Qualified = any deal that is not a rejection.
@@ -135,10 +135,10 @@ class LabelStore:
         whatever real qualified profiles have accumulated — a small, constant nudge that
         matters early and is swamped by real evidence as the campaign grows.
 
-        They feed the **vocabulary** too (``vocabulary.refresh``), through a second shape
-        rather than through this one: ``SiteConfig.anchor_source_fields`` carries the same
-        invented people as *lead rows*, each value already under the field it is
-        searchable in. The rule this replaces was that anchors must never reach the
+        They feed the **vocabulary** too (``vocabulary.refresh``), through a second field
+        rather than through this one: an anchor is a ``Lead`` row, so its
+        ``source_fields`` carry the same invented person with each value already under
+        the field it is searchable in. The rule this replaces was that anchors must never reach the
         vocabulary, and the reason was sound — an anchor was one flat string, and
         splitting it by guess would file ``united states`` as a job title, the error
         ``discovery.KEYWORD_SOURCE_FIELDS`` exists to prevent. But that argues against
@@ -167,9 +167,9 @@ class LabelStore:
                 labels.append(verdicts[lead_id])
 
         anchors = 0
-        for profile in site_config.anchor_profiles or []:
-            if profile:
-                tokens.append(profile_tokens(profile))
+        for text in Lead.objects.filter(synthetic=True).values_list("profile_text", flat=True):
+            if text:
+                tokens.append(profile_tokens(text))
                 labels.append(1)
                 anchors += 1
         if anchors:
@@ -376,26 +376,35 @@ def _dead_sets() -> list[frozenset]:
     ]
 
 
-def seed_frontier(keywords) -> int:
+def seed_frontier(keywords, seed) -> int:
     """Open the walk with one depth-1 node per keyword. Returns nodes created.
 
     There is no root. The empty query is never fired — it matches everyone, so its one
     10k window is the provider's famous-company head and tells us nothing — and the level
     a root would have supplied comes from ``LabelStore.base_rate`` instead.
+
+    ``seed`` carries what the ICP said about the *shape* of every query rather than its
+    words — the size band and the country — and each opened node keeps its own copy, so a
+    later re-seed cannot retroactively change what an already-fired node searched.
     """
     created = 0
     for pair in keywords:
-        if _upsert([pair], parent=None) is not None:
+        if _upsert([pair], parent=None, seed=seed) is not None:
             created += 1
     return created
 
 
-def _upsert(pairs, parent, store: LabelStore | None = None, cache: dict | None = None):
+def _upsert(pairs, parent, store: LabelStore | None = None, cache: dict | None = None,
+            seed=None):
     """Create a node, or re-point an existing one at a better parent. ``None`` if pruned.
 
     A node reachable by several paths keeps the parent giving the **highest** estimate.
     Optimism, and it matches how the level is used: the parent is a claim about the region
     this node sits in, and the best-supported claim is the one worth carrying.
+
+    A child searches its parent's band and country — it is that query plus one word, so
+    changing either would make it a different query, not a narrower one. A depth-1 node
+    has no parent and takes them from ``seed``.
     """
     from openoutfind.core.models import Keyword, QueryNode
 
@@ -409,9 +418,31 @@ def _upsert(pairs, parent, store: LabelStore | None = None, cache: dict | None =
                 node.save(update_fields=["parent"])
         return None
 
-    node = QueryNode.objects.create(token_key=key, parent=parent)
+    node = QueryNode.objects.create(token_key=key, parent=parent,
+                                    **_query_shape(parent, seed))
     node.keywords.set(Keyword.rows_for(pairs))
     return node
+
+
+def _query_shape(parent, seed) -> dict:
+    """The size band and country a new node inherits — from its parent, or from the seed.
+
+    Neither is defaulted here: the field defaults are the answer when there is no parent
+    and no seed, which is the case an install with a hand-built node is in.
+    """
+    if parent is not None:
+        return {
+            "headcount_min": parent.headcount_min,
+            "headcount_max": parent.headcount_max,
+            "country_code": parent.country_code,
+        }
+    if seed is None:
+        return {}
+    return {
+        "headcount_min": seed.headcount[0],
+        "headcount_max": seed.headcount[1],
+        "country_code": seed.country_code,
+    }
 
 
 def expand(node, store: LabelStore, candidates) -> int:

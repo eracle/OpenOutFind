@@ -1,7 +1,13 @@
-"""Tests for the LLM model factory and onboarding credential verification."""
+"""Tests for the LLM model factory and the credential check every run makes.
+
+The suite stubs ``verify_llm_credentials`` globally so nothing reaches a real provider;
+these are the tests *of* that function, so they ask for the real one.
+"""
 import pytest
 
 from openoutfind.core import llm
+
+pytestmark = pytest.mark.no_llm_mock
 
 
 def test_build_llm_model_unknown_provider_raises():

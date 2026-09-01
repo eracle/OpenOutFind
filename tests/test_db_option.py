@@ -56,7 +56,7 @@ class TestTheOverview:
         main(["openoutfind"])
 
         printed = capsys.readouterr().out
-        assert all(verb in printed for verb in ("init", "find 10", "status"))
+        assert all(verb in printed for verb in ("check", "find 10", "status"))
         assert "squashmigrations" not in printed and "startproject" not in printed
 
     def test_the_db_flag_does_not_turn_a_bare_call_into_a_command(self, capsys):

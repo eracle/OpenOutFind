@@ -517,11 +517,11 @@ class TestOneFitPerLabelSet:
     def test_a_first_anchor_set_is_a_new_model(self, site_config):
         """Anchors are fitted alongside the real labels, so writing them is new evidence."""
         from openoutfind.core.ml.qualifier import qualifier_for
+        from openoutfind.crm.models import Lead
 
         self._labelled(False)
         first = qualifier_for()
 
-        site_config.anchor_profiles = ["a founder at a saas company"]
-        site_config.save(update_fields=["anchor_profiles"])
+        Lead.objects.create(synthetic=True, profile_text="a founder at a saas company")
 
         assert qualifier_for() is not first

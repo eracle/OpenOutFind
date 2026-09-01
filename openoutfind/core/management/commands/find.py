@@ -89,11 +89,8 @@ from openoutfind.core.logging import format_elapsed
 from openoutfind.core.export import IncrementalWriter, lead_record, lead_records, write_csv, write_json_lines
 from openoutfind.core.job import EMAILS, LEADS, UNITS, Goal, JobResult, run_job
 from openoutfind.core.management.base import OpenOutFindCommand
-from openoutfind.core.management.bootstrap import (
-    ensure_database,
-    ensure_onboarded,
-    validate_operator,
-)
+from openoutfind.core.management.bootstrap import ensure_database
+from openoutfind.core.readiness import check_ready
 from openoutfind.core.status import build_status, render_next_action
 
 logger = logging.getLogger(__name__)
@@ -151,10 +148,9 @@ class Command(OpenOutFindCommand):
         # so it goes nowhere rather than onto the stream a caller is parsing. A migration
         # that *fails* still raises; what is dropped is "Applying core.0001_initial… OK".
         ensure_database(io.StringIO() if quiet else self.stderr)
-        ensure_onboarded()
-        validate_operator()
+        check_ready()
 
-        from openoutfind.core.models import SiteConfig
+        from openoutfind.core.config import SiteConfig
 
         site_config = SiteConfig.load()
         goal = Goal(count=options["count"], unit=options["unit"])
@@ -296,7 +292,7 @@ def _announce_the_run(site_config, goal: Goal, buy_addresses: bool) -> None:
                 else "finding only, no addresses bought")
     work = f"goal: {goal}" if goal.count else "no work — printing what is already there"
     logger.info("%s · %s", work, spending)
-    log_icp_echo(site_config)
+    log_icp_echo()
 
 
 def _streamer(writer: IncrementalWriter):

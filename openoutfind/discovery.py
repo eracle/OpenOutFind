@@ -337,7 +337,7 @@ def search(filters: dict, limit: int = 100, offset: int = 0) -> Page:
     (§4), and writing that down as "matches nobody" is how the old walk blacklisted
     good queries permanently.
     """
-    from openoutfind.core.models import SiteConfig
+    from openoutfind.core.config import SiteConfig
 
     api_key = SiteConfig.load().bettercontact_api_key
     body = {"filters": filters, "limit": limit, "offset": offset}

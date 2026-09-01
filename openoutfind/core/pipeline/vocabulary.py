@@ -146,14 +146,20 @@ def _accepted_count() -> int:
     )
 
 
-def _anchor_source_fields(site_config) -> list[dict]:
+def _anchor_source_fields() -> list[dict]:
     """The synthetic ideal leads as rows the vocabulary can count.
 
     Empty for an install anchored before the fields were asked for — its flat profiles
     stay GP observations only, because recovering the fields from the line is exactly the
     guess this avoids.
     """
-    return [fields for fields in (site_config.anchor_source_fields or []) if fields]
+    from openoutfind.crm.models import Lead
+
+    return [
+        fields for fields in
+        Lead.objects.filter(synthetic=True).values_list("source_fields", flat=True)
+        if fields
+    ]
 
 
 def _qualified_source_fields() -> list[dict]:
@@ -179,7 +185,7 @@ def _qualified_source_fields() -> list[dict]:
     ]
 
 
-def refresh(site_config) -> int:
+def refresh() -> int:
     """Fold the qualified leads' words into the vocabulary. Returns tokens added.
 
     Cheap enough to run on every pass — it is a tokenize and a count over a few hundred
@@ -198,7 +204,8 @@ def refresh(site_config) -> int:
     global _refreshed_at
     from openoutfind.core.models import Keyword
 
-    signature = (_accepted_count(), len(site_config.anchor_source_fields or []))
+    anchors = _anchor_source_fields()
+    signature = (_accepted_count(), len(anchors))
     if _refreshed_at == signature:
         return 0
     _refreshed_at = signature
@@ -210,7 +217,7 @@ def refresh(site_config) -> int:
     # acceptances has no vocabulary at all beyond the seed, which is how one live install
     # came to fire 63 queries off a corpus of 3 profiles: at df>=2 a word had to appear in
     # two of three, so what survived was whatever generic token they happened to share.
-    profiles = _anchor_source_fields(site_config) + _qualified_source_fields()
+    profiles = anchors + _qualified_source_fields()
     if not profiles:
         # The cold-phase reality, and worth naming: with nothing qualified yet there are
         # no words to count, so the vocabulary is whatever the ICP seed put there and the

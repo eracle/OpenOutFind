@@ -12,7 +12,8 @@ from unittest.mock import patch
 import pytest
 
 from openoutfind.core.errors import ErrorType
-from openoutfind.core.models import Keyword, QueryNode, SiteConfig
+from openoutfind.core.config import SiteConfig
+from openoutfind.core.models import Keyword, QueryNode
 from openoutfind.core.pipeline import discover as discover_mod
 from openoutfind.core.pipeline import select, vocabulary
 from openoutfind.core.pipeline.discover import discover
@@ -22,20 +23,28 @@ from openoutfind.enrichment.bettercontact import BetterContactUnavailable
 
 
 @pytest.fixture(autouse=True)
-def _finder_key(db):
-    config = SiteConfig.load()
-    config.bettercontact_api_key = "k"
-    config.save()
+def _finder_key(db, configure):
+    configure(bettercontact_api_key="k")
 
 
-def _campaign(**kw):
-    defaults = dict(product_docs="p", campaign_target="t")
-    defaults.update(kw)
-    config = SiteConfig.load()
-    for key, value in defaults.items():
-        setattr(config, key, value)
-    config.save()
-    return config
+def _campaign(anchors=(), **kw):
+    """The configuration a discovery pass reads, plus any invented ideal leads.
+
+    The config is the environment (nothing is stored), the anchors are ``Lead`` rows —
+    the two halves of what used to be one row.
+    """
+    import os
+
+    from openoutfind.core.config import variable_for
+
+    values = dict(product_docs="p", campaign_target="t")
+    values.update(kw)
+    for field, value in values.items():
+        os.environ[variable_for(field)] = value
+    for source_fields in anchors:
+        Lead.objects.create(synthetic=True, source_fields=source_fields,
+                            profile_text=" ".join(source_fields.values()))
+    return SiteConfig.load()
 
 
 def _node(campaign, pairs, **kw):
@@ -70,9 +79,8 @@ class TestGates:
     # campaign and its gate are gone.
 
     def test_no_finder_key_is_a_no_op(self, db):
-        SiteConfig.objects.update(bettercontact_api_key="")
         with patch.object(discover_mod, "_fetch") as fetch:
-            assert discover(_campaign()) is False
+            assert discover(_campaign(bettercontact_api_key="")) is False
         fetch.assert_not_called()
 
     def test_no_icp_text_is_a_no_op(self, db):
@@ -230,7 +238,7 @@ class TestVocabulary:
             _labelled(c, "founder ai", True, {"contact_job_title": "founder ai"})
         _labelled(c, "founder solo", True, {"contact_job_title": "solo"})
 
-        vocabulary.refresh(c)
+        vocabulary.refresh()
         admitted = dict(vocabulary.admitted_keywords())
 
         assert ("lead_job_title", "founder") in vocabulary.admitted_keywords()
@@ -246,7 +254,7 @@ class TestVocabulary:
             _labelled(c, "cto belgium", True, {
                 "contact_job_title": "cto", "contact_location_country": "belgium"})
 
-        vocabulary.refresh(c)
+        vocabulary.refresh()
         pairs = set(vocabulary.admitted_keywords())
         assert ("lead_job_title", "cto") in pairs
         # Re-cased on the way in: the index reports `belgium` and matches `Belgium`.
@@ -257,7 +265,7 @@ class TestVocabulary:
         c = _campaign()
         for _ in range(3):
             _labelled(c, "plumber", False, {"contact_job_title": "plumber"})
-        vocabulary.refresh(c)
+        vocabulary.refresh()
         assert not Keyword.objects.filter(token="plumber").exists()
 
     def test_legacy_leads_without_source_fields_are_skipped(self, db):
@@ -266,7 +274,7 @@ class TestVocabulary:
         c = _campaign()
         for _ in range(3):
             _labelled(c, "founder ai", True)
-        assert vocabulary.refresh(c) == 0
+        assert vocabulary.refresh() == 0
 
     def test_seniorities_are_seeded_whole_not_grown(self, db):
         # The one axis whose vocabulary the provider publishes.
@@ -281,14 +289,12 @@ class TestVocabulary:
         cannot grow past its depth-1 seed nodes. A live campaign fired 63 queries off a
         corpus of 3 accepted profiles, where df>=2 admitted only whatever generic token
         two of the three happened to share."""
-        c = _campaign()
-        c.anchor_source_fields = [
+        _campaign(anchors=[
             {"contact_job_title": "head of revenue", "contact_location_country": "united states"},
             {"contact_job_title": "head of growth", "contact_location_country": "united states"},
-        ]
-        c.save(update_fields=["anchor_source_fields"])
+        ])
 
-        vocabulary.refresh(c)
+        vocabulary.refresh()
         pairs = set(vocabulary.admitted_keywords())
 
         # `head` and `of` are in both anchors; `revenue` and `growth` in one each, so the
@@ -300,11 +306,12 @@ class TestVocabulary:
     def test_a_campaign_anchored_before_the_fields_existed_grows_nothing_from_them(self, db):
         """Flat profiles stay GP observations only — recovering the fields from the line
         is the guess that would file `united states` as a job title."""
-        c = _campaign()
-        c.anchor_profiles = ["head of revenue at northwind california united states"]
-        c.save(update_fields=["anchor_profiles"])
+        _campaign()
+        Lead.objects.create(
+            synthetic=True, source_fields={},
+            profile_text="head of revenue at northwind california united states")
 
-        assert vocabulary.refresh(c) == 0
+        assert vocabulary.refresh() == 0
 
     def test_an_acceptance_refreshes_even_when_nothing_was_discovered(self, db):
         """Refresh is triggered by the qualified set changing, not by a query firing.
@@ -315,14 +322,14 @@ class TestVocabulary:
         c = _campaign()
         for _ in range(2):
             _labelled(c, "founder ai", True, {"contact_job_title": "founder ai"})
-        assert vocabulary.refresh(c) > 0
+        assert vocabulary.refresh() > 0
 
         # Nothing changed — the signature makes the repeat one COUNT, not a re-count.
-        assert vocabulary.refresh(c) == 0
+        assert vocabulary.refresh() == 0
 
         for _ in range(2):
             _labelled(c, "cto robotics", True, {"contact_job_title": "cto robotics"})
-        assert vocabulary.refresh(c) > 0
+        assert vocabulary.refresh() > 0
         assert ("lead_job_title", "cto") in set(vocabulary.admitted_keywords())
 
     def test_stopwords_never_become_search_terms(self):

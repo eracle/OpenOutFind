@@ -22,21 +22,13 @@ QUERY = BetterContactQuery(linkedin_url="https://www.linkedin.com/in/alice/")
 
 
 @pytest.fixture
-def keyed(db):
-    from openoutfind.core.models import SiteConfig
-    cfg = SiteConfig.load()
-    cfg.bettercontact_api_key = "secret"
-    cfg.save()
-    return cfg
+def keyed(db, configure):
+    return configure(bettercontact_api_key="secret")
 
 
 @pytest.fixture
-def unkeyed(db):
-    from openoutfind.core.models import SiteConfig
-    cfg = SiteConfig.load()
-    cfg.bettercontact_api_key = ""
-    cfg.save()
-    return cfg
+def unkeyed(db, configure):
+    return configure(bettercontact_api_key="")
 
 
 def _response(body, error=None, status_code=200, headers=None):

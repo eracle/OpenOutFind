@@ -6,113 +6,6 @@ from django.db import models
 from openoutfind.discovery import SEARCH_FIELDS, describe_node
 
 
-class SiteConfig(models.Model):
-    """Singleton model for global site configuration (LLM keys, etc.)."""
-
-    # The model is a pydantic-ai model identifier in `provider:model` form
-    # (e.g. ``anthropic:claude-sonnet-4-5-20250929``, ``openai:gpt-4o``,
-    # ``groq:llama-3.3-70b``). The provider lives inside this single string —
-    # there is no separate provider field to drift out of sync. A bare model
-    # name whose prefix is unambiguous (``gpt``/``o1``/``o3``→openai,
-    # ``claude``→anthropic, ``gemini``→google) is also accepted; everything
-    # else must carry an explicit prefix. See core/llm.py:split_model_id.
-    ai_model = models.CharField(
-        max_length=200, blank=True, default="",
-        help_text="provider:model, e.g. anthropic:claude-sonnet-4-5-20250929",
-    )
-    llm_api_key = models.CharField(max_length=500, blank=True, default="")
-    # Only consulted for the openai_compatible provider (OpenRouter / Together / Ollama / vLLM).
-    llm_api_base = models.CharField(max_length=500, blank=True, default="")
-
-    # Email-finder keys — one per supported vendor, and a key is all it takes to select
-    # one (see enrichment/provider.py:active). Blank everywhere disables enrichment.
-    # BetterContact's key additionally powers Lead Finder *discovery*, which is billed
-    # nothing; Apollo's does not, so an Apollo-only install still needs the other key
-    # for discovery. They are not interchangeable at that leg, only at enrichment.
-    bettercontact_api_key = models.CharField(max_length=500, blank=True, default="")
-    apollo_api_key = models.CharField(max_length=500, blank=True, default="")
-
-    # Which finder resolves addresses when *both* keys are set. Blank means "decide from
-    # whichever key exists", which is the whole answer for a one-vendor install; it only
-    # has to be set to move an install that holds both.
-    email_finder = models.CharField(
-        max_length=32, blank=True, default="",
-        help_text="bettercontact | apollo — blank picks whichever key is configured",
-    )
-
-    # Central contacts service (see openoutfind/contacts/). The token is earned
-    # on the first contribution and persisted here — never in the repo; blank
-    # means "not registered yet" (resolve misses until the first give-back mints
-    # it). The URL is blank by default (falls back to DEFAULT_CONTACTS_API_URL).
-    contacts_api_token = models.CharField(max_length=500, blank=True, default="")
-    contacts_api_url = models.CharField(max_length=500, blank=True, default="")
-
-    # The operator's ISO-3166 alpha-2 country, collected at onboarding (self-hosted
-    # = one operator, so it lives on the config singleton, not a separate account
-    # model — identity like email/name stays on the Django ``User``). Drives the
-    # email-jurisdiction rules (core/geo.py): newsletter opt-in default + whether
-    # we contribute to the contacts store (derived, ``not is_eea_located`` — never
-    # a stored toggle). Also the target country stamped on every discovered Lead
-    # (the contacts geo-gate) and, before this field existed on this model, on
-    # ``Campaign`` — one install runs one campaign, so there is one country.
-    country_code = models.CharField(max_length=2, blank=True, default="")
-
-    # The campaign content — folded onto this singleton from the old ``Campaign``
-    # model (2026-08-30): this install has never run more than one campaign, so a
-    # separate campaign-identity row bought nothing but a selection step nobody used.
-    product_docs = models.TextField(blank=True)
-    campaign_target = models.TextField(blank=True)
-    model_blob = models.BinaryField(null=True, blank=True)
-
-    # The ICP's company-size band. A fixed constraint riding every discovery query
-    # unchanged, never a search axis: loosening a size bound queries off-ICP rather
-    # than widening usefully, and the provider fills a half-open band with
-    # any-size companies rather than returning nothing. Set by ``icp.generate_seed``.
-    #
-    # A column rather than a pair of keywords because it is a *number*, not a search
-    # term — the provider takes it as a bare scalar, and it is the one part of a query
-    # the walk never chooses.
-    headcount_min = models.IntegerField(default=1)
-    headcount_max = models.IntegerField(default=10000)
-
-    # The cold-phase priors: synthetic ideal-lead profiles the LLM invented from
-    # product_docs + campaign_target (``pipeline/icp.generate_anchors``), and their
-    # embeddings as one (N, dim) float32 blob. They are handed to the GP as positives so
-    # it can fit before any real lead has qualified — a label set that is all rejections
-    # has one class and yields no posterior at all.
-    #
-    # **These are never leads.** They exist only as GP observations and as the operator's
-    # window (in Admin) onto what the model currently believes a good lead looks like; no
-    # Lead or Deal row is ever created from them and nobody is ever emailed. Both fields
-    # are cleared the moment a real lead qualifies — the cold phase is over, real ground
-    # truth supersedes the guess, and anchors standing is exactly the sign of no positive yet.
-    anchor_profiles = models.JSONField(default=list, blank=True)
-    anchor_embeddings = models.BinaryField(null=True, blank=True)
-    # The same invented people as *lead rows* — one ``source_fields`` dict per profile,
-    # parallel to ``anchor_profiles``. This is what lets a fresh install with no
-    # acceptances open a precise frontier: ``vocabulary.refresh`` counts these alongside
-    # real accepted profiles, so the walk starts from words the ICP actually named instead
-    # of the generic tokens a three-profile corpus admits. Written by the model, never
-    # parsed out of the flat line — see ``pipeline/icp._AnchorProfile``.
-    anchor_source_fields = models.JSONField(default=list, blank=True)
-
-    class Meta:
-        verbose_name = "Site Configuration"
-        verbose_name_plural = "Site Configuration"
-
-    def __str__(self):
-        return "Site Configuration"
-
-    def save(self, *args, **kwargs):
-        self.pk = 1
-        super().save(*args, **kwargs)
-
-    @classmethod
-    def load(cls) -> "SiteConfig":
-        obj, _ = cls.objects.get_or_create(pk=1)
-        return obj
-
-
 class Keyword(models.Model):
     """One ``(field, token)`` pair — the unit a discovery query is built from.
 
@@ -160,8 +53,6 @@ class Keyword(models.Model):
             cls.objects.get_or_create(field=field, token=token)[0]
             for field, token in keywords
         ]
-
-
 
 
 class QueryNode(models.Model):
@@ -229,6 +120,29 @@ class QueryNode(models.Model):
     # in the same call, and read only as a diagnostic — the walk fires nodes rather
     # than counting them first, since a dead node generates no children either way.
     leads_found = models.IntegerField(null=True, blank=True)
+
+    # The ICP's company-size band, as this node queries it. A fixed constraint riding the
+    # query unchanged, never a search axis: loosening a size bound queries off-ICP rather
+    # than widening usefully, and the provider fills a half-open band with any-size
+    # companies rather than returning nothing.
+    #
+    # Columns here rather than one band on a config singleton because the band is *part of
+    # the query this node fired*. A seed writes it (``icp.generate_seed``), a child
+    # inherits its parent's, and a later re-seed opens its own nodes with its own band
+    # instead of retroactively rewriting what an already-fired node meant.
+    headcount_min = models.IntegerField(default=1)
+    headcount_max = models.IntegerField(default=10000)
+
+    # ISO-3166 alpha-2 of the country this node searches, stamped onto every lead it
+    # surfaces — Lead Finder rows carry no ISO code, so the query is what we know. Blank
+    # is unknown, which the contacts-store geo-gate treats conservatively.
+    #
+    # **Not the operator's own country.** That is jurisdiction, it is answered rather
+    # than inferred, and it lives in the environment; an operator in Berlin searching
+    # Texas is one campaign with two different countries in it, and conflating them once
+    # let an LLM's guess at a target market decide whether an EEA operator contributes.
+    country_code = models.CharField(max_length=2, blank=True, default="")
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -253,8 +167,7 @@ class QueryNode(models.Model):
         """This node as a Lead Finder filter dict — the only thing the provider sees."""
         from openoutfind.discovery import filters_for
 
-        config = SiteConfig.load()
-        return filters_for(self.pairs, (config.headcount_min, config.headcount_max))
+        return filters_for(self.pairs, (self.headcount_min, self.headcount_max))
 
     def __str__(self):
         """The query itself, not its row id — a node *is* its keyword set."""

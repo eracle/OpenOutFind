@@ -10,20 +10,17 @@ the retirement rules — the two things the walk's correctness rests on.
 import numpy as np
 import pytest
 
-from openoutfind.core.models import Keyword, QueryNode, SiteConfig
+from openoutfind.core.models import Keyword, QueryNode
 from openoutfind.core.pipeline import select
+from openoutfind.core.pipeline.icp import Seed
 from openoutfind.core.pipeline.select import REACH_CAP, LabelStore, token_key
 from openoutfind.crm.models import Deal, DealState, Lead, Outcome
 
 
-def _campaign(**kw):
-    defaults = dict(product_docs="p", campaign_target="t")
-    defaults.update(kw)
-    config = SiteConfig.load()
-    for key, value in defaults.items():
-        setattr(config, key, value)
-    config.save()
-    return config
+def _campaign(anchor_profiles=()):
+    """This install, with its invented ideal leads written as the rows they are."""
+    for profile in anchor_profiles:
+        Lead.objects.create(synthetic=True, profile_text=profile)
 
 
 def _node(_site_config, pairs, parent=None, **kw):
@@ -61,7 +58,7 @@ class TestLabelStore:
         _labelled(c, "founder cto stealth ai startup", qualified=True)
         _labelled(c, "founder cto fintech", qualified=True)
         _labelled(c, "founder marketing agency", qualified=False)
-        store = LabelStore.load(c)
+        store = LabelStore.load()
 
         assert store.counts([("lead_job_title", "founder")]) == (2, 1)
         assert store.counts([("lead_job_title", "founder"), ("lead_job_title", "cto")]) == (2, 0)
@@ -73,10 +70,11 @@ class TestLabelStore:
         _labelled(c, "beta", qualified=True)
         _labelled(c, "gamma", qualified=False)
         # Laplace: (2 + 1) / (3 + 2)
-        assert LabelStore.load(c).base_rate == pytest.approx(3 / 5)
+        assert LabelStore.load().base_rate == pytest.approx(3 / 5)
 
     def test_empty_store_is_an_even_prior(self, db):
-        assert LabelStore.load(_campaign()).base_rate == 0.5
+        _campaign()
+        assert LabelStore.load().base_rate == 0.5
 
     def test_an_all_rejection_campaign_still_has_a_usable_level(self, db):
         # The state the anchors exist for, so a common one. A raw rate of 0 here makes
@@ -84,19 +82,19 @@ class TestLabelStore:
         c = _campaign()
         for _ in range(20):
             _labelled(c, "nope", qualified=False)
-        assert 0 < LabelStore.load(c).base_rate < 0.5
+        assert 0 < LabelStore.load().base_rate < 0.5
 
     def test_an_all_qualified_campaign_stays_below_one(self, db):
         c = _campaign()
         for _ in range(20):
             _labelled(c, "yes", qualified=True)
-        assert 0.5 < LabelStore.load(c).base_rate < 1
+        assert 0.5 < LabelStore.load().base_rate < 1
 
     def test_cooccurring_only_offers_tokens_seen_with_a_qualified_lead(self, db):
         c = _campaign()
         _labelled(c, "founder cto ai", qualified=True)
         _labelled(c, "founder plumber", qualified=False)
-        store = LabelStore.load(c)
+        store = LabelStore.load()
         candidates = [("lead_job_title", t) for t in ("cto", "ai", "plumber", "unseen")]
 
         offered = store.cooccurring([("lead_job_title", "founder")], candidates)
@@ -108,7 +106,7 @@ class TestLabelStore:
     def test_cooccurring_never_offers_a_token_the_node_already_has(self, db):
         c = _campaign()
         _labelled(c, "founder cto", qualified=True)
-        store = LabelStore.load(c)
+        store = LabelStore.load()
         pairs = [("lead_job_title", "founder")]
         assert ("lead_job_title", "founder") not in store.cooccurring(pairs, pairs)
 
@@ -119,7 +117,7 @@ class TestAnchorsAsPositives:
     def test_anchors_count_as_qualified_profiles(self, db):
         c = _campaign(anchor_profiles=["founder cto stealth ai health startup"])
         _labelled(c, "utilities telecom manager", qualified=False)
-        store = LabelStore.load(c)
+        store = LabelStore.load()
 
         assert store.qualified_count == 1
         assert store.counts([("lead_job_title", "founder")]) == (1, 0)
@@ -131,7 +129,7 @@ class TestAnchorsAsPositives:
         c = _campaign(anchor_profiles=["founder cto health supplements startup"])
         for _ in range(5):
             _labelled(c, "utilities telecom manager", qualified=False)
-        store = LabelStore.load(c)
+        store = LabelStore.load()
         seed = [("lead_job_title", t) for t in ("founder", "cto", "health", "manager")]
         node = _node(c, [("lead_job_title", "founder")])
 
@@ -142,7 +140,7 @@ class TestAnchorsAsPositives:
         c = _campaign(anchor_profiles=[])
         for _ in range(5):
             _labelled(c, "founder utilities telecom", qualified=False)
-        store = LabelStore.load(c)
+        store = LabelStore.load()
         node = _node(c, [("lead_job_title", "founder")])
 
         assert select.expand(node, store, [("lead_job_title", "telecom")]) == 0
@@ -151,25 +149,24 @@ class TestAnchorsAsPositives:
         c = _campaign(anchor_profiles=["founder cto health supplements"] * 4)
         for _ in range(4):
             _labelled(c, "content manager utilities", qualified=False)
-        store = LabelStore.load(c)
+        store = LabelStore.load()
         good = _node(c, [("lead_job_title", "founder")])
         bad = _node(c, [("lead_job_title", "content")])
 
         assert select.estimate(good, store) > select.estimate(bad, store)
 
-    def test_a_real_positive_ends_it_without_a_phase_check(self, db):
-        # BayesianQualifier clears anchor_profiles on the first real positive, so the
-        # field is empty exactly when the cold phase is over.
+    def test_an_anchor_keeps_counting_after_a_real_positive_arrives(self, db):
+        # The anchors are permanent: a real acceptance joins them rather than replacing
+        # them, so what changes is that real evidence starts to outweigh the invented
+        # kind, not that the invented kind disappears.
         c = _campaign(anchor_profiles=["founder cto invented"])
-        assert LabelStore.load(c).qualified_count == 1
+        assert LabelStore.load().qualified_count == 1
 
-        c.anchor_profiles = []
-        c.save(update_fields=["anchor_profiles"])
         _labelled(c, "founder cto real", qualified=True)
-        store = LabelStore.load(c)
+        store = LabelStore.load()
 
-        assert store.qualified_count == 1
-        assert store.counts([("lead_job_title", "invented")]) == (0, 0)
+        assert store.qualified_count == 2
+        assert store.counts([("lead_job_title", "invented")]) == (1, 0)
 
 
 class TestEstimate:
@@ -177,7 +174,7 @@ class TestEstimate:
         c = _campaign()
         _labelled(c, "alpha", qualified=True)
         _labelled(c, "beta", qualified=False)
-        store = LabelStore.load(c)
+        store = LabelStore.load()
         node = _node(c, [("lead_job_title", "unseen")])
         # a=b=0, level=0.5 → (0 + 1) / (0 + 0 + 2)
         assert select.estimate(node, store) == pytest.approx(0.5)
@@ -189,7 +186,7 @@ class TestEstimate:
         for _ in range(8):
             _labelled(c, "founder ai", qualified=True)
         _labelled(c, "founder ai rare", qualified=True)
-        store = LabelStore.load(c)
+        store = LabelStore.load()
 
         parent = _node(c, [("lead_job_title", "founder")])
         child = _node(c, [("lead_job_title", "founder"), ("lead_job_title", "rare")],
@@ -207,7 +204,7 @@ class TestEstimate:
             _labelled(c, "founder ai", qualified=True)
         for _ in range(6):
             _labelled(c, "founder sales", qualified=False)
-        store = LabelStore.load(c)
+        store = LabelStore.load()
 
         parent = _node(c, [("lead_job_title", "founder")])
         bad = _node(c, [("lead_job_title", "founder"), ("lead_job_title", "sales")],
@@ -231,7 +228,7 @@ class TestFrontier:
     def test_next_node_is_none_when_nothing_is_fireable(self, db):
         c = _campaign()
         _node(c, [("lead_job_title", "a")], state=QueryNode.State.DEAD)
-        assert select.next_node(LabelStore.load(c)) is None
+        assert select.next_node(LabelStore.load()) is None
 
     @pytest.mark.parametrize("qualified", [True, False])
     def test_a_single_class_store_can_still_be_drawn_from(self, db, qualified):
@@ -241,7 +238,7 @@ class TestFrontier:
         c = _campaign()
         for _ in range(20):
             _labelled(c, "seen", qualified=qualified)
-        store = LabelStore.load(c)
+        store = LabelStore.load()
         _node(c, [("lead_job_title", "seen")])
         _node(c, [("lead_job_title", "unseen")])
 
@@ -254,7 +251,7 @@ class TestFrontier:
             _labelled(c, "good", qualified=True)
         for _ in range(5):
             _labelled(c, "bad", qualified=False)
-        store = LabelStore.load(c)
+        store = LabelStore.load()
         _node(c, [("lead_job_title", "bad")])
         good = _node(c, [("lead_job_title", "good")])
 
@@ -268,7 +265,7 @@ class TestFrontier:
             _labelled(c, "good", qualified=True)
         for _ in range(20):
             _labelled(c, "bad", qualified=False)
-        store = LabelStore.load(c)
+        store = LabelStore.load()
         _node(c, [("lead_job_title", "bad")])
         good = _node(c, [("lead_job_title", "good")])
 
@@ -281,7 +278,7 @@ class TestExpansion:
     def test_children_are_the_node_plus_one_co_occurring_token(self, db):
         c = _campaign()
         _labelled(c, "founder cto ai", qualified=True)
-        store = LabelStore.load(c)
+        store = LabelStore.load()
         parent = _node(c, [("lead_job_title", "founder")])
         candidates = [("lead_job_title", t) for t in ("cto", "ai")]
 
@@ -292,7 +289,7 @@ class TestExpansion:
     def test_expansion_is_idempotent(self, db):
         c = _campaign()
         _labelled(c, "founder cto", qualified=True)
-        store = LabelStore.load(c)
+        store = LabelStore.load()
         parent = _node(c, [("lead_job_title", "founder")])
         candidates = [("lead_job_title", "cto")]
 
@@ -304,7 +301,7 @@ class TestExpansion:
         carrying all three words — which nobody's does."""
         c = _campaign()
         _labelled(c, "founder cto ai", qualified=True)
-        store = LabelStore.load(c)
+        store = LabelStore.load()
         parent = _node(c, [("lead_job_title", "founder"), ("lead_job_title", "cto")])
 
         assert select.expand(parent, store, [("lead_job_title", "ai")]) == 0
@@ -313,7 +310,7 @@ class TestExpansion:
         """The cap is per field: a node full on job title can still narrow on location."""
         c = _campaign()
         _labelled(c, "founder cto oman", qualified=True)
-        store = LabelStore.load(c)
+        store = LabelStore.load()
         parent = _node(c, [("lead_job_title", "founder"), ("lead_job_title", "cto")])
 
         assert select.expand(parent, store, [("lead_location", "Oman")]) == 1
@@ -324,7 +321,7 @@ class TestExpansion:
         back empty at offset 0 and prune its whole subtree over our own syntax."""
         c = _campaign()
         _labelled(c, "founder director cto oman spain", qualified=True)
-        store = LabelStore.load(c)
+        store = LabelStore.load()
 
         senior = _node(c, [("lead_seniority", "director")])
         assert select.expand(senior, store, [("lead_seniority", "founder")]) == 0
@@ -337,7 +334,7 @@ class TestExpansion:
         bag of words — so `California, United States` has to reach a Californian."""
         c = _campaign()
         _labelled(c, "founder california united states", qualified=True)
-        store = LabelStore.load(c)
+        store = LabelStore.load()
         parent = _node(c, [("lead_job_title", "founder")])
 
         assert store.counts([("lead_location", "California, United States")]) == (1, 0)
@@ -349,7 +346,7 @@ class TestExpansion:
         # empty conjunction is empty, whichever parent reaches it.
         c = _campaign()
         _labelled(c, "founder oman", qualified=True)
-        store = LabelStore.load(c)
+        store = LabelStore.load()
         _node(c, [("lead_location", "oman")], state=QueryNode.State.DEAD)
         parent = _node(c, [("lead_job_title", "founder")])
 
@@ -361,7 +358,7 @@ class TestExpansion:
             _labelled(c, "founder cto ai", qualified=True)
         for _ in range(10):
             _labelled(c, "cto agency", qualified=False)
-        store = LabelStore.load(c)
+        store = LabelStore.load()
 
         strong = _node(c, [("lead_job_title", "founder")])   # all positive
         weak = _node(c, [("lead_job_title", "cto")])         # mixed
@@ -429,6 +426,30 @@ class TestSeedFrontier:
         # famous-company head, so the level comes from the label store instead.
         c = _campaign()
         keywords = [("lead_job_title", "founder"), ("lead_seniority", "founder")]
-        assert select.seed_frontier(keywords) == 2
+        seed = Seed(keywords, (10, 500), "us")
+        assert select.seed_frontier(keywords, seed) == 2
         assert QueryNode.objects.filter(parent__isnull=True).count() == 2
-        assert select.seed_frontier(keywords) == 0
+        assert select.seed_frontier(keywords, seed) == 0
+
+    def test_every_opened_node_carries_the_seed_s_band_and_country(self, db):
+        # The band and the country are part of the query, not of the install: a node
+        # opened by this seed keeps searching what this seed asked for even after a
+        # later seed asks for something else.
+        _campaign()
+        seed = Seed([("lead_job_title", "founder")], (10, 500), "us")
+        select.seed_frontier(seed.keywords, seed)
+
+        node = QueryNode.objects.get()
+        assert (node.headcount_min, node.headcount_max) == (10, 500)
+        assert node.country_code == "us"
+        assert node.to_filters()["company_headcount_min"] == 10
+
+    def test_a_child_searches_its_parent_s_band(self, db):
+        _campaign(anchor_profiles=["founder cto stealth"])
+        parent = _node(None, [("lead_job_title", "founder")],
+                       headcount_min=10, headcount_max=500, country_code="us")
+        select.expand(parent, LabelStore.load(), [("lead_job_title", "cto")])
+
+        child = QueryNode.objects.get(parent=parent)
+        assert (child.headcount_min, child.headcount_max) == (10, 500)
+        assert child.country_code == "us"

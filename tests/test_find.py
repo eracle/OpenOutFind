@@ -19,12 +19,12 @@ import pytest
 from django.core.management import call_command
 
 from openoutfind.core.errors import ErrorType, OpenOutFindError
-from openoutfind.core.management.bootstrap import ensure_onboarded
 from openoutfind.core.management.commands.find import Command
+from openoutfind.core.readiness import check_ready
 from openoutfind.enrichment import bettercontact
 
 FULL_ENV = {
-    "OPENOUTFIND_PRODUCT_DESCRIPTION": "A self-hosted CI dashboard for small dev teams",
+    "OPENOUTFIND_PRODUCT_DOCS": "A self-hosted CI dashboard for small dev teams",
     "OPENOUTFIND_CAMPAIGN_TARGET": "book demos with CTOs at Series-A SaaS",
     "OPENOUTFIND_AI_MODEL": "anthropic:claude-sonnet-4-5-20250929",
     "OPENOUTFIND_LLM_API_KEY": "sk-test",
@@ -36,11 +36,9 @@ FULL_ENV = {
 
 
 @pytest.fixture
-def headless(monkeypatch):
-    """No TTY, and none of the developer's own onboarding variables."""
+def headless(monkeypatch, configure):
+    """Nobody at a terminal, and none of the developer's own variables."""
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
-    for name in FULL_ENV:
-        monkeypatch.delenv(name, raising=False)
 
 
 @pytest.fixture
@@ -52,58 +50,44 @@ def command():
 
 @pytest.fixture
 def booted(site_config):
-    """Skip the preamble. Migrating, bootstrapping, onboarding and validating each have
-    their own tests above; none of them is what the command contract asserts.
+    """Skip the preamble. Migrating and the readiness check have their own tests;
+    neither is what the command contract asserts.
 
     Patched where `find` looks them up rather than where they are defined — the command
-    imports the three by name, so patching `core.management.bootstrap` would rebind a
-    module attribute nothing reads."""
+    imports both by name, so patching the defining module would rebind an attribute
+    nothing reads."""
     with patch.object(Command, "_configure_logging"), \
             patch("openoutfind.core.management.commands.find.ensure_database"), \
-            patch("openoutfind.core.management.commands.find.ensure_onboarded"), \
-            patch("openoutfind.core.management.commands.find.validate_operator"):
+            patch("openoutfind.core.management.commands.find.check_ready"):
         yield
 
 
 @pytest.mark.django_db
-def test_headless_and_unconfigured_names_the_variables(headless):
+def test_an_unconfigured_run_names_the_variables(headless):
     with pytest.raises(OpenOutFindError) as exc:
-        ensure_onboarded()
+        check_ready()
 
     assert exc.value.error_type == ErrorType.ONBOARDING_INCOMPLETE
     message = str(exc.value)
     assert message.startswith("error: onboarding_incomplete: ")
-    assert "OPENOUTFIND_PRODUCT_DESCRIPTION" in message
+    assert "OPENOUTFIND_PRODUCT_DOCS" in message
     assert "OPENOUTFIND_BETTERCONTACT_API_KEY" in message
     assert "OPENOUTFIND_ACCEPT_LEGAL_NOTICE" in message
     assert "mailbox" not in message.lower()
 
 
 @pytest.mark.django_db
-def test_headless_and_fully_configured_runs_without_a_prompt(headless, monkeypatch):
+def test_a_fully_configured_environment_is_ready_with_nothing_asked(headless, monkeypatch):
+    """There is no prompt to fall back to: what the environment does not carry, the run
+    does not have."""
     for name, value in FULL_ENV.items():
         monkeypatch.setenv(name, value)
 
-    with patch("openoutfind.core.llm.verify_llm_credentials", return_value=None), \
-         patch("openoutfind.core.newsletter.subscribe_to_newsletter"), \
-         patch("openoutfind.core.onboarding.onboard_interactive",
-               side_effect=AssertionError("wizard ran without a TTY")):
-        ensure_onboarded()  # returns, having onboarded from the environment
+    with patch("openoutfind.core.newsletter.subscribe_to_newsletter"):
+        check_ready()
 
-    from openoutfind.core.onboarding import missing_keys
-    assert missing_keys() == set()
-
-
-@pytest.mark.django_db
-def test_a_tty_still_gets_the_wizard(monkeypatch):
-    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
-    for name in FULL_ENV:
-        monkeypatch.delenv(name, raising=False)
-
-    with patch("openoutfind.core.onboarding.onboard_interactive") as wizard:
-        ensure_onboarded()
-
-    wizard.assert_called_once()
+    from openoutfind.core.readiness import missing_variables
+    assert missing_variables() == {}
 
 
 # ── the command's contract ───────────────────────────────────────
@@ -350,8 +334,11 @@ class TestTheCommandContract:
     def test_the_icp_echo_names_who_it_is_looking_for(self, site_config, booted, caplog):
         """The earliest possible proof the product description was understood — and the
         earliest chance to correct it, which is the loop the README sells."""
-        site_config.anchor_profiles = ["vp of engineering saas acme senior california united states"]
-        site_config.save(update_fields=["anchor_profiles"])
+        from openoutfind.crm.models import Lead
+
+        Lead.objects.create(
+            synthetic=True,
+            profile_text="vp of engineering saas acme senior california united states")
 
         with caplog.at_level(logging.INFO):
             call_command("find", "0", stdout=io.StringIO())
@@ -435,9 +422,9 @@ def _ranked(site_config):
 
 @contextlib.contextmanager
 def _wallet(balance):
-    """A configured provider with a known balance, and onboarding out of the way — the
-    two inputs the next action is derived from."""
-    with patch("openoutfind.core.onboarding.missing_env_keys", return_value={}), \
+    """A configured provider with a known balance, and the configuration out of the way —
+    the two inputs the next action is derived from."""
+    with patch("openoutfind.core.readiness.missing_variables", return_value={}), \
             patch("openoutfind.enrichment.bettercontact.is_configured", return_value=True), \
             patch("openoutfind.enrichment.bettercontact.credit_balance", return_value=balance):
         yield

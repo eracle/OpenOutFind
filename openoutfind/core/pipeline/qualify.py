@@ -17,11 +17,18 @@ def fetch_qualification_candidates():
 
     Invariant (convention, not DB-enforced): a disqualified lead never gets a NEW
     deal, so every deal-creating query filters ``disqualified=False``.
+
+    **The anchors are excluded here, and this is the only place it has to be said.** A
+    synthetic lead is an invented person the ICP implies, not somebody to judge or write
+    to; it carries an embedding and no deal, so it matches everything else this query
+    asks, and it is the one scan that picks a ``Lead`` up without one. Everything
+    downstream — enrichment, the export, any message — is reached through the ``Deal``
+    this refuses to create.
     """
     from openoutfind.crm.models import Lead
 
     return list(
-        Lead.objects.filter(disqualified=False, embedding__isnull=False)
+        Lead.objects.filter(disqualified=False, synthetic=False, embedding__isnull=False)
         .exclude(deal__isnull=False)
         .order_by("creation_date")
     )

@@ -109,7 +109,7 @@ def active():
     and silently moving an existing install's spend to a second vendor on the strength
     of a stray key would be the wrong default.
     """
-    from openoutfind.core.models import SiteConfig
+    from openoutfind.core.config import SiteConfig
     from openoutfind.enrichment import apollo, bettercontact
 
     by_name = {bettercontact.NAME: bettercontact, apollo.NAME: apollo}

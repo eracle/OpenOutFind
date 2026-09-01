@@ -4,6 +4,7 @@
 Two best-effort calls: ``resolve`` (ask the hub before paying BetterContact) and
 ``contribute`` (give back what we find, non-EU only, registering on first use).
 """
+import os
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -11,7 +12,6 @@ import pytest
 import requests
 
 from openoutfind.contacts import service
-from openoutfind.core.models import SiteConfig
 from tests.factories import LeadFactory
 
 
@@ -26,14 +26,26 @@ def _resp(status_code=200, body=None):
 
 
 def _config(token="tok", url="", country_code="us"):
-    # country_code is the operator's jurisdiction — the give-back gate. Default
-    # non-EEA so contribute proceeds; the EEA-operator test overrides it.
-    cfg = SiteConfig.load()
-    cfg.contacts_api_token = token
-    cfg.contacts_api_url = url
-    cfg.country_code = country_code
-    cfg.save()
-    return cfg
+    """This run's contacts configuration — the environment, which is all there is.
+
+    ``country_code`` is the operator's jurisdiction (the give-back gate); the default is
+    non-EEA so ``contribute`` proceeds, and the EEA test overrides it.
+    """
+    from openoutfind.core.config import SiteConfig, variable_for
+
+    for field, value in (("contacts_api_token", token), ("contacts_api_url", url),
+                         ("country_code", country_code)):
+        os.environ[variable_for(field)] = value
+    return SiteConfig.load()
+
+
+@pytest.fixture(autouse=True)
+def _no_token_held_over(configure):
+    """A token minted in one test must not identify the next one."""
+    service._minted_token = None
+    _config()
+    yield
+    service._minted_token = None
 
 
 @pytest.fixture(autouse=True)
@@ -158,18 +170,28 @@ class TestContribute:
             "origin": "profile_info",
         }
 
-    def test_first_contribution_registers_and_persists_token(self):
+    def test_a_run_with_no_token_registers_first_and_then_contributes(self):
+        """Identity is minted record-less, and the record follows under it.
+
+        The fold — a register carrying the contribution — is the compatibility path for a
+        hub that still demands one, and it only runs when the plain register failed.
+        """
         _config(token="")
         lead = LeadFactory(profile_url="jane-doe", country_code="br")
         with patch.object(
             service.requests, "post", return_value=_resp(200, {"token": "NEW", "credits": 1}),
         ) as post:
             service.contribute(lead, ["jane@acme.com"], service.ORIGIN_BETTERCONTACT)
-        url, kwargs = post.call_args.args[0], post.call_args.kwargs
-        assert url.endswith("/api/v2/register/")
-        assert kwargs["json"]["operator_email"] == "me@x.com"
-        assert kwargs["json"]["origin"] == "bettercontact"  # origin rides the folded register
-        assert SiteConfig.load().contacts_api_token == "NEW"
+
+        registered, contributed = post.call_args_list
+        assert registered.args[0].endswith("/api/v2/register/")
+        assert registered.kwargs["json"]["operator_email"] == "me@x.com"
+        assert "public_identifier" not in registered.kwargs["json"]
+
+        assert contributed.args[0].endswith("/api/v2/contribute/")
+        assert contributed.kwargs["json"]["origin"] == "bettercontact"
+        assert contributed.kwargs["headers"]["Authorization"] == "Bearer NEW"
+        assert service._minted_token == "NEW"
 
     def test_outage_is_swallowed_and_no_token_stored(self):
         _config(token="")
@@ -179,13 +201,11 @@ class TestContribute:
         ):
             # must not raise
             service.contribute(lead, ["jane@acme.com"], service.ORIGIN_BETTERCONTACT)
-        assert SiteConfig.load().contacts_api_token == ""
+        assert not service._minted_token
 
     def test_eea_operator_contributes_nothing(self):
         """An operator inside the EEA/UK/CH does not give back (jurisdiction gate)."""
-        cfg = _config(token="tok")
-        cfg.country_code = "de"
-        cfg.save()
+        _config(token="tok", country_code="de")
         lead = LeadFactory(country_code="in")
         with patch.object(service.requests, "post") as post:
             service.contribute(lead, ["jane@acme.com"], service.ORIGIN_BETTERCONTACT)
@@ -236,7 +256,7 @@ class TestRegisterOperator:
         # No record rides along — that is the whole point of the standalone mint.
         assert "public_identifier" not in kwargs["json"]
         assert "emails" not in kwargs["json"]
-        assert SiteConfig.load().contacts_api_token == "NEW"
+        assert service._minted_token == "NEW"
 
     def test_it_names_the_build_it_is_running(self):
         """An install that never contributes reports its version here or nowhere."""
@@ -263,7 +283,7 @@ class TestRegisterOperator:
         ):
             assert service.register_operator() is True
 
-        assert SiteConfig.load().contacts_api_token == "NEW"
+        assert service._minted_token == "NEW"
 
     def test_an_install_that_already_has_one_asks_for_nothing(self):
         _config(token="tok")
@@ -279,7 +299,7 @@ class TestRegisterOperator:
         ):
             assert service.register_operator() is False  # must not raise
 
-        assert SiteConfig.load().contacts_api_token == ""
+        assert not service._minted_token
 
     def test_a_hub_that_still_demands_a_record_leaves_the_token_unset(self):
         """The compatibility case: a hub predating the record-less register answers
@@ -288,7 +308,7 @@ class TestRegisterOperator:
         with patch.object(service.requests, "post", return_value=_resp(400)):
             assert service.register_operator() is False
 
-        assert SiteConfig.load().contacts_api_token == ""
+        assert not service._minted_token
 
 
 # ── which build sent it ──────────────────────────────────────────────

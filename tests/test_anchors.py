@@ -3,10 +3,11 @@
 lead has qualified.
 
 The LLM call (``run_agent_sync``) and the embedder are stubbed, so these assert the
-lifecycle rather than the model: generated once, persisted on the config singleton,
-reloaded without a second LLM call, and kept permanently once real acceptances start
-arriving.
+lifecycle rather than the model: invented once, written as ``Lead`` rows, reloaded
+without a second LLM call, kept permanently once real acceptances start arriving — and
+never mistaken for somebody to contact.
 """
+import os
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
@@ -18,6 +19,7 @@ from openoutfind.core.pipeline.icp import (
     Anchor,
     _AnchorProfile,
     _AnchorProfiles,
+    anchor_leads,
     ensure_anchors,
     generate_anchors,
 )
@@ -26,15 +28,19 @@ pytestmark = pytest.mark.django_db
 
 
 def _site_config(**kw):
-    from openoutfind.core.models import SiteConfig
+    """The ICP text an anchor is invented from — the environment, which is all there is."""
+    from openoutfind.core.config import SiteConfig, variable_for
 
-    defaults = dict(product_docs="p", campaign_target="t")
-    defaults.update(kw)
-    config = SiteConfig.load()
-    for key, value in defaults.items():
-        setattr(config, key, value)
-    config.save()
-    return config
+    values = dict(product_docs="p", campaign_target="t")
+    values.update(kw)
+    for field, value in values.items():
+        os.environ[variable_for(field)] = value
+    return SiteConfig.load()
+
+
+def _profiles() -> list[str]:
+    """The anchors as the operator would read them back."""
+    return [lead.profile_text for lead in anchor_leads()]
 
 
 @contextmanager
@@ -110,15 +116,24 @@ class TestGenerateAnchors:
 
 
 class TestEnsureAnchors:
-    def test_generates_persists_and_embeds(self):
-        site_config = _site_config()
+    def test_it_writes_them_as_leads_with_their_own_embeddings(self):
         with _llm_returns(["cmo acme", "cto northwind"]), _stub_embed():
-            embeddings = ensure_anchors(site_config)
+            embeddings = ensure_anchors(_site_config())
 
         assert embeddings.shape == (2, 384)
-        site_config.refresh_from_db()
-        assert site_config.anchor_profiles == ["cmo acme", "cto northwind"]
-        assert site_config.anchor_embeddings
+        assert _profiles() == ["cmo acme", "cto northwind"]
+        assert all(lead.embedding_array is not None for lead in anchor_leads())
+
+    def test_an_anchor_is_never_a_lead_to_contact(self):
+        """The one query that picks a Lead up without a deal is the qualification scan,
+        and everything a person would receive is reached through the deal it refuses to
+        create."""
+        from openoutfind.core.pipeline.qualify import fetch_qualification_candidates
+
+        with _llm_returns(["cmo acme", "cto northwind"]), _stub_embed():
+            ensure_anchors(_site_config())
+
+        assert fetch_qualification_candidates() == []
 
     def test_reuses_the_stored_set_without_a_second_llm_call(self):
         """Re-inventing them each boot would re-anchor the GP somewhere slightly else."""
@@ -153,8 +168,7 @@ class TestAnchorFillUp:
             embeddings = ensure_anchors(site_config)
 
         assert embeddings.shape == (3, 384)
-        site_config.refresh_from_db()
-        assert site_config.anchor_profiles == ["a one", "b two", "c three"]
+        assert _profiles() == ["a one", "b two", "c three"]
 
     def test_asks_only_for_the_shortfall_and_shows_what_exists(self):
         """A second round must widen the ideal region, not restate it."""
@@ -178,8 +192,7 @@ class TestAnchorFillUp:
         with _llm_returns(["a one", "b two"]), _stub_embed():
             ensure_anchors(site_config)
 
-        site_config.refresh_from_db()
-        assert site_config.anchor_profiles == ["a one", "b two"]
+        assert _profiles() == ["a one", "b two"]
 
     def test_a_failed_fill_up_keeps_what_is_already_there(self):
         site_config = _site_config()
@@ -214,7 +227,7 @@ class TestAnchorLifecycle:
     def _anchored(self, site_config, profiles, rejections=0):
         with _llm_returns(profiles), _stub_embed():
             anchors = ensure_anchors(site_config)
-        qualifier = BayesianQualifier(seed=42, site_config=site_config)
+        qualifier = BayesianQualifier(seed=42)
         _rejections(qualifier, rejections)
         qualifier.set_anchors(anchors)
         return qualifier
@@ -225,13 +238,11 @@ class TestAnchorLifecycle:
             site_config, ["cmo acme", "cto northwind", "vp sales bo"], rejections=3)
 
         qualifier.update(np.zeros(384, dtype=np.float32), 0)
-        site_config.refresh_from_db()
-        assert len(site_config.anchor_profiles) == 3
+        assert len(_profiles()) == 3
 
         qualifier.update(np.ones(384, dtype=np.float32), 1)
 
-        site_config.refresh_from_db()
-        assert site_config.anchor_profiles == ["cmo acme", "cto northwind", "vp sales bo"]
+        assert _profiles() == ["cmo acme", "cto northwind", "vp sales bo"]
         assert qualifier.n_anchors == 3
         assert qualifier.is_cold is True
 
@@ -262,9 +273,8 @@ class TestAnchorLifecycle:
         for _ in range(3):
             qualifier.update(np.ones(384, dtype=np.float32), 1)
 
-        site_config.refresh_from_db()
-        assert site_config.anchor_profiles == ["cmo acme", "cto northwind", "vp sales bo"]
-        assert site_config.anchor_embeddings is not None
+        assert _profiles() == ["cmo acme", "cto northwind", "vp sales bo"]
+        assert all(lead.embedding_array is not None for lead in anchor_leads())
         assert qualifier.is_cold is False
         assert qualifier.class_counts == (2, 6)
 

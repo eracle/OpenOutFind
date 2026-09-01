@@ -33,7 +33,7 @@ from termcolor import colored
 logger = logging.getLogger(__name__)
 
 
-def _harvest(site_config, node, rows: list[dict]) -> int:
+def _harvest(node, rows: list[dict]) -> int:
     """Persist a fetched page as first-touch Leads, keyworded by the retrieving node.
 
     Returns the count of leads newly created; a re-surfaced profile keeps its original
@@ -48,7 +48,7 @@ def _harvest(site_config, node, rows: list[dict]) -> int:
     pairs = node.pairs
     terms = keyword_terms(pairs)
     return sum(
-        create_lead(row, country_code=site_config.country_code,
+        create_lead(row, country_code=node.country_code,
                     discovered_by=node, query_terms=terms)
         for row in rows
     )
@@ -67,16 +67,15 @@ def _ensure_frontier(site_config, store) -> list[tuple[str, str]]:
 
     vocabulary.seed_seniorities()
     existing = QueryNode.objects.exists()
-    if not existing:
-        generate_seed(site_config)
-    vocabulary.refresh(site_config)
+    seed = None if existing else generate_seed(site_config)
+    vocabulary.refresh()
 
     keywords = vocabulary.admitted_keywords()
     if not keywords:
         return keywords
 
     if not existing:
-        opened = select.seed_frontier(keywords)
+        opened = select.seed_frontier(keywords, seed)
         logger.debug("frontier opened with %d keyword(s)", opened)
         return keywords
 
@@ -185,7 +184,7 @@ def discover(site_config, qualifier=None) -> bool:
 
     logger.info(colored("▶ discover", "blue", attrs=["bold"]))
 
-    store = select.LabelStore.load(site_config)
+    store = select.LabelStore.load()
     keywords = _ensure_frontier(site_config, store)
 
     retired = 0
@@ -209,7 +208,7 @@ def discover(site_config, qualifier=None) -> bool:
             retired += 1
             continue
 
-        created = _harvest(site_config, node, page.leads)
+        created = _harvest(node, page.leads)
         select.advance(node, leads_found=page.leads_found)
         grown = select.expand(node, store, keywords)
         logger.info("%s", step_line(

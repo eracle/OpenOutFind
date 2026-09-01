@@ -15,7 +15,13 @@ class Lead(models.Model):
 
     # The discovery provider's per-person URL — the opaque identity and lookup
     # key. Stored, never fetched.
-    profile_url = models.URLField(max_length=200, unique=True)
+    #
+    # **NULL when there is no such profile**, which is not the same as an empty string
+    # and is why this is nullable at all: a synthetic anchor was invented rather than
+    # found, and SQL lets a unique column hold as many NULLs as it likes while still
+    # refusing a second row for the same real person.
+    profile_url = models.URLField(max_length=200, unique=True, null=True,
+                                  blank=True, default=None)
     # ISO-3166 alpha-2 of the lead's location, stamped from the discovery ICP.
     # Drives the contacts-store geo-gate; blank = unknown (→ never contributed).
     country_code = models.CharField(max_length=2, blank=True, default="")
@@ -55,6 +61,25 @@ class Lead(models.Model):
     # resolved. Written by the find-email leg once the lead is rank-gated.
     email = models.EmailField(null=True, blank=True, default=None)
     disqualified = models.BooleanField(default=False)
+    # An invented ideal lead rather than a discovered person — the cold-phase prior the
+    # LLM wrote from the ICP (``core/pipeline/icp.generate_anchors``). They are leads in
+    # every way the model reads one: a ``profile_text`` in the same shape, its
+    # ``source_fields`` under the fields they are searchable in, an embedding in the same
+    # space. So they are rows here, and the GP, the label store and the vocabulary reach
+    # them with the same queries they reach real leads with, instead of three parallel
+    # arrays on a config singleton.
+    #
+    # A flag rather than "has no ``profile_url``": not every real lead has one either —
+    # a lead that arrives as an address alone has no provider profile — so absence marks
+    # what we were not told, and this marks what we made up.
+    #
+    # **Nobody is ever contacted.** No ``Deal`` is created from one — the qualification
+    # scan (``pipeline/qualify.fetch_qualification_candidates``) is the one place a Lead
+    # is picked up without already having a deal, and it excludes these — so they never
+    # reach enrichment, the export, or a message. They are permanent: written once at the
+    # cold start, standing alongside whatever real positives arrive, for the whole life
+    # of the install.
+    synthetic = models.BooleanField(default=False)
     # First-touch discovery provenance: the query node that first surfaced this
     # profile. A profile re-surfaced by a later node keeps its original node here
     # (creation is deduped by profile_url), so this records who *found* it, not

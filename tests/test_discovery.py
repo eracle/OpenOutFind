@@ -12,11 +12,11 @@ from openoutfind.core.pipeline.icp import ICPSpec
 
 
 def _set_key(value):
-    from openoutfind.core.models import SiteConfig
+    import os
 
-    cfg = SiteConfig.load()
-    cfg.bettercontact_api_key = value
-    cfg.save()
+    from openoutfind.core.config import variable_for
+
+    os.environ[variable_for("bettercontact_api_key")] = value
 
 
 class TestSeniorityVocabulary:

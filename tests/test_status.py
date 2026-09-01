@@ -22,8 +22,8 @@ from tests.factories import DealFactory, LeadFactory
 
 @pytest.fixture
 def configured():
-    """Onboarding complete, so the tests below are about the pipeline, not setup."""
-    with patch("openoutfind.core.onboarding.missing_env_keys", return_value={}):
+    """This run was given everything, so the tests below are about the pipeline."""
+    with patch("openoutfind.core.readiness.missing_variables", return_value={}):
         yield
 
 
@@ -133,11 +133,11 @@ def test_zero_credits_with_leads_waiting_is_blocked(site_config, configured, has
 # ── the next action ──────────────────────────────────────────────
 
 @pytest.mark.django_db
-def test_next_action_is_onboarding_when_setup_is_incomplete(site_config):
+def test_next_action_is_the_configuration_when_a_value_is_missing(site_config):
     document = status_module.build_status()
 
     action = document["next_action"]
-    assert action["type"] == "finish_onboarding"
+    assert action["type"] == "configure"
     assert "OPENOUTFIND_BETTERCONTACT_API_KEY" in action["variables"]
 
 
@@ -220,7 +220,7 @@ def test_json_is_one_object_and_nothing_else(site_config, configured, has_key, b
 
     document = json.loads(capsys.readouterr().out)  # would raise on any stray line
     assert set(document) == {
-        "onboarding", "totals", "credits", "hub", "blocked", "next_action",
+        "config", "totals", "credits", "hub", "blocked", "next_action",
     }
 
 

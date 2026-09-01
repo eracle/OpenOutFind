@@ -2,6 +2,7 @@
 
 The verbs, in the order a reader meets them:
 
+    outfind check [--json]                    # is this install configured? create the database
     outfind find 10 [emails]                  # find that many more, print the campaign, exit
     outfind status [--json]                   # what is configured, blocked and counted
 
@@ -36,7 +37,7 @@ import sys
 OVERVIEW = """\
 OpenOutFind — find B2B leads that fit, with the reason written out.
 
-  outfind init             onboard and create the database
+  outfind check            is this install configured? (creates the database)
   outfind find 10          ten more qualified leads → CSV on stdout
   outfind find 10 emails   ...with a verified work email (1 credit each)
   outfind status           what is configured, blocked and counted

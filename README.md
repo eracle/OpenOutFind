@@ -122,7 +122,7 @@ Two things that are *not* privileges, and that is the point:
 - 🛡️ **Zero platform-ToS surface** — browserless, no social-network account, no scraping — nothing to get banned
 - 💸 **Pay only for what resolves** — searching is free; a paid lookup is rationed and billed on a verified hit
 - 📤 **Exports where you already work** — CSV in the shape the sequencer importers expect
-- ⚡ **One-command setup** — `uvx --from openoutfind outfind find 10`, interactive onboarding, no container required
+- ⚡ **One-command setup** — `uvx --from openoutfind outfind find 10`, configured by four environment variables, no container required
 
 Every comparable tool that qualifies leads for you is paid SaaS. This one is GPLv3, runs on your machine, and you bring your own provider keys.
 
@@ -130,7 +130,7 @@ Every comparable tool that qualifies leads for you is paid SaaS. This one is GPL
 
 ## 💸 How OpenOutFind Stays Free
 
-**Affiliate links, and that is now the whole of it.** The one paid third-party service the tool relies on — the lead-data provider — is surfaced during onboarding through an affiliate link. Sign up through it and the project may earn a commission, **at no markup to you**. Sign up any other way if you prefer.
+**Affiliate links, and that is now the whole of it.** The one paid third-party service the tool relies on — the lead-data provider — is named in the setup docs through an affiliate link. Sign up through it and the project may earn a commission, **at no markup to you**. Sign up any other way if you prefer.
 
 There is no promotional campaign sent from your mailbox and no "Sent with" line appended to anything — OpenOutFind never sends a message. See the **[Legal Notice](LEGAL_NOTICE.md)** (§4).
 
@@ -162,12 +162,12 @@ or, if you would rather install it:
 pip install openoutfind && outfind find 10
 ```
 
-The interactive onboarding walks you through the inputs above on first run — four steps: product/objective → LLM key (live-verified) → BetterContact key → your email, country and the legal notice. `find` does it for you if it hasn't happened yet; `outfind init` does it deliberately, prints what it set up and stops before spending anything. Either way every answer can come from the environment instead (`OPENOUTFIND_*`), which is what makes a headless install possible. Everything lives in `~/.openoutfind/data`, so stopping and starting loses nothing: the number you ask for is *more than you already have*, so running it again continues where it left off. No browser, no daemon manager, no container.
+**You configure it with four things, and they live in your environment** (`OPENOUTFIND_*`): what you sell and to whom, an LLM key, a BetterContact key, and your own email plus country and acceptance of the legal notice. Nothing is stored and nothing is prompted for — `find` reads them on every run and stops naming anything missing, and `outfind check` does the same deliberately, prints what it read and spends nothing. (If you would rather be *asked*, [OpenOutreach](https://github.com/eracle/OpenOutreach) is the one-install bundle with the wizard.) What the pipeline *finds* lives in `~/.openoutfind/data`, so stopping and starting loses nothing: the number you ask for is *more than you already have*, so running it again continues where it left off. No browser, no daemon manager, no container.
 
 **The three verbs:**
 
 ```bash
-outfind init                # set up the pipeline, print what it made, stop
+outfind check               # is this install configured? create the database, spend nothing
 outfind find 10             # ten more qualified leads — free, and cannot spend
 outfind find 10 --emails    # ...and buy an address for whatever is ready
 outfind find 10 emails      # ten more *with* a work email (one credit each)
@@ -220,7 +220,7 @@ make setup
 ```bash
 make find N=10          # or: python manage.py find 10 emails
 ```
-The interactive onboarding prompts for your LLM key, BetterContact key, and what you sell on first run. Fully resumable — the goal is *more than you have*, so stopping and running it again continues rather than restarting.
+Your LLM key, BetterContact key and what you sell come from `OPENOUTFIND_*`; a run missing any of them stops and names them. Fully resumable — the goal is *more than you have*, so stopping and running it again continues rather than restarting.
 
 ### 3. Read the Verdicts (CRM Admin)
 
@@ -263,7 +263,7 @@ enrichment on top, never a precondition — so the file can carry rows with a bl
 | 📤 **Export That Just Imports**    | CSV in the exact column names Instantly and Smartlead expect, so a file imports without column mapping. One record schema, one translation layer, no privileged path for our own sender. |
 | 💾 **Built-in CRM**               | Django Admin — browse Leads, Companies and Deals, and read every verdict. Everything is local and everything exports. |
 | 🔄 **Stateful Pipeline**          | Tracks deal states in a local DB — fully resumable, nothing scheduled in advance, no queue table.                   |
-| ⚡ **One-Command Install**          | `uvx --from openoutfind outfind find 10` — a Python CLI with interactive onboarding, no browser and no container. A Docker image exists for running it on a server. |
+| ⚡ **One-Command Install**          | `uvx --from openoutfind outfind find 10` — a Python CLI configured entirely by environment variables, no browser and no container. A Docker image exists for running it on a server. |
 | 🤖 **Built For Agents**            | One bounded call: ask for an amount, get the rows on stdout and an exit code that means *I got what you asked for*. No daemon to supervise, no file to discover, nothing to poll. `--json` gives you the records as JSON Lines and the outcome as one object on stderr. |
 
 ---
@@ -294,9 +294,9 @@ Discovered profiles are embedded (384-dim FastEmbed vectors) from the licensed f
 
 All qualification decisions go through the LLM. The GP model selects which candidate to evaluate next and gates promotion from `QUALIFIED` to `READY_TO_FIND_EMAIL`. Every LLM decision feeds back into the model, making candidate selection progressively smarter. **Only the LLM's fit verdict trains it** — no signal from a send has ever entered that loop.
 
-**Cold start:** an install with no acceptances yet has nothing to fit on, so the ICP is also written out as a handful of **synthetic ideal profiles** and embedded as the model's positives. They stay — real acceptances simply outnumber them, so a few invented profiles decide less and less as ground truth arrives. When the unlabelled pool empties, discovery pages a fresh batch.
+**Cold start:** an install with no acceptances yet has nothing to fit on, so the ICP is also written out as a handful of **synthetic ideal profiles** and embedded as the model's positives. They are lead rows like any other (flagged `synthetic`, never contacted and never exported), and they stay — real acceptances simply outnumber them, so a few invented profiles decide less and less as ground truth arrives. When the unlabelled pool empties, discovery pages a fresh batch.
 
-Configure behavior via Django Admin — `SiteConfig`, the one row this install runs on.
+Behaviour is configured by the environment (see [docs/configuration.md](docs/configuration.md)); Django Admin shows what the walk has done — the query nodes and the vocabulary.
 
 ---
 
@@ -307,9 +307,9 @@ Configure behavior via Django Admin — `SiteConfig`, the one row this install r
 ├── openoutfind/                      # single source package; Django apps nested inside
 │   ├── __main__.py                  # the `outfind` console script — the entry point
 │   ├── settings.py                  # Django settings (SQLite at ~/.openoutfind/data/db.sqlite3)
-│   ├── core/                        # engine app: the job + cycle, SiteConfig,
-│   │                                #   LLM factory, onboarding, ML + discovery/qualify
-│   │                                #   pipeline, the lead export
+│   ├── core/                        # engine app: the job + cycle, config (env) and
+│   │                                #   the readiness check, LLM factory, ML +
+│   │                                #   discovery/qualify pipeline, the lead export
 │   ├── enrichment/                  # the one paid step: provider client + buy/check lookup
 │   ├── crm/                         # Lead + Company + Deal models
 │   └── contacts/                    # the shared contacts-store client (the hub)

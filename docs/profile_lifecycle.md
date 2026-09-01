@@ -32,7 +32,7 @@ The lead's `profile_text` (headline, company description, title, seniority, indu
 
 **Where:** `core/pipeline/qualify.py`, `core/ml/qualifier.py`
 
-Embedded leads with no Deal are the pool. The GP selects which candidate to evaluate next — **exploit** (highest predicted probability) when negatives outnumber positives, else **explore** (highest BALD). Every decision is an LLM call over the stored `profile_text`. An install with no acceptances yet fits against **synthetic ideal profiles** written from its ICP (`icp.generate_anchors`, stored on `SiteConfig.anchor_profiles`). They are permanent — real acceptances outnumber them rather than retiring them.
+Embedded leads with no Deal are the pool. The GP selects which candidate to evaluate next — **exploit** (highest predicted probability) when negatives outnumber positives, else **explore** (highest BALD). Every decision is an LLM call over the stored `profile_text`. An install with no acceptances yet fits against **synthetic ideal profiles** written from its ICP (`icp.generate_anchors`), which are `Lead` rows carrying `synthetic=True` — excluded from this pool, so one is never judged or contacted. They are permanent — real acceptances outnumber them rather than retiring them.
 
 - **Accepted** → `Lead` promoted to a `Deal` at `QUALIFIED`.
 - **Rejected** → `FAILED` Deal with `wrong_fit` outcome (a verdict on this deal; not `Lead.disqualified`).

@@ -152,12 +152,8 @@ def _session_answering(status_code, body=None, headers=None):
 
 
 @pytest.fixture
-def keyed(db):
-    from openoutfind.core.models import SiteConfig
-    cfg = SiteConfig.load()
-    cfg.bettercontact_api_key = "secret"
-    cfg.save()
-    return cfg
+def keyed(db, configure):
+    return configure(bettercontact_api_key="secret")
 
 
 @pytest.mark.django_db

@@ -1,4 +1,5 @@
 # tests/conftest.py
+import os
 from unittest.mock import patch
 
 import numpy as np
@@ -76,16 +77,52 @@ def operator(db):
     return UserFactory(username="testuser", email="testuser@example.com")
 
 
-@pytest.fixture
-def site_config(db, operator):
-    """The ``SiteConfig`` singleton under test.
+@pytest.fixture(autouse=True)
+def _no_live_model_ping(request):
+    """No test may reach a real LLM provider to check a key.
 
-    One row holds the keys, the operator's country and the product/target text: an
-    install runs exactly one ICP, so there is nothing to name or select between.
-    Steps and pipeline functions take it directly; the operator is looked up
+    The check is unconditional now — nothing is stored, so every run verifies what it was
+    given — which means any test that reaches a readiness check turns into a live 401
+    unless this stands. Tests *about* verification carry ``no_llm_mock`` and get the real
+    function; tests that only pass through it patch the same target themselves and win,
+    because their patch is applied inside this one.
+    """
+    if "no_llm_mock" in request.keywords:
+        yield
+    else:
+        with patch("openoutfind.core.llm.verify_llm_credentials", return_value=None):
+            yield
+
+
+@pytest.fixture
+def configure(monkeypatch):
+    """Set this run's configuration, the only way an install is configured: the environment.
+
+    Returns a callable taking field names — ``configure(llm_api_key="k")`` — so a test
+    names the values it depends on and inherits blanks for the rest. Every
+    ``OPENOUTFIND_*`` variable is cleared first, so a developer's own exported keys can
+    never make a test pass (or spend).
+    """
+    from openoutfind.core.config import ENV_PREFIX, SiteConfig, variable_for
+
+    for name in [n for n in os.environ if n.startswith(ENV_PREFIX)]:
+        monkeypatch.delenv(name)
+
+    def _configure(**values) -> SiteConfig:
+        for field, value in values.items():
+            monkeypatch.setenv(variable_for(field), value)
+        return SiteConfig.load()
+
+    return _configure
+
+
+@pytest.fixture
+def site_config(db, operator, configure):
+    """The configuration under test — blank, as an install that was told nothing.
+
+    An install runs exactly one ICP, so there is nothing to name or select between.
+    Pipeline functions take this value directly; the operator is looked up
     (``core/operator.py``) rather than threaded through, so nothing carries a session
     object either.
     """
-    from openoutfind.core.models import SiteConfig
-
-    return SiteConfig.load()
+    return configure()

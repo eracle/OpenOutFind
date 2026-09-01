@@ -1,6 +1,6 @@
 ---
 name: find-leads
-description: Find qualified B2B leads with OpenOutFind — run `outfind find N [emails]`, read the CSV it prints on stdout, and hand the rows to whatever sends. Use when the user wants leads, prospects, an ICP-matched contact list, or asks what a campaign already has. Also covers first-run setup (`outfind init`), `outfind status`, and when a lookup costs money.
+description: Find qualified B2B leads with OpenOutFind — run `outfind find N [emails]`, read the CSV it prints on stdout, and hand the rows to whatever sends. Use when the user wants leads, prospects, an ICP-matched contact list, or asks what a campaign already has. Also covers first-run setup (`outfind check`), `outfind status`, and when a lookup costs money.
 user-invocable: true
 argument-hint: [N] [emails]
 ---
@@ -28,40 +28,44 @@ If the command is missing, run it through `uvx` instead — `uvx openoutfind ...
 with `pip install openoutfind`. Inside a checkout of the repo, `python manage.py <verb>` is the
 same entry point.
 
-`status` never blocks and never spends. It answers `onboarding` (complete or which
-`OPENOUTFIND_*` variables are missing), lead and deal counts, the credit balance, anything
-`blocked`, and a `next_action` — start there whenever you are unsure what state the user is in.
+`status` never blocks and never spends. It answers `config` (complete, or which `OPENOUTFIND_*`
+variables are missing), lead and deal counts, the credit balance, anything `blocked`, and a
+`next_action` — start there whenever you are unsure what state the user is in.
 
-## Setup, if `status` says onboarding is incomplete
+## Setup, if `status` says the configuration is incomplete
 
-```bash
-outfind init            # interactive wizard on a TTY; environment otherwise
-```
+**Configuration is the environment, and nothing is stored.** There is no wizard here and no config
+row: every value is read from `OPENOUTFIND_*` on every run, so setting up an install means exporting
+these — which is also why nothing ever has to be re-entered in a container or a CI job.
 
-`init` creates the database and writes the config, prints what it created, and stops **before spending
-anything**. Four steps' worth of input, each of which can come from the environment instead of a
-prompt (which is what makes a headless setup possible):
-
-| Step | Environment variables |
+| Group | Environment variables |
 |------|----------------------|
-| campaign | `OPENOUTFIND_PRODUCT_DESCRIPTION`, `OPENOUTFIND_CAMPAIGN_TARGET` |
+| campaign | `OPENOUTFIND_PRODUCT_DOCS`, `OPENOUTFIND_CAMPAIGN_TARGET` |
 | llm | `OPENOUTFIND_AI_MODEL`, `OPENOUTFIND_LLM_API_KEY` |
 | bettercontact | `OPENOUTFIND_BETTERCONTACT_API_KEY` |
 | account | `OPENOUTFIND_OPERATOR_EMAIL`, `OPENOUTFIND_COUNTRY`, `OPENOUTFIND_ACCEPT_LEGAL_NOTICE` |
+
+```bash
+outfind check           # is this install configured? creates the database, spends nothing
+```
+
+`check` creates the database, verifies the model answers to the key it was given, prints what this
+run was told, and stops **before spending anything**.
 
 The product description and target market are pages of prose, so pass them as files rather than
 shell-quoted strings — quoting a markdown paragraph on a command line corrupts it quietly:
 
 ```bash
-outfind init --product-docs product.md --target target.md
+outfind check --product-docs product.md --target target.md
 ```
 
 **Never accept the legal notice on the user's behalf.** If `OPENOUTFIND_ACCEPT_LEGAL_NOTICE` is
-unset, say so and let them set it; do not export it yourself.
+unset, say so and let them set it; do not export it yourself. It is read on **every** run, not
+recorded once.
 
-You never need to run `init` first — `find` does the same setup if it hasn't happened — but do run
-it when the user has not configured anything, because it fails cheaply and prints the config it
-built, so a misread product description is caught before any work.
+You never need to run `check` first — `find` checks the same things — but do run it when the user
+has not configured anything, because it fails cheaply and prints the configuration it read, so a
+misread product description is caught before any work.
 
 ## The one work verb
 
@@ -189,8 +193,8 @@ is a stable string worth branching on:
 | type | What it means | What to do |
 |------|---------------|-----------|
 | `goal_unreached` | Ran, produced fewer than asked. The rows are on stdout. | Read the message: a drained index is a dead end, addresses on order are a reason to run again later. |
-| `not_initialized` | No pipeline at this database yet. | `outfind init` |
-| `onboarding_incomplete` | Missing configuration and no TTY to ask. | `outfind status` names the variables. |
+| `not_initialized` | No pipeline at this database yet. | `outfind check` |
+| `onboarding_incomplete` | The run was not given everything it needs. | The message names every missing variable; `outfind status` does too. |
 | `no_credential` | No BetterContact key. | Configure one; discovery needs it too, and the free tier has 40 credits. |
 | `provider_auth` | The key was rejected. | Do not retry; the key is wrong. |
 | `provider_out_of_credits` | Credits exhausted. | Free `find N` still works; addresses do not. |

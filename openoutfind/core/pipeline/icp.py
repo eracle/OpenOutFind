@@ -143,16 +143,31 @@ def _seed_keywords(spec: ICPSpec) -> list[tuple[str, str]]:
     return sorted(keywords)
 
 
-def generate_seed(site_config) -> list[tuple[str, str]]:
+class Seed(NamedTuple):
+    """The opening vocabulary, and what every node built from it carries into a query.
+
+    Both extras are query attributes rather than configuration: the band rides the
+    filters unchanged, and the country is what a lead surfaced by this walk is tagged
+    with. They travel to ``select.seed_frontier`` and land on the nodes.
+    """
+
+    keywords: list[tuple[str, str]]
+    headcount: tuple[int, int]
+    country_code: str = ""
+
+
+def generate_seed(site_config) -> Seed:
     """LLM-generate the opening vocabulary and size band.
 
     The cold start, and the **only** LLM call discovery makes about queries: with no
     qualified leads there are no profiles to count words from, so the ICP text is the one
-    available source. Everything after this is counting (``vocabulary.refresh``). Also
-    folds ``country_code`` and the headcount band onto ``site_config`` — the band rides
-    every query unchanged and is never searched.
+    available source. Everything after this is counting (``vocabulary.refresh``).
 
-    Returns the seed keywords, or ``[]`` when the ICP is empty.
+    The band is **returned, not stored**: it rides every query unchanged and is never
+    searched, so it belongs on the nodes this seed opens (``select.seed_frontier``),
+    where it is part of the query that was actually fired.
+
+    Returns empty keywords when the ICP is empty.
     """
     from pydantic_ai import Agent
 
@@ -174,23 +189,13 @@ def generate_seed(site_config) -> list[tuple[str, str]]:
     )
     spec = run_agent_sync(agent.run(prompt)).output
 
+    band = (spec.headcount_min, spec.headcount_max)
+    country_code = spec.country_code.lower()
     keywords = _seed_keywords(spec)
     if not keywords:
-        return []
+        return Seed([], band, country_code)
 
     Keyword.rows_for(keywords)
-
-    updates = []
-    country_code = spec.country_code.lower()
-    if country_code and site_config.country_code != country_code:
-        site_config.country_code = country_code
-        updates.append("country_code")
-    if (site_config.headcount_min, site_config.headcount_max) != (spec.headcount_min, spec.headcount_max):
-        site_config.headcount_min = spec.headcount_min
-        site_config.headcount_max = spec.headcount_max
-        updates += ["headcount_min", "headcount_max"]
-    if updates:
-        site_config.save(update_fields=updates)
 
     # The seed is a *query*, not a description of a buyer — it says `founder cto` where
     # the operator asked for "engineering leaders at small SaaS firms". The operator's
@@ -199,7 +204,7 @@ def generate_seed(site_config) -> list[tuple[str, str]]:
                  colored("discovery seed", "cyan", attrs=["bold"]),
                  colored(describe_node(keywords), "cyan"),
                  spec.headcount_min, spec.headcount_max)
-    return keywords
+    return Seed(keywords, band, country_code)
 
 
 # ── anchors: the ICP as synthetic profiles ───────────────────────────
@@ -312,12 +317,26 @@ def _as_anchor(written: _AnchorProfile) -> Anchor:
     )
 
 
-def stored_anchors(site_config) -> np.ndarray | None:
-    """The persisted anchor embeddings as ``(N, dim)``, or ``None``."""
-    if not (site_config.anchor_embeddings and site_config.anchor_profiles):
+def anchor_leads():
+    """The invented ideal leads, oldest first — the anchors as the rows they are.
+
+    One query, and the only definition of *anchor* the codebase has: a ``Lead`` this
+    install wrote rather than discovered. The GP reads their embeddings, the label store
+    their ``profile_text`` and the vocabulary their ``source_fields``, each with the same
+    accessor it uses for a real lead.
+    """
+    from openoutfind.crm.models import Lead
+
+    return list(Lead.objects.filter(synthetic=True).order_by("pk"))
+
+
+def stored_anchors() -> np.ndarray | None:
+    """The anchors' embeddings as ``(N, dim)``, or ``None`` when there are none."""
+    embeddings = [lead.embedding_array for lead in anchor_leads()]
+    present = [e for e in embeddings if e is not None]
+    if not present:
         return None
-    stored = np.frombuffer(bytes(site_config.anchor_embeddings), dtype=np.float32)
-    return stored.reshape(len(site_config.anchor_profiles), -1).copy()
+    return np.array(present, dtype=np.float32)
 
 
 def ensure_anchors(site_config) -> np.ndarray | None:
@@ -325,8 +344,8 @@ def ensure_anchors(site_config) -> np.ndarray | None:
 
     Generates on first use and fills the remainder on a later call if an earlier one came
     back short. Already-written profiles are shown to the model so the second round widens
-    the ideal region rather than restating it, and the set is persisted — a restart must
-    not re-invent anchors (and re-anchor the GP somewhere slightly different).
+    the ideal region rather than restating it, and the set is written as rows — a restart
+    must not re-invent anchors (and re-anchor the GP somewhere slightly different).
 
     ``None`` when there is no ICP text to work from, or the LLM call failed and nothing is
     stored — callers treat that as "no anchors", never as an error. A failed fill-up keeps
@@ -335,44 +354,47 @@ def ensure_anchors(site_config) -> np.ndarray | None:
     Never called once a real lead has qualified: from that point the set is permanent,
     and callers restore it with ``stored_anchors`` instead of inventing more.
     """
+    from openoutfind.crm.models import Lead
     from openoutfind.discovery import embed_profile
 
-    profiles = list(site_config.anchor_profiles or [])
-    stored = stored_anchors(site_config)
-    if len(profiles) >= ANCHOR_COUNT:
-        return stored
+    written = anchor_leads()
+    profiles = [lead.profile_text for lead in written]
+    if len(written) >= ANCHOR_COUNT:
+        return stored_anchors()
 
     if not (site_config.product_docs or site_config.campaign_target):
-        return stored
+        return stored_anchors()
 
     fresh = [
-        anchor for anchor in generate_anchors(site_config, count=ANCHOR_COUNT - len(profiles),
+        anchor for anchor in generate_anchors(site_config, count=ANCHOR_COUNT - len(written),
                                               existing=profiles)
         if anchor.profile not in profiles
     ]
     if not fresh:
-        return stored
+        return stored_anchors()
 
-    embeddings = np.array([embed_profile(a.profile) for a in fresh], dtype=np.float32)
-    if stored is not None:
-        embeddings = np.vstack([stored, embeddings])
+    for anchor in fresh:
+        lead = Lead(
+            synthetic=True,
+            profile_text=anchor.profile,
+            # The model's own assignment of value to search field, never split back out
+            # of the flat line — that guess is what the field exists to prevent.
+            source_fields=anchor.source_fields,
+            country_code=site_config.country_code,
+        )
+        # Embedded **without** query terms, unlike a discovered lead: an anchor is a claim
+        # about what a good lead looks like, not about which query to run.
+        lead.embedding_array = embed_profile(anchor.profile)
+        lead.save()
 
-    site_config.anchor_profiles = profiles + [a.profile for a in fresh]
-    # Kept parallel to the profiles rather than derived from them: the fields are the
-    # model's own assignment, and nothing downstream can recover them from the flat line.
-    site_config.anchor_source_fields = (
-        list(site_config.anchor_source_fields or []) + [a.source_fields for a in fresh]
-    )
-    site_config.anchor_embeddings = embeddings.tobytes()
-    site_config.save(update_fields=["anchor_profiles", "anchor_source_fields",
-                                    "anchor_embeddings"])
     logger.debug("%s: +%d synthetic ideal profile(s) (%d total)",
-                 colored("anchors", "cyan", attrs=["bold"]), len(fresh), len(embeddings))
-    log_icp_echo(site_config)
-    return embeddings
+                 colored("anchors", "cyan", attrs=["bold"]), len(fresh),
+                 len(written) + len(fresh))
+    log_icp_echo()
+    return stored_anchors()
 
 
-def log_icp_echo(site_config) -> None:
+def log_icp_echo() -> None:
     """Tell the operator who the system thinks this install sells to. No-op unanchored.
 
     **This is the earliest proof the product description was understood**, and therefore
@@ -383,7 +405,7 @@ def log_icp_echo(site_config) -> None:
     Printed on the pass that writes them and again at the start of every later run, so
     the operator meets it before the first search rather than only on a cold start.
     """
-    profiles = list(site_config.anchor_profiles or [])
+    profiles = [lead.profile_text for lead in anchor_leads() if lead.profile_text]
     if not profiles:
         return
 

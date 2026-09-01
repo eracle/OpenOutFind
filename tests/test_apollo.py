@@ -19,21 +19,13 @@ URL = "https://www.linkedin.com/in/alice/"
 
 
 @pytest.fixture
-def keyed(db):
-    from openoutfind.core.models import SiteConfig
-    cfg = SiteConfig.load()
-    cfg.apollo_api_key = "secret"
-    cfg.save()
-    return cfg
+def keyed(db, configure):
+    return configure(apollo_api_key="secret")
 
 
 @pytest.fixture
-def unkeyed(db):
-    from openoutfind.core.models import SiteConfig
-    cfg = SiteConfig.load()
-    cfg.apollo_api_key = ""
-    cfg.save()
-    return cfg
+def unkeyed(db, configure):
+    return configure(apollo_api_key="")
 
 
 def _response(payload, status=200):

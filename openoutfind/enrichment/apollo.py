@@ -91,7 +91,7 @@ class ApolloUnavailable(ProviderUnavailable):
 
 def is_configured() -> bool:
     """True when an Apollo API key is set."""
-    from openoutfind.core.models import SiteConfig
+    from openoutfind.core.config import SiteConfig
 
     return bool(SiteConfig.load().apollo_api_key)
 
@@ -172,7 +172,7 @@ def _as_credit_count(body: dict) -> int:
 
 
 def _require_key() -> str:
-    from openoutfind.core.models import SiteConfig
+    from openoutfind.core.config import SiteConfig
 
     api_key = SiteConfig.load().apollo_api_key
     if not api_key:

@@ -1,67 +1,72 @@
 # Configuration
 
-Configuration lives in one place, the **`SiteConfig`** DB singleton (managed via interactive
-onboarding or Django Admin), plus a few hardcoded defaults in **`core/conf.py`**. One row holds the
-keys, the operator's country, and the product/target text: an install runs exactly one ICP, so
-there is nothing to name and nothing to select between. There are no social-network credentials —
-OpenOutFind is browserless and uses no such account.
+**Configuration is the environment.** Every value a person answers is read from `OPENOUTFIND_*` on
+every run (`core/config.py`) and nothing is written down — there is no config row, no wizard and no
+Admin page for it. An install runs exactly one ICP, so there is nothing to name and nothing to
+select between. There are no social-network credentials either; OpenOutFind is browserless and uses
+no such account.
 
-## Configure without a terminal
+The reason is what this program is: a library, a pipe stage and a scripted command, none of which
+can answer a prompt, and an agent supplies its environment on every invocation and has nothing to
+remember. An operator who wants to be *asked* runs the wizard in
+[OpenOutreach](https://github.com/eracle/OpenOutreach), which owns the human half and exports these
+names.
 
-Every onboarding field is also an environment variable, so an install with no TTY (an agent, a
-container, CI) never needs the wizard. Set these and run `outfind init` — or go straight to
-`outfind find 10`, which does the same setup before it starts working:
+## The variables
 
-| Variable | Step | Notes |
-|:---------|:-----|:------|
-| `OPENOUTFIND_PRODUCT_DESCRIPTION` | campaign | what it does, who it's for, the problem it solves |
+Set these and run `outfind check` — or go straight to `outfind find 10`, which checks the same
+things before it starts working.
+
+| Variable | Group | Notes |
+|:---------|:------|:------|
+| `OPENOUTFIND_PRODUCT_DOCS` | campaign | what it does, who it's for, the problem it solves |
 | `OPENOUTFIND_CAMPAIGN_TARGET` | campaign | who you're going after and the outcome you want |
-| `OPENOUTFIND_AI_MODEL` | llm | `provider:model`, e.g. `anthropic:claude-sonnet-4-5-20250929` |
-| `OPENOUTFIND_LLM_API_KEY` | llm | live-verified at boot; a bad key stops the run |
+| `OPENOUTFIND_AI_MODEL` | llm | `provider:model`, e.g. `anthropic:claude-sonnet-4-5-20250929`; bare `gpt-*`/`claude-*`/`gemini-*` are auto-prefixed. Providers: openai/anthropic/google/groq/mistral/cohere/openai_compatible |
+| `OPENOUTFIND_LLM_API_KEY` | llm | **verified by one live ping before every run** — a key rotated out from under a timer fails before a lead is chosen, not mid-pass |
 | `OPENOUTFIND_LLM_API_BASE` | llm | required for `openai_compatible:*`, ignored otherwise |
-| `OPENOUTFIND_BETTERCONTACT_API_KEY` | bettercontact | powers discovery (free) and enrichment (paid) |
-| `OPENOUTFIND_OPERATOR_EMAIL` | account | your own inbox — contacts key and newsletter target |
-| `OPENOUTFIND_COUNTRY` | account | ISO 3166 alpha-2, e.g. `US` |
-| `OPENOUTFIND_ACCEPT_LEGAL_NOTICE` | account | must be `true` — records that you accept the [Legal Notice](../LEGAL_NOTICE.md) |
-| `OPENOUTFIND_NEWSLETTER` | account | optional, **defaults off** — set `true` to subscribe |
+| `OPENOUTFIND_BETTERCONTACT_API_KEY` | bettercontact | [free account, 40 credits, no card](https://bettercontact.rocks?fpr=openoutreach) (affiliate link, no markup to you). Powers **both** Lead Finder discovery (billed nothing) **and** work-email enrichment (one credit per verified address, only with `--emails`) |
+| `OPENOUTFIND_APOLLO_API_KEY` | bettercontact | optional second resolver; discovery still needs the key above |
+| `OPENOUTFIND_EMAIL_FINDER` | bettercontact | optional — `bettercontact` \| `apollo`, only needed when both keys are set |
+| `OPENOUTFIND_OPERATOR_EMAIL` | account | your own inbox — the contacts-store key and the newsletter target. Read **once**, to create the operator row; after that the row is the identity |
+| `OPENOUTFIND_COUNTRY` | account | ISO 3166 alpha-2, e.g. `US` — **your jurisdiction**, not your target market |
+| `OPENOUTFIND_ACCEPT_LEGAL_NOTICE` | account | must be `true` — records that you accept the [Legal Notice](../LEGAL_NOTICE.md), and is asked on every run so an install cannot inherit somebody else's agreement with their database |
+| `OPENOUTFIND_NEWSLETTER` | account | optional, **defaults off** — set `true` to subscribe, acted on once when the operator row is created |
+| `OPENOUTFIND_CONTACTS_API_TOKEN` / `_URL` | hub | optional. Without a token a run registers for one and keeps it for the length of the process; `register` is idempotent, so nothing is lost by not storing it |
 
-A step takes effect only when *all* of its variables are set; anything left over goes to the wizard on
-a terminal, or exits listing exactly what is missing. `OPENOUTFIND_DB` (or `--db PATH`) points any
-command at a different SQLite file.
+A missing value is never a prompt: the run stops with **one** error naming every variable that would
+have satisfied it. `OPENOUTFIND_DB` (or `--db PATH`) points any command at a different SQLite file.
 
-## The `SiteConfig` singleton (pk=1)
+## What the database holds instead
 
-Set during onboarding, editable in Django Admin. `SiteConfig` is the single source of truth for
-keys, the operator's country, and the product/target text — one row, since an install runs exactly
-one ICP.
+Only what the pipeline produced or measured, which is the line: *who made this value*.
 
-| Field | Description | Default |
-|:------|:------------|:--------|
-| `ai_model` | pydantic-ai `provider:model` id (e.g. `anthropic:claude-sonnet-4-5-...`); bare `gpt-*`/`claude-*`/`gemini-*` are auto-prefixed. Providers: openai/anthropic/google/groq/mistral/cohere/openai_compatible. | (required) |
-| `llm_api_key` | API key for the chosen provider. Live-verified at onboarding. | (required) |
-| `llm_api_base` | Base URL — **only** for `openai_compatible:*`. | (none) |
-| `bettercontact_api_key` | [BetterContact](https://bettercontact.rocks?fpr=openoutreach) key — **free account, 40 credits, no card** (affiliate link, no markup to you). Powers **both** Lead Finder discovery (billed nothing) **and** work-email enrichment (one credit per verified address, only with `--emails`). **Blank disables discovery + enrichment.** | (empty) |
-| `contacts_api_token` / `contacts_api_url` | Cross-operator contacts-store token (earned on first contribution) and URL (blank → default hub). | (empty) |
-| `country_code` | ISO-3166 alpha-2. Decides the newsletter opt-in default (`geo.is_gdpr_protected`), whether this install contributes to the contacts store (`geo.is_eea_located`), and the target country stamped on every discovered lead. | (from onboarding) |
-| `product_docs` | Product/service description. Feeds ICP generation and qualification — **the whole input**. | (required) |
-| `campaign_target` | Who you're going after + the outcome. Feeds the same. | (required) |
-| `headcount_min` / `headcount_max` | Company-size band, applied to every discovery query. | `1` / `10000` |
-| `anchor_profiles` / `anchor_embeddings` | Synthetic ideal profiles (JSON / binary) standing in for positives before any real acceptance exists. Once a lead qualifies the set is permanent — real acceptances outnumber it rather than retiring it. | (empty) |
-| `model_blob` | The trained GP model (joblib, binary). | (empty) |
+| Where | What |
+|:------|:-----|
+| `Keyword` / `QueryNode` | the walk — which keyword sets have been fired, how far each was paged, and the size band and target country each node searches (written by `icp.generate_seed` onto the nodes it opens, inherited by their children) |
+| `Lead` with `synthetic=True` | the anchors — invented ideal leads the LLM wrote from the ICP, with the same `profile_text`, `source_fields` and embedding a real lead carries. Permanent once written, never contacted, never exported |
+| `Lead` / `Company` / `Deal` | the leads themselves and the LLM's verdict on each |
+| Django `User` | the operator — identity, written once, because a renamed variable must not rename the person a campaign belongs to |
 
-The operator's own email and name live on the Django `User` (created at onboarding), not on
-`SiteConfig`. Discovery keeps no filter spec or page cursor here either: the keyword sets it has
-fired, and how far each was paged, live in their own `Keyword` / `QueryNode` rows.
+The fitted GP is **not** in there. It is refit from the label rows whenever the evidence changes and
+held in memory for the life of the process (`ml/qualifier.qualifier_for`), so a stored copy was a
+cache of a value already derived.
 
 ## Sending mailboxes — there are none
 
 The `Mailbox` model, the SMTP/IMAP credentials, the per-box signature, the measured daily cap and the
 send-spacing clock all moved to [OpenOutSend](https://github.com/eracle/OpenOutSend) with
-the sending leg. **Nothing here needs a mailbox**, and onboarding no longer asks for one.
+the sending leg. **Nothing here needs a mailbox**, and nothing asks for one.
 
-## Newsletter jurisdiction default
+## Newsletter consent
 
-At onboarding you enter your `country_code`. If it is **not** an opt-in jurisdiction (EU/EEA, UK, Switzerland, Canada, Brazil, Australia, Japan, South Korea, New Zealand), the newsletter default is on; otherwise it is off. An explicit yes always subscribes. The check reads `core/geo.is_gdpr_protected` — country comes from onboarding, never from any account lookup.
+`OPENOUTFIND_NEWSLETTER` is off unless it says yes, in every jurisdiction: silence in a config file
+is not consent anywhere, and there is nobody here to ask. (The wizard in OpenOutreach still offers
+the jurisdiction-aware default, because that is a suggestion to a human. The rule it reads is
+`core/geo.is_gdpr_protected`.)
+
+Your `country_code` is your own jurisdiction and nothing else — it decides whether this install
+contributes to the contacts store (`geo.is_eea_located`). The country a *lead* is tagged with comes
+from the query that found them, and lives on the query node.
 
 ## Hardcoded Defaults (`core/conf.py`)
 

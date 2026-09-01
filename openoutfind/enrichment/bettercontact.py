@@ -138,7 +138,7 @@ def start(profile_url: str) -> Lookup:
 
 def is_configured() -> bool:
     """True when the BetterContact paid finder is configured (an API key is set)."""
-    from openoutfind.core.models import SiteConfig
+    from openoutfind.core.config import SiteConfig
 
     return bool(SiteConfig.load().bettercontact_api_key)
 
@@ -233,7 +233,7 @@ def poll_once(request_id: str) -> PollOutcome:
 
 
 def _require_key() -> str:
-    from openoutfind.core.models import SiteConfig
+    from openoutfind.core.config import SiteConfig
 
     api_key = SiteConfig.load().bettercontact_api_key
     if not api_key:

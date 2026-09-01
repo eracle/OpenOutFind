@@ -1,42 +1,8 @@
 # openoutfind/core/admin.py
 from django.contrib import admin
 
-from openoutfind.core.models import Keyword, QueryNode, SiteConfig
-from openoutfind.crm.models import DealState
-from openoutfind.crm.models.deal import Deal
+from openoutfind.core.models import Keyword, QueryNode
 from openoutfind.discovery import describe_filters
-
-
-@admin.register(SiteConfig)
-class SiteConfigAdmin(admin.ModelAdmin):
-    list_display = ("__str__", "ai_model", "llm_api_base", "phase")
-
-    def has_add_permission(self, request):
-        return not SiteConfig.objects.exists()
-
-    def has_delete_permission(self, request, obj=None):
-        return False
-
-    @admin.display(description="phase")
-    def phase(self, obj):
-        """Cold (still part-steering on invented profiles) vs learning (real evidence rules).
-
-        The anchors are permanent, so this can no longer read their count — it mirrors
-        ``BayesianQualifier.is_cold`` instead: cold until real acceptances reach
-        ``ANCHOR_COUNT``, learning from there, with the (also permanent) anchor count
-        shown alongside so the two never look conflated.
-        """
-        from openoutfind.core.pipeline.icp import ANCHOR_COUNT
-
-        n_anchors = len(obj.anchor_profiles or [])
-        n_real = Deal.objects.filter(
-            lead_id__isnull=False,
-        ).exclude(state=DealState.FAILED).count()
-        if not n_anchors:
-            return "learning (unanchored)"
-        if n_real < ANCHOR_COUNT:
-            return f"cold ({n_real}/{ANCHOR_COUNT} real, {n_anchors} anchor{'' if n_anchors == 1 else 's'})"
-        return f"learning ({n_anchors} anchor{'' if n_anchors == 1 else 's'} + {n_real} real)"
 
 
 @admin.register(QueryNode)

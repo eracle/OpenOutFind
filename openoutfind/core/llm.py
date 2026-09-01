@@ -183,14 +183,15 @@ def split_model_id(ai_model: str) -> tuple[str, str]:
 # ── Model factory ────────────────────────────────────────────────────
 
 def _validated_site_config():
-    """Load `SiteConfig` and assert the required LLM fields are populated."""
-    from openoutfind.core.models import SiteConfig
+    """This run's config, with the required LLM fields asserted present."""
+    from openoutfind.core.config import (
+        REQUIRED_LLM_FIELDS, SiteConfig, missing,
+    )
 
     cfg = SiteConfig.load()
-    if not cfg.llm_api_key:
-        raise ValueError("LLM_API_KEY is not set in Site Configuration.")
-    if not cfg.ai_model:
-        raise ValueError("AI_MODEL is not set in Site Configuration.")
+    unset = missing(cfg, REQUIRED_LLM_FIELDS)
+    if unset:
+        raise ValueError(f"no model to write with — set {', '.join(unset)}.")
     return cfg
 
 

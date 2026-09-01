@@ -188,13 +188,11 @@ class BayesianQualifier:
     re-fitted on ALL accumulated data whenever predictions are needed.
     """
 
-    def __init__(self, seed: int = 42, embedding_dim: int = 384, n_mc_samples: int = 100,
-                 site_config=None):
+    def __init__(self, seed: int = 42, embedding_dim: int = 384, n_mc_samples: int = 100):
         self.embedding_dim = embedding_dim
         self._seed = seed
         self._n_mc_samples = n_mc_samples
         self._pipeline = None  # Pipeline([('scaler', StandardScaler), ('gpr', GPR)])
-        self._site_config = site_config
         self._X: list[np.ndarray] = []
         self._y: list[int] = []
         # Synthetic ideal-lead embeddings, all label 1 — kept apart from the real
@@ -253,12 +251,6 @@ class BayesianQualifier:
         if not self._anchor_X:
             return False
         return self.n_real_positives < ANCHOR_COUNT
-
-    @property
-    def pipeline(self):
-        """The fitted sklearn Pipeline — serializable via joblib."""
-        self._fit_if_needed()
-        return self._pipeline
 
     # ------------------------------------------------------------------
     # Update  (append + invalidate)
@@ -359,7 +351,6 @@ class BayesianQualifier:
                     n, time.monotonic() - started)
         logger.debug("GPR fitted on %d observations (%d anchors, %d after balancing, "
                       "LML=%.2f)", self.n_obs, len(self._anchor_X), n, lml)
-        self._persist_pipeline()
         return True
 
     def _balance(self, X: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -391,19 +382,6 @@ class BayesianQualifier:
             len(y), len(keep), n_min, n_max, cap,
         )
         return X[keep], y[keep]
-
-    def _persist_pipeline(self):
-        """Persist the fitted pipeline to the SiteConfig.model_blob DB field."""
-        if self._site_config is None or self._pipeline is None:
-            return
-        import io
-        import joblib
-
-        buf = io.BytesIO()
-        joblib.dump(self._pipeline, buf, compress=3)
-        self._site_config.model_blob = buf.getvalue()
-        self._site_config.save(update_fields=["model_blob"])
-        logger.debug("Pipeline saved to DB")
 
     # ------------------------------------------------------------------
     # Prediction  (needs posterior std — uses _gpr_predict)
@@ -615,8 +593,7 @@ def _label_fingerprint() -> str:
     One small query — microseconds against a fit that is seconds, and grows as O(n³)
     while this grows linearly.
     """
-    from openoutfind.core.models import SiteConfig
-    from openoutfind.crm.models import Deal, DealState, Outcome
+    from openoutfind.crm.models import Deal, DealState, Lead, Outcome
 
     labels = sorted(
         (lead_id, 0 if outcome == Outcome.WRONG_FIT else 1)
@@ -631,7 +608,8 @@ def _label_fingerprint() -> str:
     digest = hashlib.sha256(repr(labels).encode())
     # The anchors are fitted alongside the real labels, so a first anchor-set generation
     # has genuinely changed the training data.
-    digest.update(repr(SiteConfig.load().anchor_profiles or []).encode())
+    digest.update(repr(sorted(
+        Lead.objects.filter(synthetic=True).values_list("pk", flat=True))).encode())
     return digest.hexdigest()
 
 
@@ -661,7 +639,7 @@ def qualifier_for():
     """
     global _FITTED
     from openoutfind.core.conf import CAMPAIGN_CONFIG
-    from openoutfind.core.models import SiteConfig
+    from openoutfind.core.config import SiteConfig
     from openoutfind.core.pipeline.icp import ensure_anchors, stored_anchors
     from openoutfind.crm.models import Lead
 
@@ -669,11 +647,9 @@ def qualifier_for():
         logger.debug("ranking model: reusing the fit — no verdict since")
         return _FITTED[1]
 
-    site_config = SiteConfig.load()
     qualifier = BayesianQualifier(
         seed=42,
         n_mc_samples=CAMPAIGN_CONFIG["qualification_n_mc_samples"],
-        site_config=site_config,
     )
     X, y = Lead.get_labeled_arrays()
     if len(X) > 0:
@@ -683,7 +659,8 @@ def qualifier_for():
     # acceptance at all the labels are one class and the GP cannot fit, so generate
     # the anchors; once real positives have started arriving, restore the same
     # stored set rather than inventing more — it never grows or shrinks again.
-    anchors = stored_anchors(site_config) if qualifier.has_real_positive else ensure_anchors(site_config)
+    anchors = (stored_anchors() if qualifier.has_real_positive
+               else ensure_anchors(SiteConfig.load()))
     if anchors is not None:
         qualifier.set_anchors(anchors)
 

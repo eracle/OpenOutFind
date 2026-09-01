@@ -31,7 +31,7 @@ def self_profile() -> dict:
     binding, falling back to the username), country from ``SiteConfig``. The contacts
     store uses ``public_identifier`` (the operator email) as the stable operator key.
     """
-    from openoutfind.core.models import SiteConfig
+    from openoutfind.core.config import SiteConfig
 
     user = get_active_user()
     return {

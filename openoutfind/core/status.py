@@ -32,36 +32,33 @@ logger = logging.getLogger(__name__)
 
 def build_status() -> dict:
     """Assemble the whole status document. Reads only; never raises on a dead provider."""
-    from openoutfind.core import onboarding
-
-    onboarding_state = _onboarding_state(onboarding)
+    config = _config_state()
     totals = _pipeline_counts()
     credits = _credits()
     hub = _hub_balance()
-    blocked = _blocked(onboarding_state, credits, totals)
+    blocked = _blocked(config, credits, totals)
 
     return {
-        "onboarding": onboarding_state,
+        "config": config,
         "totals": totals,
         "credits": credits,
         "hub": hub,
         "blocked": blocked,
-        "next_action": next_action(onboarding_state, credits, totals),
+        "next_action": next_action(config, credits, totals),
     }
 
 
 # ── configuration ────────────────────────────────────────────────
 
-def _onboarding_state(onboarding) -> dict:
-    """Which steps are satisfied, and the variables that would satisfy the rest."""
-    missing = onboarding.missing_env_keys()
+def _config_state() -> dict:
+    """Which groups this run was given, and the variables that would give it the rest."""
+    from openoutfind.core.readiness import GROUPS, missing_variables
+
+    missing = missing_variables()
     return {
         "complete": not missing,
-        "done": [step.key for step in onboarding.STEPS if step.key not in missing],
-        "missing": {
-            key: [onboarding.ENV_PREFIX + name for name in names]
-            for key, names in missing.items()
-        },
+        "done": [group for group in GROUPS if group not in missing],
+        "missing": missing,
     }
 
 
@@ -140,14 +137,14 @@ def _hub_balance() -> dict:
 
 # ── what is blocked, and why ─────────────────────────────────────
 
-def _blocked(onboarding_state: dict, credits: dict, totals: dict) -> list[dict]:
+def _blocked(config: dict, credits: dict, totals: dict) -> list[dict]:
     """Everything standing between the current state and more qualified rows."""
     blocked = []
 
-    if not onboarding_state["complete"]:
+    if not config["complete"]:
         blocked.append({
             "type": ErrorType.ONBOARDING_INCOMPLETE,
-            "message": "onboarding is incomplete: " + ", ".join(onboarding_state["missing"]),
+            "message": "this run was not given: " + ", ".join(config["missing"]),
         })
 
     if credits["error"] == ErrorType.NO_CREDENTIAL:
@@ -183,7 +180,7 @@ def _blocked(onboarding_state: dict, credits: dict, totals: dict) -> list[dict]:
 
 # ── the next action ──────────────────────────────────────────────
 
-def next_action(onboarding_state: dict, credits: dict, totals: dict) -> dict:
+def next_action(config: dict, credits: dict, totals: dict) -> dict:
     """The one thing to do next — arithmetic, not adjectives.
 
     Ordered by what actually blocks progress, which is why the credit ask sits above the
@@ -200,11 +197,11 @@ def next_action(onboarding_state: dict, credits: dict, totals: dict) -> dict:
     bounded `find` the answer arrives on stdout, and what is left here is the standing
     state of the database.
     """
-    if not onboarding_state["complete"]:
-        variables = sorted({v for names in onboarding_state["missing"].values() for v in names})
+    if not config["complete"]:
+        variables = sorted({v for names in config["missing"].values() for v in names})
         return {
-            "type": "finish_onboarding",
-            "message": "Onboarding is incomplete.",
+            "type": "configure",
+            "message": "This run was not given everything finding needs.",
             "unlocks": "the run can start",
             "variables": variables,
         }

@@ -16,7 +16,7 @@ Three rules, and they exist because the reader is as often a program as a person
 
 A freshly installed tool is the fourth case, and it used to be a raw Django traceback:
 the database file exists (``settings.py`` creates its directory) but has no schema until
-``run`` migrates, so asking anything else first hit ``no such table: core_siteconfig``.
+a migrating verb runs, so asking anything else first hit ``no such table``.
 """
 from __future__ import annotations
 
@@ -80,14 +80,14 @@ def require_initialized_database() -> None:
     from django.db import connection
     from django.db.migrations.executor import MigrationExecutor
 
-    from openoutfind.core.models import SiteConfig
+    from openoutfind.core.models import QueryNode
 
     # Asked of the model rather than spelled out: the app label is namespaced when
     # OpenOutreach hosts these apps, and a literal table name would go stale silently.
-    if SiteConfig._meta.db_table not in connection.introspection.table_names():
+    if QueryNode._meta.db_table not in connection.introspection.table_names():
         raise OpenOutFindError(
             ErrorType.NOT_INITIALIZED,
-            f"no pipeline yet at {settings.DATABASE_PATH} — run `outfind init` to create it",
+            f"no pipeline yet at {settings.DATABASE_PATH} — run `outfind check` to create it",
         )
 
     executor = MigrationExecutor(connection)

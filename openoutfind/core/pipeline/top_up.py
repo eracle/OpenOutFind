@@ -68,7 +68,7 @@ def top_up(site_config, qualifier: BayesianQualifier) -> bool:
     # a run that only ever labels would otherwise never fold its own acceptances in — and
     # the walk's ranking is counted from exactly those profiles. Guarded by an accepted
     # count, so a pass that changed nothing costs one `COUNT`.
-    vocabulary.refresh(site_config)
+    vocabulary.refresh()
 
     if qualifier.is_cold:
         logger.info("  %s cold phase — %d/%d real positive(s), exploiting the anchors' guess",
