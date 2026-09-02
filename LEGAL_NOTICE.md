@@ -4,7 +4,9 @@
 
 OpenOutFind is a self-hosted, open-source **lead finder**. It discovers B2B leads from a **licensed third-party data provider**, qualifies them against your described ICP on your own machine, optionally resolves a work email for the best-fit leads through a **paid third-party email-finder**, and hands the result to you as a file. It is **browserless: it does not use, log into, scrape, or automate any social network or professional-network account, and it stores no such credentials.** By running this software, you acknowledge and accept the following facts, risks, and terms.
 
-> **It no longer sends email.** Earlier versions ran cold outreach from mailboxes you owned, with an unsubscribe mechanism, a promotional campaign of the maintainer's own, and an attribution line on every message. All of it has been removed, and the obligations that came with it now sit with whatever tool you send with — see Sections 4 and 5.
+> **This package does not send email, and never has a mailbox.** It finds, qualifies and exports; the obligations that come with contacting someone sit with whatever tool you send with — see Sections 4 and 5.
+
+> **If you send with [OpenOutSend](https://github.com/eracle/OpenOutSend), or with the [OpenOutreach](https://github.com/eracle/OpenOutreach) bundle that carries both halves, that project's own Legal Notice governs the sending** — including the line `Sent with OpenOutreach` appended to every message it sends. Nothing in this notice describes or limits it. What *is* gone everywhere is the promotional campaign of the maintainer's own that once took its turn in an operator's sending rotation: it is deleted, and nothing replaced it.
 
 > This notice describes how the software behaves and is **not legal advice**. You are responsible for your own compliance; where the stakes warrant it, consult a lawyer. Material aspects of the data model below are still pending a formal legal review.
 
@@ -33,7 +35,7 @@ The developer(s):
 ### 4. How the Project Is Funded (Affiliate Links)
 OpenOutFind is free and open-source. It sustains itself through **affiliate links**: the unavoidably-paid third-party service the tool relies on — the email-finder, which powers both lead discovery and address resolution — is surfaced during onboarding through an affiliate link. If you sign up through one, the project may earn a commission **at no markup to you**. You are free to sign up any other way.
 
-OpenOutFind never sends a message and never touches your mailbox, so there is no promotional campaign of the project's own and no attribution line appended to anything. Any hosted service operated by the maintainer is **not** covered by this notice and states its own terms at sign-up.
+OpenOutFind never sends a message and never touches your mailbox, so nothing here appends an attribution line to anything and no promotional campaign of the project's own exists in any rotation. **The sender is funded differently**: every message [OpenOutSend](https://github.com/eracle/OpenOutSend) sends ends with the line `Sent with OpenOutreach`, always on, disclosed in that project's notice. Installing this package alone never puts that line anywhere. Any hosted service operated by the maintainer is **not** covered by this notice and states its own terms at sign-up.
 
 ### 5. Lead Discovery and Email Enrichment
 **OpenOutFind does not send email.** It discovers leads, judges them against your described ICP, and writes the result to a file you export. Whatever you use to contact the people it finds is a separate tool you choose, configure and are responsible for.
