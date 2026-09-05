@@ -120,7 +120,7 @@ def contribute(lead, emails: list[str], origin: str) -> None:
     (derived from their onboarding country, ``not is_eea_located``), so the whole
     give-back is skipped (no email, no vector — and so no give-to-get credit).
     """
-    if is_eea_located(SiteConfig.load().country_code):
+    if is_eea_located(SiteConfig.load().operator_country_code):
         logger.debug("hub: operator in EEA/UK/CH — skipping give-back for %s", lead.profile_url)
         return
     emails = [e for e in emails if e]

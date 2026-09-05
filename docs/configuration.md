@@ -28,7 +28,7 @@ things before it starts working.
 | `OPENOUTFIND_APOLLO_API_KEY` | bettercontact | optional second resolver; discovery still needs the key above |
 | `OPENOUTFIND_EMAIL_FINDER` | bettercontact | optional — `bettercontact` \| `apollo`, only needed when both keys are set |
 | `OPENOUTFIND_OPERATOR_EMAIL` | account | your own inbox — the contacts-store key and the newsletter target. Read **once**, to create the operator row; after that the row is the identity |
-| `OPENOUTFIND_COUNTRY` | account | ISO 3166 alpha-2, e.g. `US` — **your jurisdiction**, not your target market |
+| `OPENOUTFIND_OPERATOR_COUNTRY` | account | ISO 3166 alpha-2, e.g. `US` — **your jurisdiction**, not your target market |
 | `OPENOUTFIND_ACCEPT_LEGAL_NOTICE` | account | must be `true` — records that you accept the [Legal Notice](../LEGAL_NOTICE.md), and is asked on every run so an install cannot inherit somebody else's agreement with their database |
 | `OPENOUTFIND_NEWSLETTER` | account | optional, **defaults off** — set `true` to subscribe, acted on once when the operator row is created |
 | `OPENOUTFIND_CONTACTS_API_TOKEN` / `_URL` | hub | optional. Without a token a run registers for one and keeps it for the length of the process; `register` is idempotent, so nothing is lost by not storing it |
@@ -64,7 +64,7 @@ is not consent anywhere, and there is nobody here to ask. (The wizard in OpenOut
 the jurisdiction-aware default, because that is a suggestion to a human. The rule it reads is
 `core/geo.is_gdpr_protected`.)
 
-Your `country_code` is your own jurisdiction and nothing else — it decides whether this install
+Your `operator_country_code` is your own jurisdiction and nothing else — it decides whether this install
 contributes to the contacts store (`geo.is_eea_located`). The country a *lead* is tagged with comes
 from the query that found them, and lives on the query node.
 

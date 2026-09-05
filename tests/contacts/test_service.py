@@ -25,16 +25,16 @@ def _resp(status_code=200, body=None):
     return resp
 
 
-def _config(token="tok", url="", country_code="us"):
+def _config(token="tok", url="", operator_country_code="us"):
     """This run's contacts configuration — the environment, which is all there is.
 
-    ``country_code`` is the operator's jurisdiction (the give-back gate); the default is
-    non-EEA so ``contribute`` proceeds, and the EEA test overrides it.
+    ``operator_country_code`` is the operator's jurisdiction (the give-back gate); the
+    default is non-EEA so ``contribute`` proceeds, and the EEA test overrides it.
     """
     from openoutfind.core.config import SiteConfig, variable_for
 
     for field, value in (("contacts_api_token", token), ("contacts_api_url", url),
-                         ("country_code", country_code)):
+                         ("operator_country_code", operator_country_code)):
         os.environ[variable_for(field)] = value
     return SiteConfig.load()
 
@@ -205,7 +205,7 @@ class TestContribute:
 
     def test_eea_operator_contributes_nothing(self):
         """An operator inside the EEA/UK/CH does not give back (jurisdiction gate)."""
-        _config(token="tok", country_code="de")
+        _config(token="tok", operator_country_code="de")
         lead = LeadFactory(country_code="in")
         with patch.object(service.requests, "post") as post:
             service.contribute(lead, ["jane@acme.com"], service.ORIGIN_BETTERCONTACT)
@@ -277,7 +277,7 @@ class TestRegisterOperator:
         that can never contribute must still be addressable, or it is invisible to
         the hub for its whole life.
         """
-        _config(token="", country_code="de")
+        _config(token="", operator_country_code="de")
         with patch.object(
             service.requests, "post", return_value=_resp(200, {"token": "NEW"}),
         ):

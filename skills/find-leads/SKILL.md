@@ -43,7 +43,7 @@ these — which is also why nothing ever has to be re-entered in a container or 
 | campaign | `OPENOUTFIND_PRODUCT_DOCS`, `OPENOUTFIND_CAMPAIGN_TARGET` |
 | llm | `OPENOUTFIND_AI_MODEL`, `OPENOUTFIND_LLM_API_KEY` |
 | bettercontact | `OPENOUTFIND_BETTERCONTACT_API_KEY` |
-| account | `OPENOUTFIND_OPERATOR_EMAIL`, `OPENOUTFIND_COUNTRY`, `OPENOUTFIND_ACCEPT_LEGAL_NOTICE` |
+| account | `OPENOUTFIND_OPERATOR_EMAIL`, `OPENOUTFIND_OPERATOR_COUNTRY`, `OPENOUTFIND_ACCEPT_LEGAL_NOTICE` |
 
 ```bash
 outfind check           # is this install configured? creates the database, spends nothing

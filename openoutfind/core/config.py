@@ -32,9 +32,10 @@ from dataclasses import dataclass, fields
 ENV_PREFIX = "OPENOUTFIND_"
 
 # What each field is read from, where the variable is not simply the field's own name
-# upper-cased. Two exceptions, and both are older than this module: the operator answers
-# one question about their country, and the LLM writes `product_docs`.
-_ALIASES = {"country_code": "COUNTRY"}
+# upper-cased. `operator_country_code` would otherwise upper-case to
+# `OPERATOR_COUNTRY_CODE` — one word longer than the name OpenOutSend already uses
+# (`OUTSEND_OPERATOR_COUNTRY`) for the same concept.
+_ALIASES = {"operator_country_code": "OPERATOR_COUNTRY"}
 
 # The model needs both halves or it cannot be built; `llm_api_base` is not among them
 # because only the `openai_compatible` provider reads it, and that builder raises its own
@@ -85,12 +86,11 @@ class SiteConfig:
     # has to be set to move an install that holds both.
     email_finder: str = ""
 
-    # The operator's ISO-3166 alpha-2 country. Drives the email-jurisdiction rules
-    # (core/geo.py): whether we contribute to the contacts store (derived,
-    # `not is_eea_located` — never a stored toggle). Also the target country stamped on
-    # every discovered Lead, the contacts geo-gate — self-hosted is one operator running
-    # one campaign, so there is one country.
-    country_code: str = ""
+    # The operator's own ISO-3166 alpha-2 jurisdiction — not to be confused with
+    # `Lead.country_code`, the per-lead target country an ICP search surfaced someone
+    # under. Drives the email-jurisdiction rules (core/geo.py): whether we contribute to
+    # the contacts store (derived, `not is_eea_located` — never a stored toggle).
+    operator_country_code: str = ""
 
     # The campaign content: what this install sells, and to whom. The two things every
     # prompt in the tool is written from.

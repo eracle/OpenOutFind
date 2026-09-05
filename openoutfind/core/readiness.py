@@ -111,8 +111,8 @@ def _account_missing(config: SiteConfig, operator_exists: bool) -> list[str]:
 
     names = [] if (operator_exists or os.environ.get(OPERATOR_EMAIL, "").strip()) \
         else [OPERATOR_EMAIL]
-    if not config.country_code:
-        names.append(variable_for("country_code"))
+    if not config.operator_country_code:
+        names.append(variable_for("operator_country_code"))
     if not _flag(ACCEPT_LEGAL_NOTICE):
         names.append(ACCEPT_LEGAL_NOTICE)
     return names

@@ -83,7 +83,7 @@ class Command(OpenOutFindCommand):
             self.stdout.write(json.dumps(described, indent=2))
             return
 
-        self.stdout.write(f"  country     {described['country_code'] or '—'}")
+        self.stdout.write(f"  country     {described['operator_country_code'] or '—'}")
         self.stdout.write(f"  product     {described['product_docs_chars']} chars")
         self.stdout.write(f"  target      {described['campaign_target_chars']} chars")
         self.stdout.write(f"  model       {described['ai_model']}")
@@ -135,7 +135,7 @@ def _describe() -> dict:
     site_config = SiteConfig.load()
     exportable, _ = export_counts()
     return {
-        "country_code": site_config.country_code,
+        "operator_country_code": site_config.operator_country_code,
         "product_docs_chars": len(site_config.product_docs),
         "campaign_target_chars": len(site_config.campaign_target),
         "ai_model": site_config.ai_model,

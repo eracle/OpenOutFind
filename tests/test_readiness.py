@@ -19,7 +19,7 @@ READY = {
     "ai_model": "anthropic:claude-sonnet-4-5",
     "llm_api_key": "sk-test",
     "bettercontact_api_key": "bc-test",
-    "country_code": "us",
+    "operator_country_code": "us",
 }
 
 
@@ -88,7 +88,7 @@ class TestItNamesEverythingMissingAtOnce:
 
         assert raised.value.error_type == ErrorType.ONBOARDING_INCOMPLETE
         for variable in ("OPENOUTFIND_PRODUCT_DOCS", "OPENOUTFIND_LLM_API_KEY",
-                         "OPENOUTFIND_BETTERCONTACT_API_KEY", "OPENOUTFIND_COUNTRY"):
+                         "OPENOUTFIND_BETTERCONTACT_API_KEY", "OPENOUTFIND_OPERATOR_COUNTRY"):
             assert variable in str(raised.value)
 
     def test_one_missing_value_leaves_the_rest_satisfied(self, ready, monkeypatch):

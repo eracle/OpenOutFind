@@ -38,7 +38,7 @@ def self_profile() -> dict:
         "public_identifier": user.email or user.username,
         "first_name": user.first_name or "",
         "last_name": user.last_name or "",
-        "country_code": SiteConfig.load().country_code or "",
+        "operator_country_code": SiteConfig.load().operator_country_code or "",
     }
 
 

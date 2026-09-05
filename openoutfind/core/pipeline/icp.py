@@ -380,7 +380,7 @@ def ensure_anchors(site_config) -> np.ndarray | None:
             # The model's own assignment of value to search field, never split back out
             # of the flat line — that guess is what the field exists to prevent.
             source_fields=anchor.source_fields,
-            country_code=site_config.country_code,
+            country_code=site_config.operator_country_code,
         )
         # Embedded **without** query terms, unlike a discovered lead: an anchor is a claim
         # about what a good lead looks like, not about which query to run.
