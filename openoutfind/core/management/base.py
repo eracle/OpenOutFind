@@ -62,7 +62,8 @@ def format_failure(exc: OpenOutFindError, *, as_json: bool) -> str:
     file the operator is keeping.
     """
     if as_json:
-        return json.dumps({"error": {"type": exc.error_type, "message": exc.message}}) + "\n"
+        return json.dumps({"error": {"type": exc.error_type, "message": exc.message,
+                                      **exc.payload}}) + "\n"
     return f"{exc}\n"
 
 

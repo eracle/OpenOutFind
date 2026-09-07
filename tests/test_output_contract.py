@@ -95,6 +95,35 @@ def test_json_callers_get_the_failure_as_json(capsys):
     assert captured.out == ""
 
 
+def test_a_payload_rides_alongside_type_and_message_under_json(capsys):
+    """`qualify_pending`'s candidate — the one error type that needs more than a type
+    and a message to be acted on rather than merely reported."""
+    import json
+
+    class Failing(OpenOutFindCommand):
+        def add_arguments(self, parser):
+            parser.add_argument("--json", action="store_true", dest="as_json")
+
+        def handle(self, *args, **options):
+            raise OpenOutFindError(
+                ErrorType.QUALIFY_PENDING, "Ada Lovelace needs a verdict",
+                payload={"profile_text": "engineer at acme", "company": "Acme"})
+
+    with pytest.raises(SystemExit):
+        Failing().run_from_argv(["openoutfind", "failing", "--json"])
+
+    document = json.loads(capsys.readouterr().err)
+    assert document["error"]["type"] == "qualify_pending"
+    assert document["error"]["company"] == "Acme"
+
+
+def test_a_payload_is_absent_from_the_plain_text_line():
+    exc = OpenOutFindError(ErrorType.QUALIFY_PENDING, "Ada Lovelace needs a verdict",
+                            payload={"profile_text": "engineer at acme"})
+
+    assert str(exc) == "error: qualify_pending: Ada Lovelace needs a verdict"
+
+
 def test_an_unexpected_exception_still_raises():
     """Only *expected* failures are flattened; a bug keeps its traceback."""
     class Buggy(OpenOutFindCommand):

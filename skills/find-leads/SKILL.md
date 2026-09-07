@@ -110,10 +110,44 @@ exports — the row carries the person, the company and the reason with a blank 
 | `--debug` | Show the discovery walk's reasoning on stderr. For diagnosing a run that finds nothing. |
 | `--open` | Opens each new lead's profile in a browser. **Never pass this** — it is for a human at a terminal, and it errors out headless. |
 | `--db PATH` | Work against a SQLite file other than `~/.openoutfind/data/db.sqlite3` (same as `OPENOUTFIND_DB`). Accepted by every verb. |
+| `--agent-qualify` | Opt out of `AI_MODEL` for the qualify step — see *Answering qualify yourself* below. |
 
 A run can take a while: each lead is an LLM call, and paid lookups are polled. Give it a generous
 timeout rather than a short one plus a retry — a killed run wastes the work, though nothing already
 qualified is lost.
+
+## Answering qualify yourself, with no second LLM key
+
+If you (the calling agent) are already reasoning about these leads in this conversation,
+`OPENOUTFIND_LLM_API_KEY` is a second, redundant LLM bill for a verdict you can write yourself. Add
+`--agent-qualify` and the run stops at the first candidate needing one instead of calling
+`AI_MODEL`:
+
+```bash
+outfind find 10 --agent-qualify --json
+```
+
+It runs discovery exactly as normal — free either way — and exits non-zero with `qualify_pending`,
+which carries the candidate's own fields right on the error object under `--json`
+(`{"error": {"type": "qualify_pending", "profile_text", "company", "job_title", "full_name",
+"profile_url", "lead_id", ...}}`, or on the plain-text line without `--json`). Judge the fit the
+same way you would judge anything else in this conversation, then re-run the **same command** with
+your verdict attached:
+
+```bash
+outfind find 10 --agent-qualify --verdict fit --reason "Series B security infra buyer, matches the ICP on team size and stack."
+outfind find 10 --agent-qualify --verdict no-fit --reason "Consumer app, not B2B — outside the target market."
+```
+
+This resumes from exactly that candidate — no lead id to track, since at most one is ever pending —
+records the verdict, and keeps going: either the goal is met, the search runs dry, or it stops
+again at the next `qualify_pending`. A rejected verdict disqualifies the lead the same way an
+LLM's "wrong fit" would; nothing already found is lost either way, same as `goal_unreached`.
+
+**`--verdict` needs both `--agent-qualify` and `--reason`** — passing one without the other is
+`bad_config`. **Don't pass `--agent-qualify` unless you intend to answer every `qualify_pending` it
+raises** — a bare `find` without the flag uses `AI_MODEL` and never stops for a verdict at all,
+which is the right default for a run nobody is driving turn-by-turn.
 
 ## Reading the output
 
@@ -201,6 +235,7 @@ is a stable string worth branching on:
 | `provider_rate_limited` | 429. | Back off. **Never retry at speed** — the provider's docs say that can block the account. |
 | `provider_unavailable` | Provider unreachable at all. | Transient; retry later. |
 | `bad_config` | A value is set but unusable (e.g. a negative count). | Read the message; it names the field. |
+| `qualify_pending` | `--agent-qualify` stopped one candidate short of the `AI_MODEL` call it opted out of. | Judge the candidate carried on the error object, then re-run with `--verdict`/`--reason` — see *Answering qualify yourself*. |
 
 Treat a non-zero exit as *partial success with a stated reason*, not as "nothing happened" — the
 rows are already on stdout. And never report a failed run to the user as "no leads matched": a

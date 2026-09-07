@@ -41,6 +41,16 @@ def headless(monkeypatch, configure):
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
 
 
+@pytest.fixture(autouse=True)
+def _reset_agent_qualify():
+    """A contextvar carries `--agent-qualify` state past a test's own scope otherwise."""
+    from openoutfind.core import agent_qualify
+
+    yield
+    agent_qualify._active.set(False)
+    agent_qualify._verdict.set(None)
+
+
 @pytest.fixture
 def command():
     cmd = Command()
@@ -262,6 +272,45 @@ class TestTheCommandContract:
                 patch.object(Command, "_report", patched_report):
             with pytest.raises(OpenOutFindError):
                 call_command("find", "5", "--batch", stdout=out)
+
+    def test_agent_qualify_stops_with_the_candidates_payload(self, site_config, booted):
+        """The candidate a `QualifyPending` raised deep in the cycle rides all the way
+        out to the command's own error — same shape `goal_unreached` gets."""
+        from openoutfind.core.pipeline.qualify import QualifyPending
+
+        pending = QualifyPending(
+            "Ada Lovelace needs a verdict",
+            payload={"profile_text": "engineer at acme", "company": "Acme"})
+
+        with patch("openoutfind.core.cycle.run_one_action", side_effect=pending):
+            with pytest.raises(OpenOutFindError) as exc:
+                call_command("find", "1", "--agent-qualify", stdout=io.StringIO())
+
+        assert exc.value.error_type == ErrorType.QUALIFY_PENDING
+        assert exc.value.payload["company"] == "Acme"
+
+    def test_a_bare_agent_qualify_run_carries_no_verdict(self, site_config, booted):
+        from openoutfind.core import agent_qualify
+
+        with patch("openoutfind.core.cycle.run_one_action", return_value=False):
+            with pytest.raises(OpenOutFindError):
+                call_command("find", "1", "--agent-qualify", stdout=io.StringIO())
+
+        assert agent_qualify.take_verdict() is None
+
+    def test_verdict_without_agent_qualify_is_refused(self, site_config, booted):
+        with pytest.raises(OpenOutFindError) as exc:
+            call_command("find", "1", "--verdict", "fit", "--reason", "ok",
+                         stdout=io.StringIO())
+
+        assert exc.value.error_type == ErrorType.BAD_CONFIG
+
+    def test_verdict_without_a_reason_is_refused(self, site_config, booted):
+        with pytest.raises(OpenOutFindError) as exc:
+            call_command("find", "1", "--agent-qualify", "--verdict", "fit",
+                         stdout=io.StringIO())
+
+        assert exc.value.error_type == ErrorType.BAD_CONFIG
 
     def test_a_negative_count_is_refused(self, site_config, booted):
         with pytest.raises(OpenOutFindError) as exc:

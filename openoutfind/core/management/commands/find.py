@@ -133,10 +133,30 @@ class Command(OpenOutFindCommand):
         # line wins. `--debug` is the one an operator reaches for mid-run.
         parser.add_argument("--debug", action="store_const", const="debug",
                             dest="log_level", help="Shorthand for --log-level debug.")
+        parser.add_argument(
+            "--agent-qualify", action="store_true", dest="agent_qualify",
+            help="Opt out of AI_MODEL for the qualify step: stop at the first "
+                 "candidate needing a verdict (error type qualify_pending, carrying "
+                 "its profile_text/company/job_title) instead of calling the LLM. "
+                 "Resume with --verdict/--reason. Spends nothing on AI_MODEL either way.")
+        parser.add_argument(
+            "--verdict", choices=("fit", "no-fit"), dest="verdict",
+            help="Answer the candidate a prior --agent-qualify run stopped on.")
+        parser.add_argument(
+            "--reason", dest="reason",
+            help="The reason behind --verdict — written down exactly like the LLM's own.")
 
     def handle(self, *args, **options):
         if options["count"] < 0:
             raise OpenOutFindError(ErrorType.BAD_CONFIG, "count cannot be negative")
+        if options["verdict"] and not options["agent_qualify"]:
+            raise OpenOutFindError(ErrorType.BAD_CONFIG,
+                                    "--verdict needs --agent-qualify")
+        if options["verdict"] and not options["reason"]:
+            raise OpenOutFindError(ErrorType.BAD_CONFIG,
+                                    "--verdict needs --reason")
+        if options["agent_qualify"]:
+            _enable_agent_qualify(options["verdict"], options["reason"])
         # The unit says what to count; the flag says what may be paid for. A goal counted
         # in addresses cannot be met without buying them, so the noun implies the flag —
         # that is the one place the two are not independent.
@@ -177,7 +197,7 @@ class Command(OpenOutFindCommand):
         self._report(result, options, writer)
 
         if not result.reached:
-            raise OpenOutFindError(result.stopped_because, result.detail)
+            raise OpenOutFindError(result.stopped_because, result.detail, result.payload)
 
     # ── output ───────────────────────────────────────────────────
 
@@ -353,3 +373,11 @@ def _browser():
             webbrowser.open(lead.profile_url)
 
     return open_profile
+
+
+def _enable_agent_qualify(verdict: str | None, reason: str | None) -> None:
+    """Turn ``--agent-qualify`` on for this process, with an optional resume answer."""
+    from openoutfind.core.agent_qualify import Verdict, enable
+
+    answer = Verdict(fit=verdict == "fit", reason=reason) if verdict else None
+    enable(answer)

@@ -7,9 +7,24 @@ import logging
 import numpy as np
 from termcolor import colored
 
+from openoutfind.core.errors import ErrorType
 from openoutfind.core.ml.qualifier import BayesianQualifier
 
 logger = logging.getLogger(__name__)
+
+
+class QualifyPending(Exception):
+    """``find --agent-qualify`` stopped short of the LLM call for one candidate.
+
+    Carries a stable ``error_type`` the way ``ProviderUnavailable`` does, plus the
+    candidate's own fields as ``payload`` — the shape the qualifier itself judges on,
+    so an agent answering isn't missing anything the real LLM path would have seen.
+    """
+
+    def __init__(self, message: str, payload: dict) -> None:
+        self.error_type = ErrorType.QUALIFY_PENDING
+        self.payload = payload
+        super().__init__(message)
 
 
 def fetch_qualification_candidates():
@@ -46,8 +61,21 @@ def run_qualification(site_config, qualifier: BayesianQualifier, candidates=None
     verdict itself is always the LLM's. On a cold start that strategy runs against a
     GP anchored on synthetic ideal profiles (``icp.generate_anchors``) rather than
     against no model at all.
+
+    Under ``find --agent-qualify`` the LLM call is never made: a resumed candidate
+    (``PendingQualification``) is answered from the caller's own ``--verdict``/
+    ``--reason``, or, absent one, a fresh candidate is selected the same balance-driven
+    way and handed to the caller by raising :class:`QualifyPending` instead.
     """
     from openoutfind.core.ml.qualifier import qualify_with_llm, format_prediction
+    from openoutfind.core import agent_qualify
+    from openoutfind.crm.models import PendingQualification
+
+    agent_mode = agent_qualify.active()
+    if agent_mode:
+        pending = PendingQualification.objects.select_related("lead").first()
+        if pending is not None:
+            return _resume_agent_qualification(qualifier, pending)
 
     if candidates is None:
         candidates = fetch_qualification_candidates()
@@ -106,6 +134,11 @@ def run_qualification(site_config, qualifier: BayesianQualifier, candidates=None
         logger.debug("No profile text for %s — skipping qualification", profile_url)
         return None
 
+    if agent_mode:
+        PendingQualification.objects.create(lead=candidate)
+        raise QualifyPending(f"{_who(candidate)} needs a verdict",
+                              payload=_candidate_payload(candidate))
+
     label, reason = qualify_with_llm(
         candidate.profile_text,
         product_docs=site_config.product_docs,
@@ -113,6 +146,43 @@ def run_qualification(site_config, qualifier: BayesianQualifier, candidates=None
     )
     _save_qualification_result(qualifier, candidate, embedding, label, reason)
     return profile_url
+
+
+def _resume_agent_qualification(qualifier: BayesianQualifier, pending) -> str | None:
+    """Answer the one candidate already handed to the calling agent, or hand it back.
+
+    ``pending`` is the sole ``PendingQualification`` row — there is never more than
+    one — and the candidate it names does not go through selection again: the whole
+    point of remembering it is that a second invocation resumes *this* lead, not
+    whichever one the GP's balance-driven pick would land on now.
+    """
+    from openoutfind.core import agent_qualify
+
+    candidate = pending.lead
+    verdict = agent_qualify.take_verdict()
+    if verdict is None:
+        # A bare `--agent-qualify` re-run with nothing answered yet — re-ask the same
+        # question rather than silently doing nothing, so the caller always gets a
+        # `qualify_pending` to act on.
+        raise QualifyPending(f"{_who(candidate)} is still waiting on a verdict",
+                              payload=_candidate_payload(candidate))
+
+    label = 1 if verdict.fit else 0
+    _save_qualification_result(qualifier, candidate, candidate.embedding_array, label, verdict.reason)
+    pending.delete()
+    return candidate.profile_url
+
+
+def _candidate_payload(lead) -> dict:
+    """The fields an agent needs to judge fit — the same ones the LLM path sees."""
+    return {
+        "lead_id": lead.pk,
+        "profile_url": lead.profile_url,
+        "profile_text": lead.profile_text,
+        "full_name": lead.full_name,
+        "job_title": lead.job_title,
+        "company": getattr(lead.company, "name", None),
+    }
 
 
 def _who(lead) -> str:

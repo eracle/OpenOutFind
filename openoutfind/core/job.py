@@ -63,6 +63,10 @@ class JobResult:
 
     detail: str = ""
 
+    payload: dict = field(default_factory=dict)
+    """Extra fields a caller needs to *act* on ``stopped_because`` — today only the
+    ``qualify_pending`` candidate. Empty for every other stop reason."""
+
     elapsed: float = 0.0
     """Wall-clock seconds the job ran. Reported, not enforced — there is no timeout."""
 
@@ -102,6 +106,7 @@ def _work_to_goal(site_config, goal: Goal, on_new_lead, buy_addresses: bool,
                   started: float) -> JobResult:
     """The loop itself. Every exit is a ``JobResult``; none of them raises."""
     from openoutfind.core.cycle import HALTING_ERRORS, run_one_action
+    from openoutfind.core.pipeline.qualify import QualifyPending
     from openoutfind.enrichment.provider import ProviderUnavailable
 
     baseline = _unit_ids(site_config, goal.unit)
@@ -113,6 +118,14 @@ def _work_to_goal(site_config, goal: Goal, on_new_lead, buy_addresses: bool,
                 site_config, buy_addresses=buy_addresses,
                 max_new_lookups=_lookup_budget(site_config, goal, result))
             _collect(site_config, goal, baseline, result, on_new_lead, started)
+        except QualifyPending as exc:
+            # Opted out of the LLM call, one candidate short of it — same shape as
+            # goal_unreached (rows already produced stand), but the candidate itself
+            # rides the result so the CLI can put it in front of the calling agent.
+            result.stopped_because = exc.error_type
+            result.detail = str(exc)
+            result.payload = exc.payload
+            return result
         except HALTING_ERRORS as exc:
             # A bad LLM key is not a transient fault: every action would raise it. The
             # daemon stopped the loop loudly for this; a job ends with an answer.
