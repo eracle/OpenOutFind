@@ -76,7 +76,8 @@ def check_ready() -> None:
             f"{LEGAL_NOTICE_URL}.",
         )
 
-    _check_llm()
+    if not _agent_qualify_active():
+        _check_llm()
     _ensure_operator()
 
 
@@ -91,12 +92,21 @@ def missing_variables() -> dict[str, list[str]]:
     config = SiteConfig.load()
     groups = {
         "campaign": missing(config, REQUIRED_ICP_FIELDS),
-        "llm": missing(config, REQUIRED_LLM_FIELDS),
+        # `--agent-qualify` never calls AI_MODEL for a verdict — the whole point is a
+        # calling agent answering instead of a second, separately-keyed model — so an
+        # install running only that way is not asked for a key it will never spend.
+        "llm": [] if _agent_qualify_active() else missing(config, REQUIRED_LLM_FIELDS),
         "bettercontact": missing(config, REQUIRED_DISCOVERY_FIELDS),
         "account": _account_missing(config, User.objects.filter(
             is_active=True, is_staff=True).exclude(email="").exists()),
     }
     return {group: names for group, names in groups.items() if names}
+
+
+def _agent_qualify_active() -> bool:
+    from openoutfind.core import agent_qualify
+
+    return agent_qualify.active()
 
 
 def _account_missing(config: SiteConfig, operator_exists: bool) -> list[str]:

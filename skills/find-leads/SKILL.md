@@ -147,7 +147,9 @@ LLM's "wrong fit" would; nothing already found is lost either way, same as `goal
 **`--verdict` needs both `--agent-qualify` and `--reason`** — passing one without the other is
 `bad_config`. **Don't pass `--agent-qualify` unless you intend to answer every `qualify_pending` it
 raises** — a bare `find` without the flag uses `AI_MODEL` and never stops for a verdict at all,
-which is the right default for a run nobody is driving turn-by-turn.
+which is the right default for a run nobody is driving turn-by-turn. **`--agent-qualify` also drops
+`OPENOUTFIND_AI_MODEL`/`OPENOUTFIND_LLM_API_KEY` out of what `find` requires** for that run — a run
+driven this way never needs a model key at all.
 
 ## Reading the output
 

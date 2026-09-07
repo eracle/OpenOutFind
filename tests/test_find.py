@@ -100,6 +100,26 @@ def test_a_fully_configured_environment_is_ready_with_nothing_asked(headless, mo
     assert missing_variables() == {}
 
 
+@pytest.mark.django_db
+def test_agent_qualify_never_needs_an_llm_key(headless, monkeypatch):
+    """The whole point of --agent-qualify is a calling agent answering instead of a
+    second, separately-keyed model — an install running only that way is not asked
+    for a key it will never spend."""
+    from openoutfind.core import agent_qualify
+
+    for name, value in FULL_ENV.items():
+        if name not in {"OPENOUTFIND_AI_MODEL", "OPENOUTFIND_LLM_API_KEY"}:
+            monkeypatch.setenv(name, value)
+    agent_qualify.enable(None)
+
+    with patch("openoutfind.core.newsletter.subscribe_to_newsletter"), \
+            patch("openoutfind.core.llm.verify_llm_credentials") as ping:
+        check_ready()
+
+    ping.assert_not_called()
+    agent_qualify._active.set(False)
+
+
 # ── the command's contract ───────────────────────────────────────
 
 
