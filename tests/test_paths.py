@@ -47,11 +47,13 @@ def test_model_loads_from_the_configured_cache_dir(tmp_path):
     text_embedding = MagicMock()
 
     with override_settings(FASTEMBED_CACHE_DIR=cache_dir), \
-            patch("openoutfind.core.ml.embeddings._model", None), \
+            patch("openoutlearn.embeddings._model", None), \
+            patch("openoutlearn.embeddings._model_name", None), \
             patch.dict("sys.modules", {"fastembed": MagicMock(TextEmbedding=text_embedding)}):
-        from openoutfind.core.ml.embeddings import _get_model
+        from openoutfind.core.conf import CAMPAIGN_CONFIG
+        from openoutlearn.embeddings import _get_model
 
-        _get_model()
+        _get_model(CAMPAIGN_CONFIG["embedding_model"], cache_dir)
 
     assert cache_dir.is_dir()
     assert text_embedding.call_args.kwargs["cache_dir"] == str(cache_dir)

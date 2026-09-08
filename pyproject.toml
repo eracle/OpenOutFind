@@ -54,6 +54,8 @@ dependencies = [
     "fastembed>=0.4,<1",
     "scikit-learn>=1.4,<2",
     "huggingface_hub>=0.23,<1",
+    # TODO: switch to a normal PyPI version pin once openoutlearn has a first release.
+    "openoutlearn @ git+https://github.com/eracle/OpenOutLearn.git@main",
     "pytz>=2024.1",
     "imapclient>=3,<4",
     "tenacity>=8,<10",
@@ -75,6 +77,11 @@ outfind = "openoutfind.__main__:main"
 Homepage = "https://openoutreach.app"
 Source = "https://github.com/eracle/OpenOutFind"
 Issues = "https://github.com/eracle/OpenOutFind/issues"
+
+[tool.hatch.metadata]
+# TEMPORARY: openoutlearn is pinned to a git ref until it has a first PyPI release.
+# Drop this once that dependency switches to a normal version pin.
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["openoutfind"]

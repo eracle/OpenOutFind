@@ -14,7 +14,8 @@ class TestEmbedText:
         mock_model = MagicMock()
         mock_model.embed.return_value = [np.random.randn(384).astype(np.float32)]
 
-        with patch("openoutfind.core.ml.embeddings._model", mock_model):
+        with patch("openoutlearn.embeddings._model", mock_model), \
+                patch("openoutlearn.embeddings._model_name", "BAAI/bge-small-en-v1.5"):
             from openoutfind.core.ml.embeddings import embed_text
             result = embed_text("hello world")
 
@@ -28,7 +29,8 @@ class TestEmbedText:
             np.random.randn(384).astype(np.float32),
         ]
 
-        with patch("openoutfind.core.ml.embeddings._model", mock_model):
+        with patch("openoutlearn.embeddings._model", mock_model), \
+                patch("openoutlearn.embeddings._model_name", "BAAI/bge-small-en-v1.5"):
             from openoutfind.core.ml.embeddings import embed_texts
             result = embed_texts(["hello", "world"])
 

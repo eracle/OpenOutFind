@@ -1,5 +1,13 @@
 # openoutfind/core/ml/qualifier.py
-"""GP Regression qualifier: BALD active learning via exact GP posterior."""
+"""GP Regression qualifier: BALD active learning via exact GP posterior.
+
+The domain-agnostic engine (the GP pipeline, P(f>0.5), BALD, the balance-driven
+acquisition axis) lives in ``openoutlearn.GPBaldQualifier`` — extracted once this
+module and OpenOutNews's qualifier had converged on identical code under two
+different domain labels. ``BayesianQualifier`` adds what's genuinely lead-gen
+specific: cold-start anchors, majority-class balancing gated on the cold phase,
+and the Django-backed ranking/explain helpers.
+"""
 from __future__ import annotations
 
 import hashlib
@@ -10,11 +18,18 @@ from typing import Protocol, runtime_checkable
 import jinja2
 import numpy as np
 from pydantic import BaseModel, Field
-from scipy.stats import norm
+
+from openoutlearn.qualifier import GPBaldQualifier, binary_entropy, gpr_predict, prob_above_half
 
 from openoutfind.core.conf import CAMPAIGN_CONFIG, PROMPTS_DIR
 
 logger = logging.getLogger(__name__)
+
+# Kept as module-level aliases: tests and other modules import these by the old
+# private names.
+_binary_entropy = binary_entropy
+_prob_above_half = prob_above_half
+_gpr_predict = gpr_predict
 
 
 # ---------------------------------------------------------------------------
@@ -86,40 +101,8 @@ def qualify_with_llm(profile_text: str, product_docs: str, campaign_target: str)
 
 
 # ---------------------------------------------------------------------------
-# Numerics
+# Shared helpers  (Django-coupled — not part of the extracted engine)
 # ---------------------------------------------------------------------------
-
-def _binary_entropy(p):
-    """H(p) = -p log p - (1-p) log(1-p), safe for edge values."""
-    p = np.asarray(p, dtype=np.float64)
-    p = np.clip(p, 1e-12, 1.0 - 1e-12)
-    return -p * np.log(p) - (1.0 - p) * np.log(1.0 - p)
-
-
-def _prob_above_half(mean, std):
-    """P(f > 0.5) from GP posterior."""
-    return norm.sf(0.5, loc=mean, scale=std)
-
-
-# ---------------------------------------------------------------------------
-# Shared helpers
-# ---------------------------------------------------------------------------
-
-def _gpr_predict(pipe, X: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Transform through all steps except GPR, then predict with return_std.
-
-    Used by BayesianQualifier for BALD, predict_probs, and predict —
-    operations that need the posterior std.  Ranking uses the simpler
-    ``pipeline.predict(X)`` (mean only) instead.
-    """
-    from sklearn.pipeline import Pipeline
-
-    X = np.asarray(X, dtype=np.float64)
-    if X.ndim == 1:
-        X = X.reshape(1, -1)
-    X_transformed = Pipeline(pipe.steps[:-1]).transform(X)
-    return pipe.named_steps['gpr'].predict(X_transformed, return_std=True)
-
 
 def _load_profile_embeddings(profiles: list, *, skip_missing: bool = False):
     """Load cached embeddings for a list of profile dicts.
@@ -170,37 +153,22 @@ def _explain_score(pipeline, embedding: np.ndarray) -> float:
 # BayesianQualifier  (GP Regression backend)
 # ---------------------------------------------------------------------------
 
-class BayesianQualifier:
-    """Gaussian Process Regressor for active learning qualification.
-
-    Uses an sklearn Pipeline (StandardScaler -> GPR) as a single
-    serializable brick.  GPR provides an exact closed-form posterior
-    (no Laplace approximation), avoiding the degenerate-0.5 problem
-    that plagues GPC on weakly separable embedding data.  Probabilities
-    are computed as P(f > 0.5) from the GP posterior, which naturally
-    incorporates uncertainty and stays in [0, 1] without clipping.
-
-    BALD scores are computed via MC sampling from the GP posterior
-    f ~ N(f_mean, f_std) for candidate selection; predictive entropy
-    gates auto-decisions vs LLM queries.
+class BayesianQualifier(GPBaldQualifier):
+    """The shared GP+BALD engine (``openoutlearn.GPBaldQualifier``), plus what's
+    genuinely lead-gen specific: cold-start anchors, majority-class balancing
+    gated on the cold phase, and Django-backed ranking/explain.
 
     Training data is accumulated incrementally; the GPR is lazily
-    re-fitted on ALL accumulated data whenever predictions are needed.
+    re-fitted on ALL accumulated data (real observations + anchors)
+    whenever predictions are needed.
     """
 
     def __init__(self, seed: int = 42, embedding_dim: int = 384, n_mc_samples: int = 100):
-        self.embedding_dim = embedding_dim
-        self._seed = seed
-        self._n_mc_samples = n_mc_samples
-        self._pipeline = None  # Pipeline([('scaler', StandardScaler), ('gpr', GPR)])
-        self._X: list[np.ndarray] = []
-        self._y: list[int] = []
+        super().__init__(seed=seed, embedding_dim=embedding_dim, n_mc_samples=n_mc_samples)
         # Synthetic ideal-lead embeddings, all label 1 — kept apart from the real
         # observations, and permanent: they are never trimmed as real positives
         # arrive. See ``set_anchors``.
         self._anchor_X: list[np.ndarray] = []
-        self._fitted = False
-        self._rng = np.random.RandomState(seed)
 
     @property
     def n_obs(self) -> int:
@@ -252,19 +220,9 @@ class BayesianQualifier:
             return False
         return self.n_real_positives < ANCHOR_COUNT
 
-    # ------------------------------------------------------------------
-    # Update  (append + invalidate)
-    # ------------------------------------------------------------------
-
-    def update(self, embedding: np.ndarray, label: int):
-        """Record a new labelled observation.  Model is lazily re-fitted.
-
-        The anchors are never touched here — a positive label adds to the real
-        positive class alongside them, it does not displace any of the invented ones.
-        """
-        self._X.append(embedding.astype(np.float64).ravel())
-        self._y.append(int(label))
-        self._fitted = False
+    # ``update`` is inherited from ``GPBaldQualifier`` unchanged: the anchors are
+    # never touched by it — a positive label adds to the real positive class
+    # alongside them, it does not displace any of the invented ones.
 
     # ------------------------------------------------------------------
     # Anchors  (synthetic positives for the cold phase)
@@ -401,51 +359,9 @@ class BayesianQualifier:
         entropy = float(_binary_entropy(p))
         return p, entropy, float(std[0])
 
-    # ------------------------------------------------------------------
-    # BALD acquisition via GP posterior
-    # ------------------------------------------------------------------
-
-    def compute_bald(self, embeddings: np.ndarray) -> np.ndarray | None:
-        """BALD scores for (N, embedding_dim) candidates.
-
-        BALD = H(E[p]) - E[H(p)], computed by MC-sampling from the
-        exact GP posterior f ~ N(mean, std) with a probit link
-        p = Φ(f - 0.5).  Higher BALD = model disagrees with itself
-        most = most informative to query.
-
-        Returns None when the model cannot be fitted yet.
-        """
-        if not self._fit_if_needed():
-            return None
-
-        f_mean, f_std = _gpr_predict(self._pipeline, embeddings)
-
-        # MC sample: (M, N) draws from GP posterior
-        f_samples = (
-            f_mean[np.newaxis, :]
-            + f_std[np.newaxis, :] * self._rng.randn(self._n_mc_samples, len(f_mean))
-        )
-        # Probit link: each sample gives a smooth probability via Φ(f - 0.5)
-        p_samples = norm.cdf(f_samples - 0.5)
-
-        p_pred = p_samples.mean(axis=0)
-        H_pred = _binary_entropy(p_pred)
-        H_individual = _binary_entropy(p_samples).mean(axis=0)
-        return H_pred - H_individual
-
-    # ------------------------------------------------------------------
-    # Predicted probabilities (exploitation)
-    # ------------------------------------------------------------------
-
-    def predict_probs(self, embeddings: np.ndarray) -> np.ndarray | None:
-        """Predicted probability P(f > 0.5) for each candidate.
-
-        Returns None when the model cannot be fitted yet.
-        """
-        if not self._fit_if_needed():
-            return None
-        mean, std = _gpr_predict(self._pipeline, embeddings)
-        return _prob_above_half(mean, std)
+    # ``compute_bald`` and ``predict_probs`` are inherited from ``GPBaldQualifier``
+    # unchanged — both dispatch through ``self._fit_if_needed()``, which resolves to
+    # this class's override below, so anchors and balancing apply automatically.
 
     def posterior_std(self, embeddings: np.ndarray) -> np.ndarray | None:
         """GP posterior std at each embedding — the uncertainty BALD rewards.
@@ -496,20 +412,9 @@ class BayesianQualifier:
         n_neg, n_pos = self.class_counts
         return "exploit (p)" if n_neg > n_pos else "explore (BALD)"
 
-    def acquisition_scores(self, embeddings: np.ndarray) -> tuple[str, np.ndarray] | None:
-        """Score candidates using the balance-driven acquisition strategy.
-
-        - Exploit mode (n_neg > n_pos): returns predicted probabilities P(f > 0.5)
-        - Explore mode: returns BALD information gain scores
-
-        Returns ``(strategy_name, scores)`` or ``None`` on cold start.
-        """
-        strategy = self.acquisition_mode()
-        if strategy is None:
-            return None
-        scores = self.predict_probs(embeddings) if strategy == "exploit (p)" \
-            else self.compute_bald(embeddings)
-        return strategy, scores
+    # ``acquisition_scores`` is inherited unchanged — it dispatches on
+    # ``self.acquisition_mode()``, which resolves to this class's cold-phase-aware
+    # override.
 
     # ------------------------------------------------------------------
     # Ranking & explain  (raw GP mean — no _prob_above_half)
@@ -542,29 +447,18 @@ class BayesianQualifier:
         p_above = float(_prob_above_half(mean, std)[0])
         return f"mean={gp_mean:.3f}, P(f>0.5)={p_above:.3f}, obs={self.n_obs}"
 
-    # ------------------------------------------------------------------
-    # Warm start
-    # ------------------------------------------------------------------
-
-    def warm_start(self, X: np.ndarray, y: np.ndarray):
-        """Bulk-load historical labels. The fit waits, like every other one here.
-
-        Replaces the *real* observations only — anchors are set separately and after,
-        so the build order (warm_start, then anchor) holds regardless of which runs
-        first.
-
-        **It used to fit here, and that fit was always thrown away.** ``qualifier_for``
-        loads the labels and then calls ``set_anchors``, which marks the model dirty
-        again, so every construction paid for two fits over the same evidence — one on
-        the real labels alone and one on the labels plus the anchors — and only the
-        second was ever asked a question. At 230 labels that was 7s spent to be
-        discarded, and it grows as O(n³). Nothing else in this class fits eagerly;
-        ``_fit_if_needed`` runs on the first prediction, which is the point at which
-        the training set has stopped changing.
-        """
-        self._X = [X[i].astype(np.float64).ravel() for i in range(len(X))]
-        self._y = [int(y[i]) for i in range(len(y))]
-        self._fitted = False
+    # ``warm_start`` is inherited from ``GPBaldQualifier`` unchanged: it replaces the
+    # *real* observations only — anchors are set separately and after, so the build
+    # order (warm_start, then anchor) holds regardless of which runs first.
+    #
+    # **It used to fit eagerly here, and that fit was always thrown away.**
+    # ``qualifier_for`` loads the labels and then calls ``set_anchors``, which marks
+    # the model dirty again, so every construction paid for two fits over the same
+    # evidence — one on the real labels alone and one on the labels plus the anchors
+    # — and only the second was ever asked a question. At 230 labels that was 7s
+    # spent to be discarded, and it grows as O(n³). Nothing in this class fits
+    # eagerly; ``_fit_if_needed`` runs on the first prediction, which is the point at
+    # which the training set has stopped changing.
 
 
 # ``KitQualifier`` stood here — a pre-trained GPR downloaded from HuggingFace, used
