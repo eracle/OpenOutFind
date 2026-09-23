@@ -63,7 +63,7 @@ The provider's response also carries `contact_first_name`/`contact_last_name`, w
 **Where:** `core/export.py`, printed by `outfind find` on stdout — every lead you have, every time, so `find 10 emails > leads.csv` always leaves the current truth in that file
 
 ```
-email, first_name, last_name, company, title, website, linkedin_url, reason, lead_id, qualified_at
+email, first_name, last_name, company, title, website, linkedin_url, reason, lead_id, qualified_at, full_name
 ```
 
 Everything prints every time, so the file you redirect into is always the current truth: an address resolved since your last run comes back with the row filled in. The column names are the **importers'**, not ours, so a file imports into Instantly or Smartlead without column mapping. A `QUALIFIED` deal is already exportable — an address is an enrichment on top, never a precondition. **Two rejections are always excluded**: `FAILED` (the LLM's fit verdict) and `Lead.disqualified` (the permanent account-level exclusion). There is **no score column**: the GP posterior is a spend gate, not a quality signal, and the fit verdict is already in the file as `reason`, in language a person reads.

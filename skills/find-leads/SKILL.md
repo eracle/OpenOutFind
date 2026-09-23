@@ -130,7 +130,8 @@ outfind find 10 --agent-qualify --json
 It runs discovery exactly as normal — free either way — and exits non-zero with `qualify_pending`,
 which carries the candidate's own fields right on the error object under `--json`
 (`{"error": {"type": "qualify_pending", "profile_text", "company", "job_title", "full_name",
-"profile_url", "lead_id", ...}}`, or on the plain-text line without `--json`). Judge the fit the
+"profile_url", "lead_id", ...}}`; without `--json` the profile URL and text are narrated on stderr
+just above the one-line error). Judge the fit the
 same way you would judge anything else in this conversation, then re-run the **same command** with
 your verdict attached:
 
@@ -171,7 +172,7 @@ only matters if you are piping into something that cannot take a partial stream,
 Columns, in this order:
 
 ```
-email, first_name, last_name, company, title, website, linkedin_url, reason, lead_id, qualified_at
+email, first_name, last_name, company, title, website, linkedin_url, reason, lead_id, qualified_at, full_name
 ```
 
 - The names are **the importers'**, not OpenOutFind's: Instantly and Smartlead read
@@ -185,6 +186,11 @@ email, first_name, last_name, company, title, website, linkedin_url, reason, lea
 - **There is no score column, on purpose.** The model's confidence is a spend gate for the paid
   lookup, not a quality signal — do not go looking for one, and do not synthesise one.
 - `lead_id` is the stable key for dedupe across exports. `qualified_at` is when the verdict landed.
+- **`first_name`/`last_name` are blank unless an address was bought** — they come from the paid
+  lookup's own response and are never split in-house. `full_name` is always there; use it when
+  naming a person to the user.
+- `company` and `website` are blank for placeholder employers ("Self employed", "Stealth
+  startup"), not a guessed firm.
 - Rejected leads never export: neither the LLM's "wrong fit" verdict nor a permanent
   account-level opt-out.
 - **`reason` is written for the operator, not the prospect.** It justifies a yes/no —

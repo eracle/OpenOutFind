@@ -63,6 +63,16 @@ class TestLeadRecord:
 
         assert record["company"] is None and record["website"] is None
 
+    def test_a_placeholder_employer_exports_as_no_company(self, site_config):
+        """Stores written before discovery dropped them still hold "Stealth startup" rows
+        carrying a domain the provider fuzzy-matched — somebody else's website."""
+        stealth = Company.objects.create(
+            key="harmonic.ai", name="Stealth startup", domain="harmonic.ai")
+
+        record = export.lead_record(_deal(site_config, company=stealth))
+
+        assert record["company"] is None and record["website"] is None
+
     def test_an_unenriched_lead_exports_null_name_parts(self, site_config):
         """A hub-cache hit resolves an address and no identity. Nothing is invented."""
         deal = _deal(site_config, first_name=None, last_name=None)
@@ -70,6 +80,13 @@ class TestLeadRecord:
         record = export.lead_record(deal)
 
         assert record["first_name"] is None and record["last_name"] is None
+
+    def test_an_unenriched_lead_still_carries_the_name_discovery_reported(self, site_config):
+        """A leads-only run buys no lookup, so the name parts stay null — the row must
+        still say who the person is."""
+        deal = _deal(site_config, first_name=None, last_name=None)
+
+        assert export.lead_record(deal)["full_name"] == "Ada Lovelace"
 
     def test_the_record_carries_exactly_the_contract_fields(self, site_config):
         assert set(export.lead_record(_deal(site_config))) == set(export.JSON_FIELDS)

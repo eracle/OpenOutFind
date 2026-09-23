@@ -239,6 +239,7 @@ class Command(OpenOutFindCommand):
                         result.produced, result.goal.count, result.goal.unit,
                         format_elapsed(result.elapsed), writer.count)
             logger.info("%s", render_next_action(action))
+            _narrate_pending_candidate(result)
             return
 
         # `--batch`: nothing has been written yet — materialise the whole thing now.
@@ -270,6 +271,7 @@ class Command(OpenOutFindCommand):
                     result.produced, result.goal.count, result.goal.unit,
                     format_elapsed(result.elapsed), len(records))
         logger.info("%s", render_next_action(action))
+        _narrate_pending_candidate(result)
 
     # ── logging ──────────────────────────────────────────────────
 
@@ -373,6 +375,20 @@ def _browser():
             webbrowser.open(lead.profile_url)
 
     return open_profile
+
+
+def _narrate_pending_candidate(result: JobResult) -> None:
+    """Show the candidate a ``qualify_pending`` stop is asking about, in plain mode.
+
+    The error line stays one line by contract and carries only the name, so without this
+    a verdict would need ``--json`` just to read the profile it is a verdict on. Under
+    ``--json`` the same fields already ride the error object's payload.
+    """
+    if result.stopped_because != ErrorType.QUALIFY_PENDING:
+        return
+    logger.info("Candidate: %s", result.payload.get("profile_url"))
+    logger.info("    %s", result.payload.get("profile_text"))
+    logger.info("Answer with the same command plus: --verdict fit|no-fit --reason \"…\"")
 
 
 def _enable_agent_qualify(verdict: str | None, reason: str | None) -> None:

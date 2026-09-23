@@ -68,10 +68,10 @@ outfind status --json     # the same thing, for a script or an agent
 ```
 
 ```
-email, first_name, last_name, company, title, website, linkedin_url, reason, lead_id, qualified_at
+email, first_name, last_name, company, title, website, linkedin_url, reason, lead_id, qualified_at, full_name
 ```
 
-Those column names are **the importers', not ours**. Instantly and Smartlead both require `email`/`first_name`/`last_name` and recognise `company`/`title`/`website`/`linkedin_url` as standard fields, so an exported file imports **without column mapping**. Anything else — including `reason` — arrives as a custom variable you can merge into a template.
+Those column names are **the importers', not ours**. Instantly and Smartlead both require `email`/`first_name`/`last_name` and recognise `company`/`title`/`website`/`linkedin_url` as standard fields, so an exported file imports **without column mapping**. Anything else — including `reason` — arrives as a custom variable you can merge into a template. `first_name`/`last_name` come from the email lookup, so a leads-only file has them blank; `full_name` always names the person.
 
 - **`reason` is the point.** Everybody exports rows; almost nobody exports *why this lead*.
 - **There is no score column, on purpose.** The model's confidence is a spend gate for the paid lookup, not a quality signal, and thresholding on it would be reading a number that was never calibrated to mean "good lead". The fit verdict is the LLM's, and it is already in the file as a sentence.

@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from openoutfind import discovery
 from openoutfind.core.pipeline.icp import ICPSpec
+from openoutfind.crm.models import Company
 
 
 def _set_key(value):
@@ -245,6 +246,20 @@ class TestCompanyFor:
     def test_a_row_naming_no_company_stores_nothing(self):
         assert discovery.company_for({"contact_job_title": "CTO"}) is None
         assert discovery.company_for({"company_name": "", "company_domain": None}) is None
+
+    def test_a_placeholder_employer_stores_nothing_even_with_a_domain(self):
+        """The provider fuzzy-matches "Stealth startup" to a real domain; storing it
+        would pool every stealth founder under somebody else's website."""
+        for name in ("Stealth startup", "Self-employed", "None at this time"):
+            assert discovery.company_for(
+                {"company_name": name, "company_domain": "harmonic.ai"}) is None
+        assert not Company.objects.exists()
+
+    def test_a_name_merely_containing_a_placeholder_word_is_a_company(self):
+        company = discovery.company_for({"company_name": "Stealth Labs",
+                                         "company_domain": "stealthlabs.io"})
+
+        assert company.name == "Stealth Labs"
 
 
 class TestEmbedProfile:

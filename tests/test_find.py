@@ -309,6 +309,31 @@ class TestTheCommandContract:
         assert exc.value.error_type == ErrorType.QUALIFY_PENDING
         assert exc.value.payload["company"] == "Acme"
 
+    def test_plain_mode_shows_the_profile_a_verdict_is_asked_on(self, site_config, booted, caplog):
+        """The error line carries only the name; the profile has to reach a reader who
+        did not pass --json, or they are asked to judge someone they cannot see."""
+        from openoutfind.core.pipeline.qualify import QualifyPending
+
+        pending = QualifyPending("Ada Lovelace needs a verdict", payload={
+            "profile_url": "https://www.linkedin.com/in/ada",
+            "profile_text": "founder of a small bakery chain"})
+
+        with patch("openoutfind.core.cycle.run_one_action", side_effect=pending), \
+                caplog.at_level(logging.INFO):
+            with pytest.raises(OpenOutFindError):
+                call_command("find", "1", "--agent-qualify", stdout=io.StringIO())
+
+        assert "https://www.linkedin.com/in/ada" in caplog.text
+        assert "founder of a small bakery chain" in caplog.text
+
+    def test_other_stops_show_no_candidate(self, site_config, booted, caplog):
+        with patch("openoutfind.core.cycle.run_one_action", return_value=False), \
+                caplog.at_level(logging.INFO):
+            with pytest.raises(OpenOutFindError):
+                call_command("find", "1", stdout=io.StringIO())
+
+        assert "Candidate:" not in caplog.text
+
     def test_a_bare_agent_qualify_run_carries_no_verdict(self, site_config, booted):
         from openoutfind.core import agent_qualify
 
