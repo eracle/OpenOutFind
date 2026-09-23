@@ -152,6 +152,24 @@ which is the right default for a run nobody is driving turn-by-turn. **`--agent-
 `OPENOUTFIND_AI_MODEL`/`OPENOUTFIND_LLM_API_KEY` out of what `find` requires** for that run — a run
 driven this way never needs a model key at all.
 
+**A fresh store asks you for its ICP first.** The cold start has two more model calls — the opening
+search keywords and a few invented ideal profiles — so the first `--agent-qualify` run on an empty
+store stops with `icp_pending` instead. Its error object carries `product_docs`, `campaign_target`,
+the allowed `seniorities`, `anchor_count` and the JSON `schema` of the answer. Write both parts in
+one object and re-run the same command with it:
+
+```bash
+outfind find 10 --agent-qualify --icp '{"seed": {"role_keywords": ["founder", "owner"],
+  "domain_keywords": ["clinic", "agency"], "seniority": "founder", "headcount_min": 1,
+  "headcount_max": 50}, "anchors": [{"profile": "founder of a dental clinic group ...",
+  "job_title": "founder", "location_country": "united states"}, ...]}'
+```
+
+Keywords are **single lowercase words**, never phrases — the search ANDs every word in one title, so
+`"head of growth"` finds nobody. An anchor's `profile` is one lowercase line shaped like a lead row
+(headline, industry, title, company, seniority, state, country). It is asked once per store; later
+runs never see it again.
+
 ## Reading the output
 
 **stdout is result-only; logs, counts and progress go to stderr.** That is the contract that makes
@@ -244,6 +262,7 @@ is a stable string worth branching on:
 | `provider_unavailable` | Provider unreachable at all. | Transient; retry later. |
 | `bad_config` | A value is set but unusable (e.g. a negative count). | Read the message; it names the field. |
 | `qualify_pending` | `--agent-qualify` stopped one candidate short of the `AI_MODEL` call it opted out of. | Judge the candidate carried on the error object, then re-run with `--verdict`/`--reason` — see *Answering qualify yourself*. |
+| `icp_pending` | `--agent-qualify` on a fresh store: the opening keywords and ideal profiles are needed first. | Write them from the error's `product_docs`/`campaign_target` in its `schema`, then re-run with `--icp '<json>'`. |
 
 Treat a non-zero exit as *partial success with a stated reason*, not as "nothing happened" — the
 rows are already on stdout. And never report a failed run to the user as "no leads matched": a

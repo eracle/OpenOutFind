@@ -167,27 +167,14 @@ def generate_seed(site_config) -> Seed:
     searched, so it belongs on the nodes this seed opens (``select.seed_frontier``),
     where it is part of the query that was actually fired.
 
-    Returns empty keywords when the ICP is empty.
+    Returns empty keywords when the ICP is empty. Under ``--agent-qualify`` the spec is
+    the calling agent's ``--icp`` answer instead, or the run stops with ``icp_pending``.
     """
-    from pydantic_ai import Agent
-
-    from openoutfind.core.llm import get_llm_model, run_agent_sync
     from openoutfind.core.models import Keyword
     from openoutfind.discovery import describe_node
 
-    env = jinja2.Environment(loader=jinja2.FileSystemLoader(str(PROMPTS_DIR)))
-    prompt = env.get_template("icp_filters.j2").render(
-        product_docs=site_config.product_docs,
-        campaign_target=site_config.campaign_target,
-        seniorities=LEAD_SENIORITIES,
-    )
-
-    agent = Agent(
-        get_llm_model(),
-        output_type=ICPSpec,
-        model_settings={"temperature": 0.3, "timeout": 60},
-    )
-    spec = run_agent_sync(agent.run(prompt)).output
+    answer = agent_icp_answer(site_config)
+    spec = answer.seed if answer is not None else _spec_from_llm(site_config)
 
     band = (spec.headcount_min, spec.headcount_max)
     country_code = spec.country_code.lower()
@@ -205,6 +192,27 @@ def generate_seed(site_config) -> Seed:
                  colored(describe_node(keywords), "cyan"),
                  spec.headcount_min, spec.headcount_max)
     return Seed(keywords, band, country_code)
+
+
+def _spec_from_llm(site_config) -> ICPSpec:
+    """Ask ``AI_MODEL`` for the opening vocabulary."""
+    from pydantic_ai import Agent
+
+    from openoutfind.core.llm import get_llm_model, run_agent_sync
+
+    env = jinja2.Environment(loader=jinja2.FileSystemLoader(str(PROMPTS_DIR)))
+    prompt = env.get_template("icp_filters.j2").render(
+        product_docs=site_config.product_docs,
+        campaign_target=site_config.campaign_target,
+        seniorities=LEAD_SENIORITIES,
+    )
+
+    agent = Agent(
+        get_llm_model(),
+        output_type=ICPSpec,
+        model_settings={"temperature": 0.3, "timeout": 60},
+    )
+    return run_agent_sync(agent.run(prompt)).output
 
 
 # ── anchors: the ICP as synthetic profiles ───────────────────────────
@@ -267,8 +275,14 @@ def generate_anchors(site_config, count: int = ANCHOR_COUNT, existing=()) -> lis
     widens the positive region instead of restating it.
 
     Best-effort by design: an unanchored install still runs, it just spends its cold
-    phase without a fitted GP, so failure must not propagate to the caller.
+    phase without a fitted GP, so failure must not propagate to the caller. The one
+    exception is ``icp_pending`` under ``--agent-qualify``, which is not a failure but
+    the question the calling agent answers with ``--icp``.
     """
+    answer = agent_icp_answer(site_config, existing=existing)
+    if answer is not None:
+        return [anchor for anchor in map(_as_anchor, answer.anchors[:count]) if anchor.profile]
+
     from pydantic_ai import Agent
 
     from openoutfind.core.llm import get_llm_model, run_agent_sync
@@ -295,6 +309,49 @@ def generate_anchors(site_config, count: int = ANCHOR_COUNT, existing=()) -> lis
         return []
 
     return [anchor for anchor in map(_as_anchor, result.profiles) if anchor.profile]
+
+
+# ── the calling agent as the author (`find --agent-qualify --icp`) ───
+
+
+class IcpAnswer(BaseModel):
+    """Both cold-start priors in one answer — what ``--icp`` carries.
+
+    One answer rather than two questions because they come from the same two texts and
+    an agent writes them in the same breath; asking twice would cost the caller a second
+    round trip for nothing.
+    """
+
+    seed: ICPSpec
+    anchors: list[_AnchorProfile] = Field(min_length=ANCHOR_COUNT)
+
+
+def agent_icp_answer(site_config, existing=()) -> IcpAnswer | None:
+    """The ``--icp`` answer when a calling agent is the author; ``None`` to ask the LLM.
+
+    Under ``--agent-qualify`` with no answer given, stops the run with ``icp_pending`` —
+    the payload is everything the answer is written from, plus its schema.
+    """
+    from openoutfind.core import agent_qualify
+    from openoutfind.core.pipeline.qualify import IcpPending
+
+    if not agent_qualify.active():
+        return None
+    answer = agent_qualify.icp_answer()
+    if answer is not None:
+        return answer
+    raise IcpPending(
+        "this store has no ICP yet — write the opening keywords and "
+        f"{ANCHOR_COUNT} ideal profiles",
+        payload={
+            "product_docs": site_config.product_docs,
+            "campaign_target": site_config.campaign_target,
+            "seniorities": list(LEAD_SENIORITIES),
+            "anchor_count": ANCHOR_COUNT,
+            "existing_anchors": list(existing),
+            "schema": IcpAnswer.model_json_schema(),
+        },
+    )
 
 
 def _as_anchor(written: _AnchorProfile) -> Anchor:

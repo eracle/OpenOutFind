@@ -326,6 +326,35 @@ class TestTheCommandContract:
         assert "https://www.linkedin.com/in/ada" in caplog.text
         assert "founder of a small bakery chain" in caplog.text
 
+    def test_plain_mode_shows_the_schema_an_icp_answer_is_written_in(self, site_config, booted, caplog):
+        from openoutfind.core.pipeline.qualify import IcpPending
+
+        pending = IcpPending("this store has no ICP yet",
+                             payload={"schema": {"title": "IcpAnswer"}})
+
+        with patch("openoutfind.core.cycle.run_one_action", side_effect=pending), \
+                caplog.at_level(logging.INFO):
+            with pytest.raises(OpenOutFindError) as exc:
+                call_command("find", "1", "--agent-qualify", stdout=io.StringIO())
+
+        assert exc.value.error_type == ErrorType.ICP_PENDING
+        assert '"title": "IcpAnswer"' in caplog.text
+
+    def test_icp_without_agent_qualify_is_refused(self, site_config, booted):
+        with pytest.raises(OpenOutFindError) as exc:
+            call_command("find", "1", "--icp", "{}", stdout=io.StringIO())
+
+        assert exc.value.error_type == ErrorType.BAD_CONFIG
+
+    def test_an_icp_outside_the_schema_is_refused_before_any_work(self, site_config, booted):
+        with patch("openoutfind.core.cycle.run_one_action") as action:
+            with pytest.raises(OpenOutFindError) as exc:
+                call_command("find", "1", "--agent-qualify", "--icp", '{"seed": {}}',
+                             stdout=io.StringIO())
+
+        assert exc.value.error_type == ErrorType.BAD_CONFIG
+        action.assert_not_called()
+
     def test_other_stops_show_no_candidate(self, site_config, booted, caplog):
         with patch("openoutfind.core.cycle.run_one_action", return_value=False), \
                 caplog.at_level(logging.INFO):

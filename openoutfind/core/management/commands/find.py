@@ -145,6 +145,10 @@ class Command(OpenOutFindCommand):
         parser.add_argument(
             "--reason", dest="reason",
             help="The reason behind --verdict — written down exactly like the LLM's own.")
+        parser.add_argument(
+            "--icp", dest="icp", metavar="JSON",
+            help="Answer an icp_pending stop: the cold start's opening keywords and "
+                 "ideal profiles as one JSON object, in the schema the error carried.")
 
     def handle(self, *args, **options):
         if options["count"] < 0:
@@ -155,8 +159,10 @@ class Command(OpenOutFindCommand):
         if options["verdict"] and not options["reason"]:
             raise OpenOutFindError(ErrorType.BAD_CONFIG,
                                     "--verdict needs --reason")
+        if options["icp"] and not options["agent_qualify"]:
+            raise OpenOutFindError(ErrorType.BAD_CONFIG, "--icp needs --agent-qualify")
         if options["agent_qualify"]:
-            _enable_agent_qualify(options["verdict"], options["reason"])
+            _enable_agent_qualify(options["verdict"], options["reason"], options["icp"])
         # The unit says what to count; the flag says what may be paid for. A goal counted
         # in addresses cannot be met without buying them, so the noun implies the flag —
         # that is the one place the two are not independent.
@@ -384,6 +390,10 @@ def _narrate_pending_candidate(result: JobResult) -> None:
     a verdict would need ``--json`` just to read the profile it is a verdict on. Under
     ``--json`` the same fields already ride the error object's payload.
     """
+    if result.stopped_because == ErrorType.ICP_PENDING:
+        logger.info("Answer with the same command plus --icp '<json>', in this schema:")
+        logger.info("    %s", json.dumps(result.payload.get("schema")))
+        return
     if result.stopped_because != ErrorType.QUALIFY_PENDING:
         return
     logger.info("Candidate: %s", result.payload.get("profile_url"))
@@ -391,9 +401,22 @@ def _narrate_pending_candidate(result: JobResult) -> None:
     logger.info("Answer with the same command plus: --verdict fit|no-fit --reason \"…\"")
 
 
-def _enable_agent_qualify(verdict: str | None, reason: str | None) -> None:
-    """Turn ``--agent-qualify`` on for this process, with an optional resume answer."""
+def _enable_agent_qualify(verdict: str | None, reason: str | None, icp: str | None) -> None:
+    """Turn ``--agent-qualify`` on for this process, with optional resume answers.
+
+    An ``--icp`` that does not parse is refused here, before any work — a malformed answer
+    discovered mid-run would leave the caller unsure which half had been written.
+    """
+    from pydantic import ValidationError
+
     from openoutfind.core.agent_qualify import Verdict, enable
+    from openoutfind.core.pipeline.icp import IcpAnswer
 
     answer = Verdict(fit=verdict == "fit", reason=reason) if verdict else None
-    enable(answer)
+    icp_answer = None
+    if icp:
+        try:
+            icp_answer = IcpAnswer.model_validate_json(icp)
+        except ValidationError as exc:
+            raise OpenOutFindError(ErrorType.BAD_CONFIG, f"--icp does not fit the schema: {exc}")
+    enable(answer, icp_answer)

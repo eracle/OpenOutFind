@@ -21,10 +21,21 @@ class QualifyPending(Exception):
     so an agent answering isn't missing anything the real LLM path would have seen.
     """
 
+    error_type = ErrorType.QUALIFY_PENDING
+
     def __init__(self, message: str, payload: dict) -> None:
-        self.error_type = ErrorType.QUALIFY_PENDING
         self.payload = payload
         super().__init__(message)
+
+
+class IcpPending(QualifyPending):
+    """``find --agent-qualify`` reached the cold start with no ``--icp`` answer.
+
+    A subclass so every layer that already lets a pending verdict through to the job
+    lets this through too; only the type and the payload differ.
+    """
+
+    error_type = ErrorType.ICP_PENDING
 
 
 def fetch_qualification_candidates():

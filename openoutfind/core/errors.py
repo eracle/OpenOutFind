@@ -57,6 +57,13 @@ class ErrorType:
     ``--verdict``/``--reason``.
     """
 
+    ICP_PENDING = "icp_pending"
+    """``find --agent-qualify`` on a store with no cold start yet: the opening keywords
+    and the synthetic ideal profiles are both written by ``AI_MODEL`` otherwise. The
+    error object carries the product and target text plus the JSON schema of the answer;
+    resume with the same command plus ``--icp '<json>'``.
+    """
+
 
 def format_error(error_type: str, message: str) -> str:
     """The one error line every verb writes: ``error: <type>: <message>``."""
