@@ -174,8 +174,14 @@ outfind find 10 emails      # ten more *with* a work email (one credit each)
 outfind find 0              # no work — just print what you already have
 outfind find 1 --open       # ...and open each new profile in your browser as it lands
 outfind find 1 --debug      # ...and show the discovery walk's reasoning as it goes
+outfind find 10 --exclude delivered.txt   # ...never judging or printing the profiles listed
 outfind status              # what is configured, blocked and counted
 ```
+
+`--exclude` takes a file of LinkedIn URLs, one per line: a listed profile is never put up for a
+verdict, never printed and never counted toward the goal — handy when the same store serves someone
+who already has some of its leads. URLs match with the host lowercased and the query, fragment and
+trailing slash dropped.
 
 Running it on a server instead? A Docker image is published to GitHub Container Registry for exactly that — see the **[Docker Guide](./docs/docker.md)**.
 

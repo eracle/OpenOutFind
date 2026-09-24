@@ -50,14 +50,19 @@ def fetch_qualification_candidates():
     asks, and it is the one scan that picks a ``Lead`` up without one. Everything
     downstream — enrichment, the export, any message — is reached through the ``Deal``
     this refuses to create.
+
+    A lead on this run's ``--exclude`` list is left out as well, so it is never put up
+    for a verdict — by the LLM or, under ``--agent-qualify``, by the calling agent.
     """
+    from openoutfind.core.exclude import is_excluded
     from openoutfind.crm.models import Lead
 
-    return list(
+    leads = (
         Lead.objects.filter(disqualified=False, synthetic=False, embedding__isnull=False)
         .exclude(deal__isnull=False)
         .order_by("creation_date")
     )
+    return [lead for lead in leads if not is_excluded(lead.profile_url)]
 
 
 def run_qualification(site_config, qualifier: BayesianQualifier, candidates=None) -> str | None:
@@ -84,7 +89,7 @@ def run_qualification(site_config, qualifier: BayesianQualifier, candidates=None
 
     agent_mode = agent_qualify.active()
     if agent_mode:
-        pending = PendingQualification.objects.select_related("lead").first()
+        pending = _pending_candidate()
         if pending is not None:
             return _resume_agent_qualification(qualifier, pending)
 
@@ -157,6 +162,23 @@ def run_qualification(site_config, qualifier: BayesianQualifier, candidates=None
     )
     _save_qualification_result(qualifier, candidate, embedding, label, reason)
     return profile_url
+
+
+def _pending_candidate():
+    """The one ``PendingQualification`` row to resume, or ``None``.
+
+    A row an earlier run left for a lead this run excludes is dropped rather than resumed:
+    the stop it would raise would show the calling agent a profile it was told not to
+    see. The lead stays un-dealt, so a run without that exclusion can still pick it.
+    """
+    from openoutfind.core.exclude import is_excluded
+    from openoutfind.crm.models import PendingQualification
+
+    pending = PendingQualification.objects.select_related("lead").first()
+    if pending is not None and is_excluded(pending.lead.profile_url):
+        pending.delete()
+        return None
+    return pending
 
 
 def _resume_agent_qualification(qualifier: BayesianQualifier, pending) -> str | None:

@@ -44,11 +44,12 @@ def headless(monkeypatch, configure):
 @pytest.fixture(autouse=True)
 def _reset_agent_qualify():
     """A contextvar carries `--agent-qualify` state past a test's own scope otherwise."""
-    from openoutfind.core import agent_qualify
+    from openoutfind.core import agent_qualify, exclude
 
     yield
     agent_qualify._active.set(False)
     agent_qualify._verdict.set(None)
+    exclude._excluded.set(frozenset())
 
 
 @pytest.fixture
@@ -244,6 +245,49 @@ class TestTheCommandContract:
 
         lines = out.getvalue().splitlines()
         assert [json.loads(line)["email"] for line in lines] == ["new@acme.com"]
+
+    def test_exclude_keeps_listed_profiles_out_of_the_print(self, site_config, booted, tmp_path):
+        kept = _exportable(site_config, "bob@acme.com")
+        dropped = _exportable(site_config, "ada@acme.com")
+        path = tmp_path / "exclude.txt"
+        # Written the way a person pastes it: host in capitals, a tracking query, no slash.
+        listed = dropped.lead.profile_url.replace("www.linkedin.com", "WWW.LinkedIn.com")
+        path.write_text(listed.rstrip("/") + "?trk=x\n\n")
+
+        rows = _run("0", "--exclude", str(path))
+
+        assert [row["linkedin_url"] for row in rows] == [kept.lead.profile_url]
+
+    def test_an_excluded_lead_does_not_count_toward_the_goal(self, site_config, booted, tmp_path):
+        """The goal counts through the export, so an excluded lead the run produced is
+        neither printed nor a lead toward the number typed."""
+        path = tmp_path / "exclude.txt"
+        path.write_text("https://www.linkedin.com/in/ada\n")
+
+        def produce_excluded(c, buy_addresses=False, max_new_lookups=None):
+            from openoutfind.crm.models import DealState
+            from tests.factories import DealFactory, LeadFactory
+            DealFactory(lead=LeadFactory(profile_url="https://www.linkedin.com/in/ada/"),
+                        state=DealState.QUALIFIED, reason="fits")
+            return False
+
+        out = io.StringIO()
+        with patch("openoutfind.core.cycle.run_one_action", side_effect=produce_excluded):
+            with pytest.raises(OpenOutFindError) as exc:
+                call_command("find", "1", "--exclude", str(path), stdout=out)
+
+        assert exc.value.error_type == ErrorType.GOAL_UNREACHED
+        assert out.getvalue() == ""
+
+    def test_an_unreadable_exclude_file_fails_before_any_work(self, site_config, booted, tmp_path):
+        with patch("openoutfind.core.cycle.run_one_action") as action:
+            with pytest.raises(OpenOutFindError) as exc:
+                call_command("find", "1", "--exclude", str(tmp_path / "missing.txt"),
+                             stdout=io.StringIO())
+
+        assert exc.value.error_type == ErrorType.BAD_CONFIG
+        assert "--exclude" in str(exc.value)
+        action.assert_not_called()
 
     def test_streaming_puts_the_run_metadata_on_stderr_and_nothing_else(self, site_config, booted,
                                                                         capsys):

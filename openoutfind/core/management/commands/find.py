@@ -8,6 +8,7 @@ to try.
     outfind find 0                   # no work; print what the campaign already has
     outfind find 10 --open           # ...and open each new profile in the browser
     outfind find 10 --debug          # ...and show the walk's reasoning as it goes
+    outfind find 10 --exclude F      # ...never judging or printing the URLs listed in F
 
 **Finding is free; buying an address is not, and the free thing is the default.**
 Discovery and qualification cost only the operator's own LLM key, so a bare ``find 10``
@@ -146,6 +147,11 @@ class Command(OpenOutFindCommand):
             "--reason", dest="reason",
             help="The reason behind --verdict — written down exactly like the LLM's own.")
         parser.add_argument(
+            "--exclude", dest="exclude", metavar="PATH",
+            help="A file of LinkedIn URLs, one per line: those profiles are never put up "
+                 "for a verdict and never printed. Compared with the host lowercased and "
+                 "the query, fragment and trailing slash dropped.")
+        parser.add_argument(
             "--icp", dest="icp", metavar="JSON",
             help="Answer an icp_pending stop: the cold start's opening keywords and "
                  "ideal profiles as one JSON object, in the schema the error carried.")
@@ -163,6 +169,8 @@ class Command(OpenOutFindCommand):
             raise OpenOutFindError(ErrorType.BAD_CONFIG, "--icp needs --agent-qualify")
         if options["agent_qualify"]:
             _enable_agent_qualify(options["verdict"], options["reason"], options["icp"])
+        if options["exclude"]:
+            _enable_exclude(options["exclude"])
         # The unit says what to count; the flag says what may be paid for. A goal counted
         # in addresses cannot be met without buying them, so the noun implies the flag —
         # that is the one place the two are not independent.
@@ -399,6 +407,20 @@ def _narrate_pending_candidate(result: JobResult) -> None:
     logger.info("Candidate: %s", result.payload.get("profile_url"))
     logger.info("    %s", result.payload.get("profile_text"))
     logger.info("Answer with the same command plus: --verdict fit|no-fit --reason \"…\"")
+
+
+def _enable_exclude(path: str) -> None:
+    """Load ``--exclude`` for this process, refusing a file it cannot read before any work.
+
+    Running on without it would print exactly the people the caller asked to keep out.
+    """
+    from openoutfind.core.exclude import enable, read_exclude_file
+
+    try:
+        urls = read_exclude_file(path)
+    except (OSError, UnicodeDecodeError) as exc:
+        raise OpenOutFindError(ErrorType.BAD_CONFIG, f"--exclude cannot read {path}: {exc}")
+    enable(urls)
 
 
 def _enable_agent_qualify(verdict: str | None, reason: str | None, icp: str | None) -> None:

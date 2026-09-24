@@ -111,6 +111,7 @@ exports — the row carries the person, the company and the reason with a blank 
 | `--open` | Opens each new lead's profile in a browser. **Never pass this** — it is for a human at a terminal, and it errors out headless. |
 | `--db PATH` | Work against a SQLite file other than `~/.openoutfind/data/db.sqlite3` (same as `OPENOUTFIND_DB`). Accepted by every verb. |
 | `--agent-qualify` | Opt out of `AI_MODEL` for the qualify step — see *Answering qualify yourself* below. |
+| `--exclude PATH` | A file of LinkedIn URLs, one per line (blank lines ignored). Those profiles are never put up for a verdict — not even as a `qualify_pending` stop — never printed, and never counted toward the goal. URLs match with the host lowercased and the query, fragment and trailing slash dropped. An unreadable file is `bad_config`, before any work. |
 
 A run can take a while: each lead is an LLM call, and paid lookups are polled. Give it a generous
 timeout rather than a short one plus a retry — a killed run wastes the work, though nothing already

@@ -142,9 +142,13 @@ def lead_records() -> Iterable[dict]:
     what shipped and what the live install exposed: 1,944 rows exported where most
     deals were rejections.
 
+    A lead on this run's ``--exclude`` list is left out too (``core/exclude.py``). The
+    goal counts through this function as well, so an excluded lead never counts toward it.
+
     Lazy on purpose: one indexed query streamed straight to the writer, so an install
     with thousands of deals never materialises twice.
     """
+    from openoutfind.core.exclude import is_excluded
     from openoutfind.crm.models import Deal, DealState
 
     deals = (
@@ -153,7 +157,8 @@ def lead_records() -> Iterable[dict]:
         .select_related("lead", "lead__company")
         .order_by("lead__creation_date")
     )
-    return (lead_record(deal) for deal in deals.iterator())
+    return (lead_record(deal) for deal in deals.iterator()
+            if not is_excluded(deal.lead.profile_url))
 
 
 # ── serialisation ────────────────────────────────────────────────

@@ -724,6 +724,13 @@ match N importers, so the mapping is a function, not a migration.
 email, first_name, last_name, company, title, website, linkedin_url, reason, lead_id, qualified_at, full_name
 ```
 
+**`find --exclude PATH` narrows it** (`core/exclude.py`): a file of LinkedIn URLs, one per line,
+loaded into a contextvar and read at exactly two points — `lead_records()` (so the print, `find 0`
+and the goal count all drop the listed leads) and `qualify.fetch_qualification_candidates()` plus
+the `--agent-qualify` resume (so a listed lead is never put up for a verdict; a pending row naming
+one is deleted rather than resumed). `normalize_linkedin_url` is the hub's function verbatim —
+host lowercased, query, fragment and trailing slash dropped — so both sides key on one string.
+
 `reason` lands as a custom variable and is the reason the product exists. `full_name` is the one
 name discovery reports, verbatim: `first_name`/`last_name` stay null until the paid lookup returns
 the provider's own split, so without it a leads-only file names nobody. It is last because the
