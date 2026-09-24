@@ -43,7 +43,7 @@ these — which is also why nothing ever has to be re-entered in a container or 
 | campaign | `OPENOUTFIND_PRODUCT_DOCS`, `OPENOUTFIND_CAMPAIGN_TARGET` |
 | llm | `OPENOUTFIND_AI_MODEL`, `OPENOUTFIND_LLM_API_KEY` |
 | bettercontact | `OPENOUTFIND_BETTERCONTACT_API_KEY` |
-| account | `OPENOUTFIND_ACCEPT_LEGAL_NOTICE` (optional: `OPENOUTFIND_OPERATOR_EMAIL` — the install's contacts-store identity; `OPENOUTFIND_OPERATOR_COUNTRY` — an EEA/UK/CH country stops contributing to the contacts store) |
+| account | optional: `OPENOUTFIND_OPERATOR_EMAIL` — the install's contacts-store identity; `OPENOUTFIND_OPERATOR_COUNTRY` — an EEA/UK/CH country stops contributing to the contacts store |
 
 ```bash
 outfind check           # is this install configured? creates the database, spends nothing
@@ -58,10 +58,6 @@ shell-quoted strings — quoting a markdown paragraph on a command line corrupts
 ```bash
 outfind check --product-docs product.md --target target.md
 ```
-
-**Never accept the legal notice on the user's behalf.** If `OPENOUTFIND_ACCEPT_LEGAL_NOTICE` is
-unset, say so and let them set it; do not export it yourself. It is read on **every** run, not
-recorded once.
 
 You never need to run `check` first — `find` checks the same things — but do run it when the user
 has not configured anything, because it fails cheaply and prints the configuration it read, so a

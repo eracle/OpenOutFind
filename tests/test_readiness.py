@@ -27,7 +27,6 @@ READY = {
 def ready(configure, monkeypatch):
     """Everything a run needs, as the environment it would arrive in."""
     monkeypatch.setenv(readiness.OPERATOR_EMAIL, "me@example.com")
-    monkeypatch.setenv(readiness.ACCEPT_LEGAL_NOTICE, "true")
     return configure(**READY)
 
 
@@ -99,16 +98,16 @@ class TestAGivenRunIsReady:
 
 @pytest.mark.django_db
 class TestItNamesEverythingMissingAtOnce:
-    def test_a_bare_environment_names_all_four_groups(self, site_config):
+    def test_a_bare_environment_names_every_group(self, site_config):
         missing = readiness.missing_variables()
 
-        assert set(missing) == {"campaign", "llm", "bettercontact", "account"}
+        assert set(missing) == {"campaign", "llm", "bettercontact"}
         with pytest.raises(OpenOutFindError) as raised:
             readiness.check_ready()
 
         assert raised.value.error_type == ErrorType.ONBOARDING_INCOMPLETE
         for variable in ("OPENOUTFIND_PRODUCT_DOCS", "OPENOUTFIND_LLM_API_KEY",
-                         "OPENOUTFIND_BETTERCONTACT_API_KEY", "OPENOUTFIND_ACCEPT_LEGAL_NOTICE"):
+                         "OPENOUTFIND_BETTERCONTACT_API_KEY"):
             assert variable in str(raised.value)
 
     def test_the_operator_country_is_optional(self, ready, monkeypatch):
@@ -122,34 +121,7 @@ class TestItNamesEverythingMissingAtOnce:
         assert readiness.missing_variables() == {
             "bettercontact": ["OPENOUTFIND_BETTERCONTACT_API_KEY"]}
 
+    def test_no_legal_notice_flag_is_asked_for(self, ready, monkeypatch):
+        monkeypatch.delenv("OPENOUTFIND_ACCEPT_LEGAL_NOTICE", raising=False)
 
-@pytest.mark.django_db
-class TestTheLegalNotice:
-    """It is a gate, and it is asked on every run — an install cannot inherit somebody
-    else's agreement by inheriting their database."""
-
-    def test_silence_is_not_acceptance(self, ready, monkeypatch):
-        monkeypatch.delenv(readiness.ACCEPT_LEGAL_NOTICE)
-
-        assert readiness.missing_variables() == {"account": [readiness.ACCEPT_LEGAL_NOTICE]}
-
-    def test_a_no_is_not_acceptance(self, ready, monkeypatch):
-        monkeypatch.setenv(readiness.ACCEPT_LEGAL_NOTICE, "false")
-
-        assert readiness.missing_variables() == {"account": [readiness.ACCEPT_LEGAL_NOTICE]}
-
-    def test_an_operator_row_does_not_carry_it_forward(self, ready, monkeypatch):
-        readiness.check_ready()
-        monkeypatch.delenv(readiness.ACCEPT_LEGAL_NOTICE)
-
-        assert readiness.ACCEPT_LEGAL_NOTICE in readiness.missing_variables()["account"]
-
-    def test_a_value_that_is_neither_stops_the_run(self, ready, monkeypatch):
-        """A bad value is a different thing from an absent one: naming the variable as
-        missing would print one the operator has already set."""
-        monkeypatch.setenv(readiness.ACCEPT_LEGAL_NOTICE, "sure")
-
-        with pytest.raises(OpenOutFindError) as raised:
-            readiness.missing_variables()
-
-        assert raised.value.error_type == ErrorType.BAD_CONFIG
+        assert readiness.missing_variables() == {}

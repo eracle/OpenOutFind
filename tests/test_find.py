@@ -31,7 +31,6 @@ FULL_ENV = {
     "OPENOUTFIND_BETTERCONTACT_API_KEY": "bc-test",
     "OPENOUTFIND_OPERATOR_EMAIL": "me@posteo.eu",
     "OPENOUTFIND_OPERATOR_COUNTRY": "US",
-    "OPENOUTFIND_ACCEPT_LEGAL_NOTICE": "true",
 }
 
 
@@ -83,7 +82,6 @@ def test_an_unconfigured_run_names_the_variables(headless):
     assert message.startswith("error: onboarding_incomplete: ")
     assert "OPENOUTFIND_PRODUCT_DOCS" in message
     assert "OPENOUTFIND_BETTERCONTACT_API_KEY" in message
-    assert "OPENOUTFIND_ACCEPT_LEGAL_NOTICE" in message
     assert "mailbox" not in message.lower()
 
 

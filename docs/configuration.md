@@ -25,7 +25,6 @@ things before it starts working.
 | `OPENOUTFIND_LLM_API_KEY` | llm | **verified by one live ping before every run** — a key rotated out from under a timer fails before a lead is chosen, not mid-pass |
 | `OPENOUTFIND_LLM_API_BASE` | llm | required for `openai_compatible:*`, ignored otherwise |
 | `OPENOUTFIND_BETTERCONTACT_API_KEY` | bettercontact | [free account, 40 credits, no card](https://bettercontact.rocks?fpr=openoutreach) (affiliate link, no markup to you). Powers **both** Lead Finder discovery (billed nothing) **and** work-email enrichment (one credit per verified address, only with `--emails`) |
-| `OPENOUTFIND_ACCEPT_LEGAL_NOTICE` | account | must be `true` — records that you accept the [Legal Notice](../LEGAL_NOTICE.md), and is asked on every run so an install cannot inherit somebody else's agreement with their database |
 | `OPENOUTFIND_OPERATOR_EMAIL` | account | optional. Your own inbox — the contacts-store key. Unset, the operator row is named `operator` and the install never talks to the hub (no free cached addresses, no give-back). Fills a blank row once; never replaces an email already there |
 | `OPENOUTFIND_OPERATOR_COUNTRY` | account | optional. ISO 3166 alpha-2, e.g. `US` — **your jurisdiction**, not your target market. Unset, the install contributes to the contacts store |
 | `OPENOUTFIND_CONTACTS_API_TOKEN` | hub | optional. Without a token a run registers for one and keeps it for the length of the process; `register` is idempotent, so nothing is lost by not storing it |

@@ -162,7 +162,7 @@ or, if you would rather install it:
 pip install openoutfind && outfind find 10
 ```
 
-**You configure it with four things, and they live in your environment** (`OPENOUTFIND_*`): what you sell and to whom, an LLM key, a BetterContact key, and acceptance of the legal notice. Your own email and country are optional: the email gives the install an identity in the shared contacts store, and an EEA/UK/CH country stops it contributing there. Nothing is stored and nothing is prompted for — `find` reads them on every run and stops naming anything missing, and `outfind check` does the same deliberately, prints what it read and spends nothing. (If you would rather be *asked*, [OpenOutreach](https://github.com/eracle/OpenOutreach) is the one-install bundle with the wizard.) What the pipeline *finds* lives in `~/.openoutfind/data`, so stopping and starting loses nothing: the number you ask for is *more than you already have*, so running it again continues where it left off. No browser, no daemon manager, no container.
+**You configure it with three things, and they live in your environment** (`OPENOUTFIND_*`): what you sell and to whom, an LLM key, and a BetterContact key. Your own email and country are optional: the email gives the install an identity in the shared contacts store, and an EEA/UK/CH country stops it contributing there. Nothing is stored and nothing is prompted for — `find` reads them on every run and stops naming anything missing, and `outfind check` does the same deliberately, prints what it read and spends nothing. (If you would rather be *asked*, [OpenOutreach](https://github.com/eracle/OpenOutreach) is the one-install bundle with the wizard.) What the pipeline *finds* lives in `~/.openoutfind/data`, so stopping and starting loses nothing: the number you ask for is *more than you already have*, so running it again continues where it left off. No browser, no daemon manager, no container.
 
 **The three verbs:**
 
@@ -198,7 +198,7 @@ This repo ships a **Claude Code plugin**, so you can pull leads without leaving 
 
 The skill (`skills/find-leads/SKILL.md`) teaches Claude when to run `find`, which flags cost credits
 and which cannot, how to read the CSV on stdout, and what each `error: <type>` means. It never buys
-an address you did not ask for and never accepts the legal notice for you. Prefer skills to plugins?
+an address you did not ask for. Prefer skills to plugins?
 Copy `skills/find-leads/` into `~/.claude/skills/` instead.
 
 ---

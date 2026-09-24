@@ -1,10 +1,10 @@
 # openoutfind/core/readiness.py
 """What a run has to be given before it can find anybody.
 
-Four things, and none of them is a preference. This install has to say what it sells and
-to whom, or there is no ICP to search or judge against. A model has to be reachable, or
-there is nothing to judge with. Discovery has to have a key, because the search itself
-runs on one. And somebody has to be running it, having accepted what the tool does.
+Three things, and none of them is a preference. This install has to say what it sells
+and to whom, or there is no ICP to search or judge against. A model has to be reachable,
+or there is nothing to judge with. And discovery has to have a key, because the search
+itself runs on one.
 
 The operator's email and country are not among them. The email gives the install a hub
 identity and names the operator row; without it the row is ``operator`` and the hub is
@@ -43,20 +43,11 @@ from openoutfind.core.errors import ErrorType, OpenOutFindError
 
 logger = logging.getLogger(__name__)
 
-# The canonical Legal Notice — the single source of truth for what OpenOutFind does with
-# the people it finds. Named in the error rather than rendered: this is a command, not a
-# page of reflowed Markdown.
-LEGAL_NOTICE_URL = "https://github.com/eracle/OpenOutFind/blob/main/LEGAL_NOTICE.md"
-
 OPERATOR_EMAIL = ENV_PREFIX + "OPERATOR_EMAIL"
-ACCEPT_LEGAL_NOTICE = ENV_PREFIX + "ACCEPT_LEGAL_NOTICE"
-
-_TRUE = {"1", "true", "yes", "on"}
-_FALSE = {"0", "false", "no", "off"}
 
 # The groups a run is checked in, in the order somebody would go and find the values.
 # They are how the failure reads, not how it is enforced — every one is variables.
-GROUPS = ("campaign", "llm", "bettercontact", "account")
+GROUPS = ("campaign", "llm", "bettercontact")
 
 
 def check_ready() -> None:
@@ -71,9 +62,7 @@ def check_ready() -> None:
             ErrorType.ONBOARDING_INCOMPLETE,
             "not ready to find — set " + ", ".join(unsatisfied) + ".\n"
             f"Optional: {ENV_PREFIX}LLM_API_BASE (required for openai_compatible:*), "
-            f"{OPERATOR_EMAIL}, {ENV_PREFIX}OPERATOR_COUNTRY.\n"
-            f"{ACCEPT_LEGAL_NOTICE} must be set to 'true' — it records that you accept "
-            f"{LEGAL_NOTICE_URL}.",
+            f"{OPERATOR_EMAIL}, {ENV_PREFIX}OPERATOR_COUNTRY.",
         )
 
     if not _agent_qualify_active():
@@ -85,7 +74,7 @@ def missing_variables() -> dict[str, list[str]]:
     """Each unsatisfied group mapped to the variables that would satisfy it.
 
     The groups are the questions a person is asked, kept because that is how the failure
-    reads to somebody who has to go and find four values. An empty dict is a ready run.
+    reads to somebody who has to go and find the values. An empty dict is a ready run.
     """
     config = SiteConfig.load()
     groups = {
@@ -95,10 +84,6 @@ def missing_variables() -> dict[str, list[str]]:
         # install running only that way is not asked for a key it will never spend.
         "llm": [] if _agent_qualify_active() else missing(config, REQUIRED_LLM_FIELDS),
         "bettercontact": missing(config, REQUIRED_DISCOVERY_FIELDS),
-        # **Acceptance is never inferred**, and it is asked for on every run: the variable
-        # has to say yes, so an install cannot inherit somebody else's agreement by
-        # inheriting their database.
-        "account": [] if _flag(ACCEPT_LEGAL_NOTICE) else [ACCEPT_LEGAL_NOTICE],
     }
     return {group: names for group, names in groups.items() if names}
 
@@ -184,24 +169,3 @@ def _create_operator(email: str):
         user.set_unusable_password()
         user.save()
     return user
-
-
-def _flag(variable: str) -> bool:
-    """Read a yes/no variable, rejecting anything that is not plainly one or the other.
-
-    A bad value is a different thing from an absent one: absent means *not given*, bad
-    means *stop and say so*. Falling through to "missing" would name a variable the
-    operator has already set.
-    """
-    import os
-
-    raw = (os.environ.get(variable) or "").strip().lower()
-    if not raw:
-        return False
-    if raw in _TRUE:
-        return True
-    if raw in _FALSE:
-        return False
-    raise OpenOutFindError(
-        ErrorType.BAD_CONFIG,
-        f"{variable}: expected one of {sorted(_TRUE | _FALSE)}, got {raw!r}")

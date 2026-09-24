@@ -320,7 +320,7 @@ in its own `SiteConfig` and exports these names to both children.
 campaign        OPENOUTFIND_PRODUCT_DOCS, OPENOUTFIND_CAMPAIGN_TARGET
 llm             OPENOUTFIND_AI_MODEL, OPENOUTFIND_LLM_API_KEY  (+ LLM_API_BASE, required for openai_compatible:*)
 bettercontact   OPENOUTFIND_BETTERCONTACT_API_KEY
-account         OPENOUTFIND_ACCEPT_LEGAL_NOTICE  (+ OPERATOR_EMAIL, OPERATOR_COUNTRY)
+account         OPENOUTFIND_OPERATOR_EMAIL, OPENOUTFIND_OPERATOR_COUNTRY  (optional)
 hub             OPENOUTFIND_CONTACTS_API_TOKEN  (optional)
 ```
 
@@ -329,7 +329,7 @@ install never discovers a setup step it did not know to run. It raises **one** e
 variable that would have satisfied the run, rather than three in a row; `missing_variables()` is the
 same reading without the raise, which is what `status` renders.
 
-Five rules, each answering a way this could go quietly wrong:
+Four rules, each answering a way this could go quietly wrong:
 
 - **What makes reading fresh safe is the check, not the row.** The defect that first pushed the LLM
   key into the database was a key that sat unread until an agent asked for a model, mid-pass, with a
@@ -338,9 +338,6 @@ Five rules, each answering a way this could go quietly wrong:
   price of not storing the answer — deliberately paid.
 - **A bad value stops; an absent one is named.** `error: bad_config: <VAR>: <problem>` — falling
   through to "missing" would print a variable the operator has already set.
-- **Legal acceptance is never inferred**, and it is read on **every** run: an install must not
-  inherit somebody else's agreement by inheriting their database. There is no newsletter here —
-  subscribing a human is the wizard's business, in OpenOutreach.
 - **The operator is a row, written once** (`_ensure_operator` → `User`, seeded from the optional
   `OPENOUTFIND_OPERATOR_EMAIL`). Identity is not an answer to be re-read: a renamed variable must
   not rename the person a campaign belongs to, or re-key the contacts store. Without an email the
