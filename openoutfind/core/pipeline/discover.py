@@ -40,17 +40,21 @@ def _harvest(node, rows: list[dict]) -> int:
     ``discovered_by``. A page of entirely-familiar profiles therefore returns 0 while
     still being a perfectly good page — which is why the caller does not read this as
     "nothing left here" (that was bug 8: a full page of duplicates halting the engine with
-    the frontier wide open).
+    the frontier wide open). Rows that fail ``is_live_profile`` are dropped here, after the
+    empty-page check, so a page of forgotten profiles is still a page and the node still
+    advances past it.
     """
     from openoutfind.core.db.leads import create_lead
-    from openoutfind.discovery import keyword_terms
+    from openoutfind.discovery import is_live_profile, keyword_terms
 
-    pairs = node.pairs
-    terms = keyword_terms(pairs)
+    live = [row for row in rows if is_live_profile(row)]
+    logger.debug("%d of %d row(s) dropped — no headline", len(rows) - len(live), len(rows))
+
+    terms = keyword_terms(node.pairs)
     return sum(
         create_lead(row, country_code=node.country_code,
                     discovered_by=node, query_terms=terms)
-        for row in rows
+        for row in live
     )
 
 

@@ -123,6 +123,33 @@ class TestHarvest:
         assert node.state == QueryNode.State.FIRED
         assert node.next_offset == select.DISCOVERY_PAGE_SIZE
 
+    def test_a_row_without_a_headline_never_becomes_a_lead(self, db):
+        # A headline-less row is a forgotten profile. Dropping it must not read as an
+        # empty page: the node still advances, and the walk still reports that it moved.
+        c = _campaign()
+        node = _node(c, [("lead_job_title", "founder")])
+        rows = [_row(headline=None), _row(url="https://linkedin.com/in/b", headline="  "),
+                _row(url="https://linkedin.com/in/c")]
+
+        with patch.object(discover_mod, "_fetch", return_value=Page(rows, 10)):
+            assert discover(c) is True
+
+        assert list(Lead.objects.values_list("profile_url", flat=True)) == [
+            "https://linkedin.com/in/c"]
+        node.refresh_from_db()
+        assert node.next_offset == select.DISCOVERY_PAGE_SIZE
+
+    def test_a_page_with_no_headlines_is_not_a_stall(self, db):
+        c = _campaign()
+        node = _node(c, [("lead_job_title", "founder")])
+
+        with patch.object(discover_mod, "_fetch", return_value=Page([_row(headline="")], 10)):
+            assert discover(c) is True
+
+        assert not Lead.objects.exists()
+        node.refresh_from_db()
+        assert node.state == QueryNode.State.FIRED
+
     def test_source_fields_are_stored_for_the_vocabulary(self, db):
         c = _campaign()
         _node(c, [("lead_job_title", "founder")])

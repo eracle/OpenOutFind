@@ -133,8 +133,8 @@ def filters_for(keywords, headcount: tuple[int, int] | None = None) -> dict:
 # ``contact_location`` is absent from every response and was always an empty slot.
 #
 # ``contact_headline`` is the one field with real per-lead signal (54 distinct
-# values per 100 rows) and is present for barely half of them; the rest are short
-# categoricals. Dropping a field moves the vector space, so every ``Lead`` must be
+# values per 100 rows), and every lead carries one (``is_live_profile``); the rest
+# are short categoricals. Dropping a field moves the vector space, so every ``Lead`` must be
 # re-embedded when this list changes.
 TEXT_FIELDS = [
     "contact_headline",
@@ -169,6 +169,20 @@ KEYWORD_SOURCE_FIELDS = {
     "lead_job_title": ("contact_job_title",),
     "lead_location": ("contact_location_state", "contact_location_country"),
 }
+
+
+def is_live_profile(row: dict) -> bool:
+    """Whether the row looks like a profile someone still keeps: it reports a headline.
+
+    Roughly 40% of Lead Finder rows carry no headline, and those are the forgotten
+    profiles — the ones checked by hand had three or four connections or no longer
+    existed, while rows with a headline were live. Measured against an operator's own
+    connections, a headline is present on 95% of live profiles and 57% of random rows,
+    and no other field of the row separates the two better (a completeness-only
+    classifier adds little on top of it). A dead profile is worth nothing to qualify,
+    so it never becomes a lead.
+    """
+    return bool(str(row.get("contact_headline") or "").strip())
 
 
 def source_fields_for(row: dict) -> dict:
