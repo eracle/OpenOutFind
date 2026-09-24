@@ -129,6 +129,7 @@ class TestHarvest:
         c = _campaign()
         node = _node(c, [("lead_job_title", "founder")])
         rows = [_row(headline=None), _row(url="https://linkedin.com/in/b", headline="  "),
+                _row(url="https://linkedin.com/in/d", headline=" . - "),
                 _row(url="https://linkedin.com/in/c")]
 
         with patch.object(discover_mod, "_fetch", return_value=Page(rows, 10)):

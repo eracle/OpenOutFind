@@ -9,6 +9,7 @@ split so the daemon never waits on a lookup.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Literal, NamedTuple, get_args
 
 import numpy as np
@@ -171,6 +172,9 @@ KEYWORD_SOURCE_FIELDS = {
 }
 
 
+_LETTER = re.compile(r"[^\W\d_]")
+
+
 def is_live_profile(row: dict) -> bool:
     """Whether the row looks like a profile someone still keeps: it reports a headline.
 
@@ -181,8 +185,12 @@ def is_live_profile(row: dict) -> bool:
     and no other field of the row separates the two better (a completeness-only
     classifier adds little on top of it). A dead profile is worth nothing to qualify,
     so it never becomes a lead.
+
+    A headline with no letter in it (``.``, ``-``) is a placeholder and counts as none.
+    Anything stricter costs live profiles: a two-word floor would also drop founders
+    who write ``Building.``, and ``Fgh`` cannot be told from ``CEO`` without guessing.
     """
-    return bool(str(row.get("contact_headline") or "").strip())
+    return bool(_LETTER.search(str(row.get("contact_headline") or "")))
 
 
 def source_fields_for(row: dict) -> dict:
