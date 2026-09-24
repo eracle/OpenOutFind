@@ -198,7 +198,7 @@ def pipeline_summary(site_config, buy_addresses: bool = True) -> str:
     from django.db.models import Count
 
     from openoutfind.crm.models import Deal
-    from openoutfind.enrichment import bettercontact, provider
+    from openoutfind.enrichment import bettercontact
 
     counts = dict(
         Deal.objects.filter(lead__disqualified=False)
@@ -209,21 +209,14 @@ def pipeline_summary(site_config, buy_addresses: bool = True) -> str:
     waiting = [f"{counts.get(state, 0)} {phrase}" for state, phrase in _WAITING_ON]
 
     # Each gate said as its consequence rather than as its name — a boolean tells you
-    # nothing — and **every consequence it has**. The two keys are not symmetric: the
-    # BetterContact key does two jobs (Lead Finder discovery *and* paid enrichment)
-    # while an Apollo key does only the second, so an Apollo-only install discovers
-    # nobody however healthy its enrichment is. Reporting that as one "no finder key"
-    # sent the operator after the wrong key, so the two consequences are named apart.
-    # What neither stops is the free address sources: an address already on the lead
-    # and the hub's cache are both still read. Qualification has no gate — it always runs.
+    # nothing — and **every consequence it has**. The BetterContact key does two jobs
+    # (Lead Finder discovery *and* paid enrichment), so losing it stops both. What it
+    # does not stop is the free address sources: an address already on the lead and the
+    # hub's cache are both still read. Qualification has no gate — it always runs.
     ranked = counts.get(DealState.READY_TO_FIND_EMAIL, 0)
-    can_discover = bettercontact.is_configured()
-    can_resolve = provider.active() is not None
 
-    if not can_discover and not can_resolve:
-        held = " · no finder key, so no new discovery and free address sources only"
-    elif not can_discover:
-        held = " · no BetterContact key, so no new discovery — enrichment still runs"
+    if not bettercontact.is_configured():
+        held = " · no BetterContact key, so no new discovery and free address sources only"
     elif not buy_addresses and ranked:
         held = f" · {ranked} ranked but addresses not requested — add --emails to buy them"
     else:

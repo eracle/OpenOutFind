@@ -3,16 +3,13 @@
 The split is between *the providers*, *the seam* and *the pipeline step*:
 
 - ``provider`` is the seam: one interface, and ``active()`` names which vendor an
-  install resolves with, from whichever key is configured. Everything above this
-  package talks to a provider, never to a vendor.
-- ``bettercontact`` and ``apollo`` are the clients, interchangeable at this leg. They
-  differ only in transport — BetterContact's waterfall is a submit-and-poll job,
-  Apollo's ``people/match`` answers in one call — and ``provider.Lookup`` carries that
-  difference so the pipeline does not have to know it.
-- **Discovery is not interchangeable.** ``discovery.py`` pages BetterContact's free
+  install resolves with. Everything above this package talks to a provider, never to
+  a vendor. ``provider.Lookup`` carries the sync/async transport difference so the
+  pipeline does not have to know it.
+- ``bettercontact`` is the client — a submit-and-poll waterfall.
+- **Discovery is not behind the seam.** ``discovery.py`` pages BetterContact's free
   Lead Finder index through ``submit_and_poll`` on the same key that pays for its
-  enrichment; Apollo replaces only the resolver, so an Apollo-only install can enrich
-  but cannot discover.
+  enrichment.
 - ``lookup`` is the step the cycle drives: ``buy_address`` resolves the free sources
   first and runs the finder only if they miss, ``check_lookup`` polls anything left
   in flight.

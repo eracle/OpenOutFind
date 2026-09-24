@@ -6,9 +6,9 @@ operator's code now comes from onboarding (the operator tells us their country);
 a lead's code comes from the discovery row. Neither is scraped from any network.
 
 - ``is_gdpr_protected`` / ``GDPR_COUNTRY_CODES`` — the broad *email-marketing
-  opt-in* set (EU/EEA + UK + CH + CA/BR/AU/JP/KR/NZ). Drives newsletter
-  auto-subscription: non-protected operators get ``subscribe_newsletter``
-  auto-enabled; protected ones keep their existing config.
+  opt-in* set (EU/EEA + UK + CH + CA/BR/AU/JP/KR/NZ). Nothing here reads it;
+  OpenOutreach's wizard does, to decide whether to ask before subscribing the
+  operator to the newsletter.
 - ``is_eea_located`` / ``EEA_UK_CH`` — the narrower *data-collection regime*
   set (EU/EEA + UK + CH only). Gates contribution into the central contacts
   store and the operator-level forced-give-back override.

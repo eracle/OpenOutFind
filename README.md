@@ -162,7 +162,7 @@ or, if you would rather install it:
 pip install openoutfind && outfind find 10
 ```
 
-**You configure it with four things, and they live in your environment** (`OPENOUTFIND_*`): what you sell and to whom, an LLM key, a BetterContact key, and your own email plus country and acceptance of the legal notice. Nothing is stored and nothing is prompted for — `find` reads them on every run and stops naming anything missing, and `outfind check` does the same deliberately, prints what it read and spends nothing. (If you would rather be *asked*, [OpenOutreach](https://github.com/eracle/OpenOutreach) is the one-install bundle with the wizard.) What the pipeline *finds* lives in `~/.openoutfind/data`, so stopping and starting loses nothing: the number you ask for is *more than you already have*, so running it again continues where it left off. No browser, no daemon manager, no container.
+**You configure it with four things, and they live in your environment** (`OPENOUTFIND_*`): what you sell and to whom, an LLM key, a BetterContact key, and acceptance of the legal notice. Your own email and country are optional: the email gives the install an identity in the shared contacts store, and an EEA/UK/CH country stops it contributing there. Nothing is stored and nothing is prompted for — `find` reads them on every run and stops naming anything missing, and `outfind check` does the same deliberately, prints what it read and spends nothing. (If you would rather be *asked*, [OpenOutreach](https://github.com/eracle/OpenOutreach) is the one-install bundle with the wizard.) What the pipeline *finds* lives in `~/.openoutfind/data`, so stopping and starting loses nothing: the number you ask for is *more than you already have*, so running it again continues where it left off. No browser, no daemon manager, no container.
 
 **The three verbs:**
 
@@ -387,7 +387,7 @@ This project is built in spare time to provide powerful, **free** open-source gr
 
 ## 📜 Legal Notice
 
-By using this software you accept the [Legal Notice](LEGAL_NOTICE.md). It covers the third-party services you connect (data provider, email-finder), your responsibilities as data controller under data-protection law, automatic newsletter subscription for non-opt-in jurisdictions, the central contacts store, and liability disclaimers.
+By using this software you accept the [Legal Notice](LEGAL_NOTICE.md). It covers the third-party services you connect (data provider, email-finder), your responsibilities as data controller under data-protection law, the newsletter question the OpenOutreach wizard asks, the central contacts store, and liability disclaimers.
 
 **Use at your own risk — no liability assumed.**
 

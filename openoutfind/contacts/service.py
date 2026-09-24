@@ -24,7 +24,7 @@ from openoutfind.core import version
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_API_URL = "https://hub.openoutreach.app"
+HUB_URL = "https://hub.openoutreach.app"
 _TIMEOUT_S = 30
 
 # The token this process is using, when it was not given one. It is not written down:
@@ -39,7 +39,6 @@ _minted_token: str | None = None
 # a number, so a provider we do not list here is still labelled by whatever name it
 # gives itself.
 ORIGIN_BETTERCONTACT = "bettercontact"  # paid BetterContact hit
-ORIGIN_APOLLO = "apollo"  # paid Apollo people/match hit
 ORIGIN_PROFILE_INFO = "profile_info"  # 1st-degree contact-info overlay
 
 # These match ``enrichment.provider``'s module ``NAME``s, which is what ``lookup``
@@ -66,7 +65,7 @@ def token_in_hand(config: SiteConfig, *, mint: bool = True) -> str:
     if config.contacts_api_token:
         return config.contacts_api_token
     if _minted_token is None and mint:
-        _minted_token = _register_this_install(config)
+        _minted_token = _register_this_install()
     return _minted_token or ""
 
 
@@ -79,7 +78,7 @@ def resolve(lead) -> str | None:
         return None
     try:
         resp = requests.get(
-            _endpoint(config, "resolve"),
+            _endpoint("resolve"),
             params={"id": lead.profile_url},
             headers=_auth(token),
             timeout=_TIMEOUT_S,
@@ -116,11 +115,13 @@ def contribute(lead, emails: list[str], origin: str) -> None:
     operator's token (kept in the instance's own config, never the repo); later
     ones reuse it.
 
-    Honors the operator's jurisdiction: an EEA/UK/CH operator does not contribute
-    (derived from their onboarding country, ``not is_eea_located``), so the whole
-    give-back is skipped (no email, no vector — and so no give-to-get credit).
+    Honors the operator's jurisdiction: an operator who declares an EEA/UK/CH country
+    does not contribute, so the whole give-back is skipped (no email, no vector — and
+    so no give-to-get credit). An operator who declares none contributes; the server
+    re-gates every record authoritatively.
     """
-    if is_eea_located(SiteConfig.load().operator_country_code):
+    operator_country = SiteConfig.load().operator_country_code
+    if operator_country and is_eea_located(operator_country):
         logger.debug("hub: operator in EEA/UK/CH — skipping give-back for %s", lead.profile_url)
         return
     emails = [e for e in emails if e]
@@ -132,7 +133,6 @@ def contribute(lead, emails: list[str], origin: str) -> None:
                      lead.profile_url, lead.country_code)
         return
 
-    config = SiteConfig.load()
     record = {
         "public_identifier": lead.profile_url,
         "country_code": lead.country_code,
@@ -141,11 +141,11 @@ def contribute(lead, emails: list[str], origin: str) -> None:
         **_build_fields(),
     }
     _attach_embedding(lead, record)
-    token = token_in_hand(config)
+    token = token_in_hand(SiteConfig.load())
     if token:
-        _send(config, "contribute", record, lead, headers=_auth(token))
+        _send("contribute", record, lead, headers=_auth(token))
     else:
-        _register(config, record, lead)
+        _register(record, lead)
 
 
 def _attach_embedding(lead, record: dict) -> None:
@@ -185,24 +185,27 @@ def register_operator() -> bool:
 
     Carries the build sha, so which version an install runs is known from its first
     minute rather than from its first contribution.
-
-    *(This is not marketing consent. The newsletter opt-in is that, and it is
-    jurisdiction-aware. Keep the two separate.)*
     """
     return bool(token_in_hand(SiteConfig.load()))
 
 
-def _register_this_install(config: SiteConfig) -> str:
+def _register_this_install() -> str:
     """Ask the hub for this install's token. "" when there is nobody to ask as."""
-    user = get_active_user()
-    email = user.email if user is not None else ""
+    email = _operator_email()
     if not email:
-        logger.debug("hub: no operator email yet — nothing to register")
+        logger.debug("hub: no operator email — nothing to register")
         return ""
 
     # The build rides along: for an install that never contributes, this is the only
     # time it ever names the version it runs.
-    return _mint(config, {"operator_email": email, **_build_fields()})
+    return _mint({"operator_email": email, **_build_fields()})
+
+
+def _operator_email() -> str:
+    """The operator's email, or "" — an install may run without one, and then has no
+    hub identity: no store reads, no give-back."""
+    user = get_active_user()
+    return user.email if user is not None else ""
 
 
 def hub_balance() -> dict:
@@ -215,46 +218,49 @@ def hub_balance() -> dict:
     since the two must not look alike to a caller deciding whether to explain the
     store as empty or as closed.
     """
-    config = SiteConfig.load()
-    token = token_in_hand(config, mint=False)
+    token = token_in_hand(SiteConfig.load(), mint=False)
     if not token:
         return {"balance": None, "known": False}
 
-    user = get_active_user()
-    email = user.email if user is not None else ""
+    email = _operator_email()
     if not email:
         return {"balance": None, "known": False}
 
-    payload = _send(config, "register", {"operator_email": email, **_build_fields()},
+    payload = _send("register", {"operator_email": email, **_build_fields()},
                     headers=_auth(token))
     if payload is None or "credits" not in payload:
         return {"balance": None, "known": False}
     return {"balance": payload["credits"], "known": True}
 
 
-def _register(config: SiteConfig, record: dict, lead) -> None:
+def _register(record: dict, lead) -> None:
     """Mint the token by folding it into a first contribution.
 
     The compatibility path, and the only one a hub that still requires a record will
     accept. ``token_in_hand`` is the one that should normally have answered; this catches
     the install whose hub was down when the run started and which has now reached a
-    contribution anyway.
+    contribution anyway. An install with no operator email has nobody to register as,
+    so its record stays home.
     """
     global _minted_token
 
-    _minted_token = _mint(config, {"operator_email": get_active_user().email, **record}, lead)
+    email = _operator_email()
+    if not email:
+        logger.debug("hub: no operator email — skipping give-back for %s", lead.profile_url)
+        return
+    _minted_token = _mint({"operator_email": email, **record}, lead)
 
 
-def _mint(config: SiteConfig, body: dict, lead=None) -> str:
+def _mint(body: dict, lead=None) -> str:
     """POST to ``register`` and return whatever token comes back — "" if none did."""
-    response = _send(config, "register", body, lead)
+    response = _send("register", body, lead)
     token = (response or {}).get("token") or ""
     if token:
         logger.info("hub: registered — this run is identified to the store")
     return token
 
 
-def _send(config: SiteConfig, path: str, body: dict, lead=None,
+def _send(path: str, body: dict, lead=None,
           headers: dict | None = None) -> dict | None:
     """POST one body; log + swallow any transport failure. ``None`` on failure.
 
@@ -263,7 +269,7 @@ def _send(config: SiteConfig, path: str, body: dict, lead=None,
     and the hub may answer it without a ``credits`` field at all.
     """
     try:
-        resp = requests.post(_endpoint(config, path), json=body,
+        resp = requests.post(_endpoint(path), json=body,
                              headers=headers or _headers(), timeout=_TIMEOUT_S)
         resp.raise_for_status()
     except requests.RequestException as exc:
@@ -278,9 +284,8 @@ def _send(config: SiteConfig, path: str, body: dict, lead=None,
     return payload
 
 
-def _endpoint(config: SiteConfig, path: str) -> str:
-    base = config.contacts_api_url or DEFAULT_API_URL
-    return f"{base.rstrip('/')}/api/v2/{path}/"
+def _endpoint(path: str) -> str:
+    return f"{HUB_URL}/api/v2/{path}/"
 
 
 def _auth(token: str) -> dict:

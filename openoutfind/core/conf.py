@@ -28,8 +28,8 @@ PROMPTS_DIR = Path(__file__).parent / "templates" / "prompts"
 # MAX); past DEADLINE the collect leg gives up and reverts the deal to
 # READY_TO_FIND_EMAIL for a fresh submit. A provider job resolves in
 # seconds-to-minutes, so these are short (unlike the retired channel's
-# connect-accept poll, which backed off in hours). A future provider (Apollo, …)
-# would carry its own triple.
+# connect-accept poll, which backed off in hours). A future provider would carry its
+# own triple.
 #
 #
 # **The backoff is uncapped and there is no deadline.** Both used to exist, and

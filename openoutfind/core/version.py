@@ -16,15 +16,13 @@ so the commit *is* the version. This module names it two ways:
 uncommitted edits is a build nobody can reconstruct, so claiming to be the commit
 would be a false claim. ``None`` means "couldn't tell" — never a hopeful ``False``.
 
-Read straight from ``.git`` (no ``git`` binary needed for the sha, no GitPython)
-because the daemon runs from a bind-mounted checkout. ``OPENOUTFIND_BUILD`` wins
-when set, for images built without a ``.git`` alongside.
+Read straight from ``.git`` (no ``git`` binary needed for the sha, no GitPython).
+An install with no ``.git`` alongside — a wheel, an image — reports ``UNKNOWN``.
 """
 from __future__ import annotations
 
 import functools
 import logging
-import os
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
@@ -70,10 +68,6 @@ def user_agent() -> str:
 @functools.lru_cache(maxsize=1)
 def _build() -> dict:
     """Resolve the build once per process — the checkout can't change under us."""
-    override = os.environ.get("OPENOUTFIND_BUILD")
-    if override:
-        sha, _, date = override.partition("@")
-        return {"commit_sha": sha or UNKNOWN, "calver": date or UNKNOWN, "is_dirty": None}
     sha = _read_head_sha()
     return {
         "commit_sha": sha,

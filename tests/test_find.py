@@ -94,8 +94,7 @@ def test_a_fully_configured_environment_is_ready_with_nothing_asked(headless, mo
     for name, value in FULL_ENV.items():
         monkeypatch.setenv(name, value)
 
-    with patch("openoutfind.core.newsletter.subscribe_to_newsletter"):
-        check_ready()
+    check_ready()
 
     from openoutfind.core.readiness import missing_variables
     assert missing_variables() == {}
@@ -113,8 +112,7 @@ def test_agent_qualify_never_needs_an_llm_key(headless, monkeypatch):
             monkeypatch.setenv(name, value)
     agent_qualify.enable(None)
 
-    with patch("openoutfind.core.newsletter.subscribe_to_newsletter"), \
-            patch("openoutfind.core.llm.verify_llm_credentials") as ping:
+    with patch("openoutfind.core.llm.verify_llm_credentials") as ping:
         check_ready()
 
     ping.assert_not_called()

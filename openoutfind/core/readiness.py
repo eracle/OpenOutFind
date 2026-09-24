@@ -4,8 +4,12 @@
 Four things, and none of them is a preference. This install has to say what it sells and
 to whom, or there is no ICP to search or judge against. A model has to be reachable, or
 there is nothing to judge with. Discovery has to have a key, because the search itself
-runs on one. And somebody has to be running it, under a jurisdiction, having accepted
-what the tool does.
+runs on one. And somebody has to be running it, having accepted what the tool does.
+
+The operator's email and country are not among them. The email gives the install a hub
+identity and names the operator row; without it the row is ``operator`` and the hub is
+never asked. The country only narrows the contacts-store give-back
+(`contacts/service.py:contribute`), and a run that declares none contributes.
 
 **Everything comes from the environment. Nothing is asked.** This program is a library,
 a pipe stage and a scripted command as often as it is something a person types at, and
@@ -20,10 +24,8 @@ here, before a lead is chosen, instead of halfway through a pass with a lead alr
 hand. That was the whole objection to reading config from the environment, and it is
 answered by checking rather than by remembering.
 
-**Two things are records, not answers.** The operator is a ``User`` row, written once
-from the environment and never re-read — a renamed variable must not rename the person a
-campaign belongs to. The newsletter subscription is an act, performed once when that row
-is created, and only on an explicit yes.
+**The operator is a record, not an answer.** It is a ``User`` row, written once from the
+environment — a renamed variable must not rename the person a campaign belongs to.
 """
 from __future__ import annotations
 
@@ -36,7 +38,6 @@ from openoutfind.core.config import (
     ENV_PREFIX,
     SiteConfig,
     missing,
-    variable_for,
 )
 from openoutfind.core.errors import ErrorType, OpenOutFindError
 
@@ -49,7 +50,6 @@ LEGAL_NOTICE_URL = "https://github.com/eracle/OpenOutFind/blob/main/LEGAL_NOTICE
 
 OPERATOR_EMAIL = ENV_PREFIX + "OPERATOR_EMAIL"
 ACCEPT_LEGAL_NOTICE = ENV_PREFIX + "ACCEPT_LEGAL_NOTICE"
-NEWSLETTER = ENV_PREFIX + "NEWSLETTER"
 
 _TRUE = {"1", "true", "yes", "on"}
 _FALSE = {"0", "false", "no", "off"}
@@ -71,7 +71,7 @@ def check_ready() -> None:
             ErrorType.ONBOARDING_INCOMPLETE,
             "not ready to find — set " + ", ".join(unsatisfied) + ".\n"
             f"Optional: {ENV_PREFIX}LLM_API_BASE (required for openai_compatible:*), "
-            f"{ENV_PREFIX}APOLLO_API_KEY, {NEWSLETTER}.\n"
+            f"{OPERATOR_EMAIL}, {ENV_PREFIX}OPERATOR_COUNTRY.\n"
             f"{ACCEPT_LEGAL_NOTICE} must be set to 'true' — it records that you accept "
             f"{LEGAL_NOTICE_URL}.",
         )
@@ -87,8 +87,6 @@ def missing_variables() -> dict[str, list[str]]:
     The groups are the questions a person is asked, kept because that is how the failure
     reads to somebody who has to go and find four values. An empty dict is a ready run.
     """
-    from django.contrib.auth.models import User
-
     config = SiteConfig.load()
     groups = {
         "campaign": missing(config, REQUIRED_ICP_FIELDS),
@@ -97,8 +95,10 @@ def missing_variables() -> dict[str, list[str]]:
         # install running only that way is not asked for a key it will never spend.
         "llm": [] if _agent_qualify_active() else missing(config, REQUIRED_LLM_FIELDS),
         "bettercontact": missing(config, REQUIRED_DISCOVERY_FIELDS),
-        "account": _account_missing(config, User.objects.filter(
-            is_active=True, is_staff=True).exclude(email="").exists()),
+        # **Acceptance is never inferred**, and it is asked for on every run: the variable
+        # has to say yes, so an install cannot inherit somebody else's agreement by
+        # inheriting their database.
+        "account": [] if _flag(ACCEPT_LEGAL_NOTICE) else [ACCEPT_LEGAL_NOTICE],
     }
     return {group: names for group, names in groups.items() if names}
 
@@ -107,25 +107,6 @@ def _agent_qualify_active() -> bool:
     from openoutfind.core import agent_qualify
 
     return agent_qualify.active()
-
-
-def _account_missing(config: SiteConfig, operator_exists: bool) -> list[str]:
-    """What the account group still lacks.
-
-    **Acceptance is never inferred**, and it is asked for on every run whether or not an
-    operator row exists: the variable has to say yes, so an install cannot inherit
-    somebody else's agreement by inheriting their database. The email is only asked for
-    while there is no operator — after that it is a row, and the row is the identity.
-    """
-    import os
-
-    names = [] if (operator_exists or os.environ.get(OPERATOR_EMAIL, "").strip()) \
-        else [OPERATOR_EMAIL]
-    if not config.operator_country_code:
-        names.append(variable_for("operator_country_code"))
-    if not _flag(ACCEPT_LEGAL_NOTICE):
-        names.append(ACCEPT_LEGAL_NOTICE)
-    return names
 
 
 # ── the model ─────────────────────────────────────────────────────
@@ -155,40 +136,46 @@ def _check_llm() -> None:
 def _ensure_operator() -> None:
     """Record who runs this install, once.
 
-    Skipped once an operator exists: this is identity, and the Django ``User`` row is
-    what the rest of the codebase reads — the contacts-store key, the seller name the
-    agents write as, and the newsletter target. Both children share it under one
-    registry when OpenOutreach hosts them.
+    This is identity, and the Django ``User`` row is what the rest of the codebase reads
+    — the contacts-store key and the seller name the agents write as. Both children share
+    it under one registry when OpenOutreach hosts them.
+
+    The email is optional. Without one the operator is a row named ``operator`` and the
+    install has no hub identity. An email given later fills that blank once; an email
+    already on the row is never replaced, since a renamed variable must not rename the
+    person a campaign belongs to.
     """
     import os
 
     from openoutfind.contacts.service import register_operator
-    from openoutfind.core.newsletter import subscribe_to_newsletter
     from openoutfind.core.operator import get_active_user
 
-    if get_active_user() is not None:
+    email =(os.environ.get(OPERATOR_EMAIL) or "").strip()
+    user = get_active_user()
+
+    if user is None:
+        user = _create_operator(email)
+        logger.info("running as %s", user.username)
+    elif email and not user.email:
+        user.email = email
+        user.save(update_fields=["email"])
+    else:
         return
 
-    email = (os.environ.get(OPERATOR_EMAIL) or "").strip()
-    user = _create_operator(email)
-    logger.info("running as %s", user.username)
-
-    if _flag(NEWSLETTER):
-        subscribe_to_newsletter(email)
-
-    # Identity, not entitlement, and not consent: the hub token names this install so it
-    # can hold a balance, be metered and be revoked. Minted here because the email is
-    # already in hand, and **regardless of jurisdiction** — the EEA/UK/CH rule governs
-    # contributing records, which is a different act. Best-effort: a hub that is down
-    # leaves the run without one, and the first contribution mints it the old way.
-    register_operator()
+    # Identity, not entitlement: the hub token names this install so it can hold a
+    # balance, be metered and be revoked. Minted **regardless of jurisdiction** — the
+    # EEA/UK/CH rule governs contributing records, which is a different act. Best-effort:
+    # a hub that is down leaves the run without one, and the first contribution mints it
+    # the old way.
+    if user.email:
+        register_operator()
 
 
 def _create_operator(email: str):
-    """Create the operator Django ``User`` from their email (the human's own inbox)."""
+    """Create the operator Django ``User``, named from their email when there is one."""
     from django.contrib.auth.models import User
 
-    handle = email.split("@")[0].lower().replace(".", "_").replace("+", "_")
+    handle = email.split("@")[0].lower().replace(".", "_").replace("+", "_") or "operator"
     user, created = User.objects.get_or_create(
         username=handle,
         defaults={"is_staff": True, "is_active": True, "email": email},

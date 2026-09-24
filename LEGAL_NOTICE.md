@@ -17,7 +17,7 @@ OpenOutFind performs **no** automated access to any social or professional netwo
 - **You accept the third-party terms.** You are responsible for using the data provider and email-finder in line with each provider's terms of service and acceptable-use policy.
 
 ### 2. Newsletter Subscription (Asked at Onboarding, Default Set by Jurisdiction)
-During onboarding you enter the **country** your operation is based in, and you are then **asked** whether to subscribe the email address you provided to the newsletter. The question is always asked; only its **default answer** depends on your jurisdiction.
+OpenOutFind run on its own subscribes nobody. The question below is asked by the onboarding wizard in [OpenOutreach](https://github.com/eracle/OpenOutreach). During that onboarding you enter the **country** your operation is based in, and you are then **asked** whether to subscribe the email address you provided to the newsletter. The question is always asked; only its **default answer** depends on your jurisdiction.
 
 - **Protected jurisdictions**: for operators based in the EU/EEA, UK, Switzerland, Canada, Brazil, Australia, Japan, South Korea, or New Zealand, the default is **no**. An explicit yes is lawful consent anywhere.
 - **Elsewhere**: the default is **yes** — so accepting the prompt without changing it subscribes you.

@@ -319,9 +319,9 @@ in its own `SiteConfig` and exports these names to both children.
 ```
 campaign        OPENOUTFIND_PRODUCT_DOCS, OPENOUTFIND_CAMPAIGN_TARGET
 llm             OPENOUTFIND_AI_MODEL, OPENOUTFIND_LLM_API_KEY  (+ LLM_API_BASE, required for openai_compatible:*)
-bettercontact   OPENOUTFIND_BETTERCONTACT_API_KEY  (+ APOLLO_API_KEY, EMAIL_FINDER)
-account         OPENOUTFIND_OPERATOR_EMAIL, OPENOUTFIND_OPERATOR_COUNTRY, OPENOUTFIND_ACCEPT_LEGAL_NOTICE  (+ NEWSLETTER)
-hub             OPENOUTFIND_CONTACTS_API_TOKEN, OPENOUTFIND_CONTACTS_API_URL  (both optional)
+bettercontact   OPENOUTFIND_BETTERCONTACT_API_KEY
+account         OPENOUTFIND_ACCEPT_LEGAL_NOTICE  (+ OPERATOR_EMAIL, OPERATOR_COUNTRY)
+hub             OPENOUTFIND_CONTACTS_API_TOKEN  (optional)
 ```
 
 `check_ready()` runs before any work — from `outfind check`, and from `find` itself, so a scripted
@@ -339,14 +339,13 @@ Five rules, each answering a way this could go quietly wrong:
 - **A bad value stops; an absent one is named.** `error: bad_config: <VAR>: <problem>` — falling
   through to "missing" would print a variable the operator has already set.
 - **Legal acceptance is never inferred**, and it is read on **every** run: an install must not
-  inherit somebody else's agreement by inheriting their database. `NEWSLETTER` defaults **off
-  everywhere** — the wizard's jurisdiction-aware default is a suggestion to a human, and silence in
-  a config file is not consent.
-- **The operator is a row, written once** (`_ensure_operator` → `User`, seeded from
+  inherit somebody else's agreement by inheriting their database. There is no newsletter here —
+  subscribing a human is the wizard's business, in OpenOutreach.
+- **The operator is a row, written once** (`_ensure_operator` → `User`, seeded from the optional
   `OPENOUTFIND_OPERATOR_EMAIL`). Identity is not an answer to be re-read: a renamed variable must
-  not rename the person a campaign belongs to, or re-key the contacts store. Once the row exists the
-  variable is no longer asked for. The newsletter subscription happens there too — an act, performed
-  once, and only on an explicit yes.
+  not rename the person a campaign belongs to, or re-key the contacts store. Without an email the
+  row is `operator` and the install has no hub identity — no store reads, no give-back; an email
+  given later fills that blank once and registers.
 - **The hub token is not written down either.** `contacts.service.token_in_hand` returns the one the
   environment gave, or registers for one and keeps it for the life of the process; `register` is
   idempotent server-side, so a run that mints its own loses nothing by forgetting it. A read-only
@@ -375,7 +374,7 @@ stops. `core/export.py` reads it from there.
 - **`FINDING_EMAIL`** — a provider job is in flight; the deal is excluded from the candidate pool (so the next cycle can't re-select it and double-charge) while `check_lookup` polls to termination. The job handle (`lookup_request_id`) and the poll backoff (`lookup_attempt` + `not_before`) live **on the deal**, so an in-flight lookup survives a restart and its wait gates that one row and nothing else.
 - **`RESOLVED`** — an address is in hand. Where a fully-enriched deal comes to rest, at no cost, since nothing iterates it.
 
-**The paid lookup runs behind a provider seam** (`enrichment/provider.py`): `active()` names the finder from whichever key is configured, and nothing above the package knows the vendor. `buy_address` resolves free-hub-first (hit → `RESOLVED` with no job/credit), then calls the finder's `start`. **The transport is the provider's, and the interface spans both**: a synchronous finder (Apollo `people/match`) comes back already terminated and lands on `RESOLVED`/`NO_EMAIL_FOUND` without ever entering `FINDING_EMAIL`; an async one (BetterContact's waterfall) returns a handle and parks there. A couldn't-run (no key / API down) stays `READY_TO_FIND_EMAIL`. The handle records **which** finder minted it (`Deal.lookup_provider`), so swapping keys mid-flight cannot hand one vendor's `request_id` to another. `check_lookup` (poll) is then **tri-state**: hit → `RESOLVED` (address given back to the hub); **miss** (job terminated, no address) → `NO_EMAIL_FOUND` — its own terminal, with **no reason and blank outcome**, critically not `FAILED+wrong_fit`, which the ML labeler reads as a negative: a lead we simply couldn't reach was still an LLM fit positive and stays label=1; **still running** → chains the next poll with doubled backoff on the same `request_id`, with no deadline and no attempt limit.
+**The paid lookup runs behind a provider seam** (`enrichment/provider.py`): `active()` names the finder from whichever key is configured — BetterContact is the only one upstream ships — and nothing above the package knows the vendor. `buy_address` resolves free-hub-first (hit → `RESOLVED` with no job/credit), then calls the finder's `start`. **The transport is the provider's, and the interface spans both**: a synchronous finder (a match-style API a fork might add) comes back already terminated and lands on `RESOLVED`/`NO_EMAIL_FOUND` without ever entering `FINDING_EMAIL`; an async one (BetterContact's waterfall) returns a handle and parks there. A couldn't-run (no key / API down) stays `READY_TO_FIND_EMAIL`. The handle records **which** finder minted it (`Deal.lookup_provider`), so swapping keys mid-flight cannot hand one vendor's `request_id` to another. `check_lookup` (poll) is then **tri-state**: hit → `RESOLVED` (address given back to the hub); **miss** (job terminated, no address) → `NO_EMAIL_FOUND` — its own terminal, with **no reason and blank outcome**, critically not `FAILED+wrong_fit`, which the ML labeler reads as a negative: a lead we simply couldn't reach was still an LLM fit positive and stays label=1; **still running** → chains the next poll with doubled backoff on the same `request_id`, with no deadline and no attempt limit.
 
 `crm/models/deal.py:Outcome` is down to **two** values: `wrong_fit` and `unknown`. The reply
 outcomes it used to carry — converted, not_interested, no_budget, has_solution, bad_timing,
@@ -660,7 +659,7 @@ rather than pinned to a single hallucination.
 
 ## Django Apps
 
-- **`core`** — Engine: the `Keyword` / `QueryNode` walk models; the cycle, operator lookup, LLM factory, the environment config + readiness check, the ML/discovery/qualify pipeline, the lead export, geo, the newsletter signup.
+- **`core`** — Engine: the `Keyword` / `QueryNode` walk models; the cycle, operator lookup, LLM factory, the environment config + readiness check, the ML/discovery/qualify pipeline, the lead export, geo.
 - **`crm`** — `Lead` (identity + embedding + email), `Company` (the shared employer row) and `Deal` (`crm/models/lead.py`, `crm/models/company.py`, `crm/models/deal.py`); also defines `DealState` and `Outcome`.
 - **`enrichment`** — **not an app** (no models). `bettercontact.py` (paid finder: the two-leg `submit(query)→request_id` + `poll_once(request_id)→PollOutcome`, the shared blocking `submit_and_poll` transport used by discovery, `is_configured`, `BetterContactQuery`/`Result`/`PollOutcome`/`Unavailable`); `lookup.py` (`buy_address`/`check_lookup`/`reclaim_lookup` — one entity in, the next `DealState` or `None` out). It sat under `emails/` while a resolved address existed to be written to; that coupling is exactly what made a mailbox-less install produce nothing.
 - **`contacts`** — the central contacts-store client (`service.py`, no models, **not** an installed app) — "the hub" (`hub.openoutreach.app`), logged under the `hub:` prefix. `resolve(lead)` (free read-back before the paid finder) and `contribute(lead, emails, origin)` (give-back, non-EEA only, registers on first use). Both best-effort; an outage or missing token degrades to a no-op.
@@ -887,9 +886,8 @@ Paths relative to `openoutfind/`.
 - **`core/db/leads.py`** — `create_lead(row, country_code)` (persist one Lead Finder row as an embedded Lead, idempotent), `promote_lead_to_deal`, `disqualify_lead`. *(`suppress_email` left with the sending leg — see* Opt-out and suppression.*)*
 - **`core/db/deals.py`** — Deal state ops: `set_profile_state`, the state-pool queries (`get_qualified_profiles`, `get_ready_to_find_email_profiles`), `create_disqualified_deal`. `_STATE_LOG_STYLE` colors the funnel transitions in the log.
 *(`core/db/summaries.py` and the vendored mem0 prompt under `core/vendor/` are gone. They built a `Deal.profile_summary` — an LLM fact-extraction over the lead's `profile_text` — for the outreach agent, and had **no consumer left in the finder** once the sending leg went: the qualifier reads `profile_text` directly. **Summarising for a message is the sender's job**, so `profile_text` crosses the boundary raw and the receiver extracts what an opener needs — tuned for the reader who wants it, paid for only for people actually written to, and derived once rather than twice with no rule for which wins.)*
-- **`core/newsletter.py`** — `subscribe_to_newsletter`, a plain Brevo form POST for the operator's own address, run once when the operator row is created and only on an explicit `OPENOUTFIND_NEWSLETTER=true`. Nothing to do with outreach; it moved out of `emails/` when that app was removed.
 - **`core/llm.py`** — `get_llm_model()` factory (reads the run's `SiteConfig`, `split_model_id` parses the provider out of `ai_model`, dispatches to the per-provider builder), `build_llm_model` (from explicit creds), `verify_llm_credentials` (one live ping, tenacity-retried, run before every pass by `readiness.check_ready` — it returns only the failures a *configuration* causes and lets anything else propagate, since its caller blames `LLM_API_KEY` for whatever comes back), and `run_agent_sync(coro)` — the sync boundary that drives async pydantic-ai on a dedicated long-lived worker-thread loop (never `Agent.run_sync`, whose anyio portal poisons the caller thread's loop slot; never per-call `asyncio.run`, which closes loops the SDK HTTP clients still reference).
-- **`core/geo.py`** — jurisdiction sets + predicates: `is_gdpr_protected` (broad opt-in set, drives the newsletter default) and `is_eea_located` / `EEA_UK_CH` (narrow EEA/UK/CH collection-regime set — the client-side pre-gate for contacts-store contribution; the server re-gates authoritatively). The operator's country is `OPENOUTFIND_OPERATOR_COUNTRY`; a lead's is the one its query node searched. Neither ever comes from a scrape.
+- **`core/geo.py`** — jurisdiction sets + predicates: `is_gdpr_protected` (broad opt-in set, read only by OpenOutreach's wizard for its newsletter default) and `is_eea_located` / `EEA_UK_CH` (narrow EEA/UK/CH collection-regime set — the client-side pre-gate for contacts-store contribution; the server re-gates authoritatively). The operator's country is `OPENOUTFIND_OPERATOR_COUNTRY`; a lead's is the one its query node searched. Neither ever comes from a scrape.
 - **`enrichment/bettercontact.py`** — the provider client. The paid finder is the two-leg `submit(query) → request_id` + `poll_once(request_id) → PollOutcome`, so a run never blocks on a poll; the free Lead Finder index uses the blocking `submit_and_poll` transport from the same module, since `discovery.search` genuinely wants a page back. `is_configured()` reads `OPENOUTFIND_BETTERCONTACT_API_KEY` — one key, two endpoints, and only one of them bills.
 - **`enrichment/lookup.py`** — the two pipeline steps, `buy_address` / `check_lookup` / `reclaim_lookup`, plus `_store_identity` (the name parts the provider echoes back with the address) and the backoff helpers. The enrichment query is **URL-only by decision** — the provider accepts name and company and resolves better with them, but the less of a lead's record leaves for a third party the better, and URL-only measures ~42% usable. The docstring says not to widen it without a decision to widen it.
 - **`core/business_time.py`** — `business_days_between(start, end)`: whole Mon–Fri days elapsed. It was the agent's only sense of a thread's age; with no agent it is now unused by the pipeline and kept as a small, correct utility. Public holidays are not modelled (per-country data we don't carry).

@@ -150,14 +150,3 @@ def test_undeterminable_dirtiness_is_none_not_false(_isolated, monkeypatch):
     version._build.cache_clear()
     assert version.is_dirty() is None
     assert ".dirty" not in version.version_string()
-
-
-# ── build override ───────────────────────────────────────────────────
-
-def test_build_env_var_wins_over_the_checkout(_isolated, monkeypatch):
-    """The image is built without a ``.git``, so the env var is how it knows itself."""
-    _checkout(_isolated, f"{SHA}\n")
-    monkeypatch.setenv("OPENOUTFIND_BUILD", f"{'a' * 40}@2026.01.01")
-    version._build.cache_clear()
-    assert version.commit_sha() == "a" * 40
-    assert version.calver() == "2026.01.01"

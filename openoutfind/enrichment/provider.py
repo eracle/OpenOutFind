@@ -2,19 +2,17 @@
 """The email-finder seam: one interface, one configured provider, two transports.
 
 ``lookup.py`` drives *a* provider, never a named one. Which module answers is decided
-here by ``active()``, from whichever key the operator configured — so an install with an
-Apollo key and an install with a BetterContact key run the same pipeline, the same
-states and the same hub give-back, and neither knows about the other's vendor.
+here by ``active()`` — today that is BetterContact whenever its key is set, the only
+finder upstream ships.
 
-**The interface spans sync and async, because the two real providers differ.**
-BetterContact is a waterfall that takes seconds to minutes: ``start`` fires a job and
-returns a handle, the deal parks at FINDING_EMAIL, and ``poll_once`` checks it later.
-Apollo's ``people/match`` answers in the same HTTP call. Forcing either into the other's
-shape would cost something real — a fake handle for Apollo would invent a poll that
-resolves instantly and a state the deal passes through in microseconds, while blocking
-on BetterContact would hold a run open for minutes per lead. So ``start`` returns a
-``Lookup`` that is *either* a finished ``PollOutcome`` or a handle to poll, and the
-caller branches once on which it got.
+**The interface spans sync and async, because finders differ.** BetterContact is a
+waterfall that takes seconds to minutes: ``start`` fires a job and returns a handle, the
+deal parks at FINDING_EMAIL, and ``poll_once`` checks it later. A match-style finder
+answers in the same HTTP call. Forcing either into the other's shape would cost
+something real — a fake handle would invent a poll that resolves instantly and a state
+the deal passes through in microseconds, while blocking on a waterfall would hold a run
+open for minutes per lead. So ``start`` returns a ``Lookup`` that is *either* a finished
+``PollOutcome`` or a handle to poll, and the caller branches once on which it got.
 
 A provider module is a plain module — no classes to register, no plugin table. It
 implements:
@@ -27,9 +25,9 @@ implements:
     poll_once(id)   PollOutcome — async providers only; sync ones never see a call
 
 **Adding a provider (including in a fork).** Write the module against the six names
-above, then add it to the three registries below (``active``, ``by_name``,
-``configured``) — that is the whole integration; nothing else in the codebase names
-a vendor.
+above, add it to ``_providers()`` below and give it a key in ``core/config.py`` — that
+is the whole integration; nothing else in the codebase names a vendor. With more than
+one key set, the first configured entry in ``_providers()`` wins.
 
 ``NAME`` is the part that leaves the machine. ``lookup`` passes it straight to
 ``contacts.contribute`` as the give-back's ``origin``, and it travels to the hub as
@@ -66,8 +64,8 @@ class ProviderUnavailable(Exception):
 class PollOutcome:
     """A lookup's state at one moment: still running, or terminated hit/miss.
 
-    A hit carries the name parts the provider resolved alongside the address. Both
-    vendors return them in the same response that carries the email — same call, same
+    A hit carries the name parts the provider resolved alongside the address. The
+    provider returns them in the same response that carries the email — same call, same
     credit — which is why nothing in this codebase splits a full name itself.
     """
     running: bool
@@ -100,47 +98,28 @@ class Lookup:
         return self.outcome is None
 
 
+def _providers() -> tuple:
+    """Every finder upstream ships, in the order ``active`` prefers them."""
+    from openoutfind.enrichment import bettercontact
+
+    return (bettercontact,)
+
+
 def active():
-    """The provider module this install resolves with, or ``None`` if none is configured.
-
-    Selection is by configured key, so the common case — one account, one key — needs no
-    setting at all. ``email_finder`` breaks the tie only when both keys are present;
-    unset, BetterContact wins it, because it is the incumbent and the affiliate path,
-    and silently moving an existing install's spend to a second vendor on the strength
-    of a stray key would be the wrong default.
-    """
-    from openoutfind.core.config import SiteConfig
-    from openoutfind.enrichment import apollo, bettercontact
-
-    by_name = {bettercontact.NAME: bettercontact, apollo.NAME: apollo}
-    preferred = SiteConfig.load().email_finder
-
-    if preferred:
-        chosen = by_name.get(preferred)
-        return chosen if chosen and chosen.is_configured() else None
-
-    for module in (bettercontact, apollo):
-        if module.is_configured():
-            return module
-    return None
+    """The provider module this install resolves with, or ``None`` if none is configured."""
+    return next((module for module in _providers() if module.is_configured()), None)
 
 
 def by_name(name: str):
     """The provider module called *name*, or ``None``.
 
     Used to poll a job with the vendor that issued its handle rather than with whichever
-    vendor is configured *now* — an operator who swaps keys while a lookup is in flight
-    would otherwise hand BetterContact's ``request_id`` to Apollo, which can only answer
-    that it does not poll.
+    vendor is configured *now*.
     """
-    from openoutfind.enrichment import apollo, bettercontact
-
-    return {bettercontact.NAME: bettercontact, apollo.NAME: apollo}.get(name)
+    return next((module for module in _providers() if module.NAME == name), None)
 
 
 def configured() -> list:
     """Every provider module with a key set — for ``status``, which reports on all of
     them rather than only the one that would run."""
-    from openoutfind.enrichment import apollo, bettercontact
-
-    return [m for m in (bettercontact, apollo) if m.is_configured()]
+    return [module for module in _providers() if module.is_configured()]

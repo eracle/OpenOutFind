@@ -25,13 +25,10 @@ things before it starts working.
 | `OPENOUTFIND_LLM_API_KEY` | llm | **verified by one live ping before every run** — a key rotated out from under a timer fails before a lead is chosen, not mid-pass |
 | `OPENOUTFIND_LLM_API_BASE` | llm | required for `openai_compatible:*`, ignored otherwise |
 | `OPENOUTFIND_BETTERCONTACT_API_KEY` | bettercontact | [free account, 40 credits, no card](https://bettercontact.rocks?fpr=openoutreach) (affiliate link, no markup to you). Powers **both** Lead Finder discovery (billed nothing) **and** work-email enrichment (one credit per verified address, only with `--emails`) |
-| `OPENOUTFIND_APOLLO_API_KEY` | bettercontact | optional second resolver; discovery still needs the key above |
-| `OPENOUTFIND_EMAIL_FINDER` | bettercontact | optional — `bettercontact` \| `apollo`, only needed when both keys are set |
-| `OPENOUTFIND_OPERATOR_EMAIL` | account | your own inbox — the contacts-store key and the newsletter target. Read **once**, to create the operator row; after that the row is the identity |
-| `OPENOUTFIND_OPERATOR_COUNTRY` | account | ISO 3166 alpha-2, e.g. `US` — **your jurisdiction**, not your target market |
 | `OPENOUTFIND_ACCEPT_LEGAL_NOTICE` | account | must be `true` — records that you accept the [Legal Notice](../LEGAL_NOTICE.md), and is asked on every run so an install cannot inherit somebody else's agreement with their database |
-| `OPENOUTFIND_NEWSLETTER` | account | optional, **defaults off** — set `true` to subscribe, acted on once when the operator row is created |
-| `OPENOUTFIND_CONTACTS_API_TOKEN` / `_URL` | hub | optional. Without a token a run registers for one and keeps it for the length of the process; `register` is idempotent, so nothing is lost by not storing it |
+| `OPENOUTFIND_OPERATOR_EMAIL` | account | optional. Your own inbox — the contacts-store key. Unset, the operator row is named `operator` and the install never talks to the hub (no free cached addresses, no give-back). Fills a blank row once; never replaces an email already there |
+| `OPENOUTFIND_OPERATOR_COUNTRY` | account | optional. ISO 3166 alpha-2, e.g. `US` — **your jurisdiction**, not your target market. Unset, the install contributes to the contacts store |
+| `OPENOUTFIND_CONTACTS_API_TOKEN` | hub | optional. Without a token a run registers for one and keeps it for the length of the process; `register` is idempotent, so nothing is lost by not storing it |
 
 A missing value is never a prompt: the run stops with **one** error naming every variable that would
 have satisfied it. `OPENOUTFIND_DB` (or `--db PATH`) points any command at a different SQLite file.
@@ -57,15 +54,11 @@ The `Mailbox` model, the SMTP/IMAP credentials, the per-box signature, the measu
 send-spacing clock all moved to [OpenOutSend](https://github.com/eracle/OpenOutSend) with
 the sending leg. **Nothing here needs a mailbox**, and nothing asks for one.
 
-## Newsletter consent
-
-`OPENOUTFIND_NEWSLETTER` is off unless it says yes, in every jurisdiction: silence in a config file
-is not consent anywhere, and there is nobody here to ask. (The wizard in OpenOutreach still offers
-the jurisdiction-aware default, because that is a suggestion to a human. The rule it reads is
-`core/geo.is_gdpr_protected`.)
+## Your jurisdiction
 
 Your `operator_country_code` is your own jurisdiction and nothing else — it decides whether this install
-contributes to the contacts store (`geo.is_eea_located`). The country a *lead* is tagged with comes
+contributes to the contacts store (`geo.is_eea_located`): an EEA/UK/CH country turns the give-back
+off, any other country or none leaves it on. The country a *lead* is tagged with comes
 from the query that found them, and lives on the query node.
 
 ## Hardcoded Defaults (`core/conf.py`)

@@ -22,21 +22,19 @@ def _ensure_crm_data(db):
 
 @pytest.fixture(autouse=True)
 def _no_live_writes_to_our_own_services():
-    """No test may write to the real hub or the real mailing list.
+    """No test may write to the real hub.
 
-    Both are reached by *completing onboarding*, which many tests do incidentally on
-    their way to something else: `_finalize_account` mints the operator's hub token
-    and, on a yes, subscribes them to the newsletter. Unguarded, anyone's `make test`
-    POSTs a fabricated operator into **production** — a service holding other
-    people's contributions — and signs a fake address up to the list.
+    It is reached by *completing onboarding*, which many tests do incidentally on their
+    way to something else: `_ensure_operator` mints the operator's hub token. Unguarded,
+    anyone's `make test` POSTs a fabricated operator into **production** — a service
+    holding other people's contributions.
 
-    Both callers are best-effort by design, so a refused connection is exactly the
-    no-op they already handle. Tests that exercise either client patch the same
-    target themselves and win, because their patch is applied inside this one.
+    The caller is best-effort by design, so a refused connection is exactly the no-op it
+    already handles. Tests that exercise the client patch the same target themselves and
+    win, because their patch is applied inside this one.
     """
     refuse = requests.ConnectionError("no network in tests")
-    with patch("openoutfind.contacts.service.requests.post", side_effect=refuse), \
-         patch("openoutfind.core.newsletter.requests.post", side_effect=refuse):
+    with patch("openoutfind.contacts.service.requests.post", side_effect=refuse):
         yield
 
 

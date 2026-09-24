@@ -73,23 +73,14 @@ class SiteConfig:
     # Only consulted for the openai_compatible provider (OpenRouter / Together / Ollama / vLLM).
     llm_api_base: str = ""
 
-    # Email-finder keys — one per supported vendor, and a key is all it takes to select
-    # one (see enrichment/provider.py:active). BetterContact's key additionally powers
-    # Lead Finder *discovery*, which is billed nothing; Apollo's does not, so an
-    # Apollo-only install still needs the other key for discovery. They are not
-    # interchangeable at that leg, only at enrichment.
+    # BetterContact's key powers Lead Finder *discovery*, which is billed nothing, and the
+    # paid email lookup behind `--emails`.
     bettercontact_api_key: str = ""
-    apollo_api_key: str = ""
-
-    # Which finder resolves addresses when *both* keys are set. Blank means "decide from
-    # whichever key exists", which is the whole answer for a one-vendor install; it only
-    # has to be set to move an install that holds both.
-    email_finder: str = ""
 
     # The operator's own ISO-3166 alpha-2 jurisdiction — not to be confused with
     # `Lead.country_code`, the per-lead target country an ICP search surfaced someone
-    # under. Drives the email-jurisdiction rules (core/geo.py): whether we contribute to
-    # the contacts store (derived, `not is_eea_located` — never a stored toggle).
+    # under. Optional: an EEA/UK/CH country turns the contacts-store give-back off
+    # (core/geo.py:is_eea_located), any other country or none leaves it on.
     operator_country_code: str = ""
 
     # The campaign content: what this install sells, and to whom. The two things every
@@ -99,9 +90,8 @@ class SiteConfig:
 
     # Central contacts store (see openoutfind/contacts/). The token names this install to
     # the hub; blank means the run registers for one itself and keeps it for the length of
-    # the process. The URL is blank by default (falls back to DEFAULT_API_URL).
+    # the process.
     contacts_api_token: str = ""
-    contacts_api_url: str = ""
 
     @classmethod
     def load(cls) -> "SiteConfig":

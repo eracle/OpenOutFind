@@ -51,11 +51,31 @@ class TestAGivenRunIsReady:
 
         assert User.objects.get().email == "me@example.com"
 
-    def test_the_email_is_only_asked_for_while_there_is_no_operator(self, ready, monkeypatch):
-        readiness.check_ready()
-        monkeypatch.delenv(readiness.OPERATOR_EMAIL)
+    def test_the_email_is_optional(self, ready, monkeypatch):
+        """No email is an operator named `operator` with no hub identity — not a stop."""
+        from django.contrib.auth.models import User
 
+        monkeypatch.delenv(readiness.OPERATOR_EMAIL)
         assert readiness.missing_variables() == {}
+
+        with patch("openoutfind.contacts.service.register_operator") as register:
+            readiness.check_ready()
+
+        assert User.objects.get().username == "operator"
+        register.assert_not_called()
+
+    def test_an_email_given_later_fills_the_blank_once(self, ready, monkeypatch):
+        from django.contrib.auth.models import User
+
+        monkeypatch.delenv(readiness.OPERATOR_EMAIL)
+        readiness.check_ready()
+        monkeypatch.setenv(readiness.OPERATOR_EMAIL, "me@example.com")
+
+        with patch("openoutfind.contacts.service.register_operator") as register:
+            readiness.check_ready()
+
+        assert User.objects.get().email == "me@example.com"
+        register.assert_called_once()
 
     def test_the_model_is_pinged_every_run(self, ready):
         """Nothing is stored, so nothing is trusted from last time: a key rotated out
@@ -88,8 +108,13 @@ class TestItNamesEverythingMissingAtOnce:
 
         assert raised.value.error_type == ErrorType.ONBOARDING_INCOMPLETE
         for variable in ("OPENOUTFIND_PRODUCT_DOCS", "OPENOUTFIND_LLM_API_KEY",
-                         "OPENOUTFIND_BETTERCONTACT_API_KEY", "OPENOUTFIND_OPERATOR_COUNTRY"):
+                         "OPENOUTFIND_BETTERCONTACT_API_KEY", "OPENOUTFIND_ACCEPT_LEGAL_NOTICE"):
             assert variable in str(raised.value)
+
+    def test_the_operator_country_is_optional(self, ready, monkeypatch):
+        monkeypatch.delenv("OPENOUTFIND_OPERATOR_COUNTRY", raising=False)
+
+        assert readiness.missing_variables() == {}
 
     def test_one_missing_value_leaves_the_rest_satisfied(self, ready, monkeypatch):
         monkeypatch.delenv("OPENOUTFIND_BETTERCONTACT_API_KEY")
@@ -128,24 +153,3 @@ class TestTheLegalNotice:
             readiness.missing_variables()
 
         assert raised.value.error_type == ErrorType.BAD_CONFIG
-
-
-@pytest.mark.django_db
-class TestTheNewsletter:
-    """Consent is an explicit yes, and it is acted on once — when the operator row is
-    created, not on every run that carries the variable."""
-
-    def test_it_subscribes_on_an_explicit_yes(self, ready, monkeypatch):
-        monkeypatch.setenv(readiness.NEWSLETTER, "yes")
-
-        with patch("openoutfind.core.newsletter.subscribe_to_newsletter") as subscribe:
-            readiness.check_ready()
-            readiness.check_ready()
-
-        subscribe.assert_called_once_with("me@example.com")
-
-    def test_silence_subscribes_nobody(self, ready):
-        with patch("openoutfind.core.newsletter.subscribe_to_newsletter") as subscribe:
-            readiness.check_ready()
-
-        subscribe.assert_not_called()

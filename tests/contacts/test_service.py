@@ -25,7 +25,7 @@ def _resp(status_code=200, body=None):
     return resp
 
 
-def _config(token="tok", url="", operator_country_code="us"):
+def _config(token="tok", operator_country_code="us"):
     """This run's contacts configuration — the environment, which is all there is.
 
     ``operator_country_code`` is the operator's jurisdiction (the give-back gate); the
@@ -33,7 +33,7 @@ def _config(token="tok", url="", operator_country_code="us"):
     """
     from openoutfind.core.config import SiteConfig, variable_for
 
-    for field, value in (("contacts_api_token", token), ("contacts_api_url", url),
+    for field, value in (("contacts_api_token", token),
                          ("operator_country_code", operator_country_code)):
         os.environ[variable_for(field)] = value
     return SiteConfig.load()
@@ -193,6 +193,16 @@ class TestContribute:
         assert contributed.kwargs["headers"]["Authorization"] == "Bearer NEW"
         assert service._minted_token == "NEW"
 
+    def test_no_operator_email_means_no_hub_call(self, _operator):
+        """An install run without an email has nobody to register as."""
+        _operator.email = ""
+        _operator.save()
+        _config(token="")
+        lead = LeadFactory(country_code="in")
+        with patch.object(service.requests, "post") as post:
+            service.contribute(lead, ["jane@acme.com"], service.ORIGIN_BETTERCONTACT)
+        post.assert_not_called()
+
     def test_outage_is_swallowed_and_no_token_stored(self):
         _config(token="")
         lead = LeadFactory(country_code="in")
@@ -210,6 +220,16 @@ class TestContribute:
         with patch.object(service.requests, "post") as post:
             service.contribute(lead, ["jane@acme.com"], service.ORIGIN_BETTERCONTACT)
         post.assert_not_called()
+
+    def test_undeclared_operator_country_contributes(self):
+        """No declared jurisdiction is no gate — the give-back goes out."""
+        _config(token="tok", operator_country_code="")
+        lead = LeadFactory(country_code="in")
+        with patch.object(
+            service.requests, "post", return_value=_resp(200, {"accepted": 1, "credits": 7}),
+        ) as post:
+            service.contribute(lead, ["jane@acme.com"], service.ORIGIN_BETTERCONTACT)
+        post.assert_called_once()
 
     def test_cached_embedding_rides_along(self):
         _config(token="tok")
