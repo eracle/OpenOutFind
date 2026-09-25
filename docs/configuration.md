@@ -21,6 +21,7 @@ things before it starts working.
 |:---------|:------|:------|
 | `OPENOUTFIND_PRODUCT_DOCS` | campaign | what it does, who it's for, the problem it solves |
 | `OPENOUTFIND_CAMPAIGN_TARGET` | campaign | who you're going after and the outcome you want |
+| `OPENOUTFIND_MAX_PER_COMPANY` | campaign | optional. The most qualified leads one company may supply, e.g. `2`. Once a company has that many, discovery stops taking its rows and its stored leads are never put up for a verdict. Unset, no cap; anything but a whole number ≥ 1 stops the run |
 | `OPENOUTFIND_AI_MODEL` | llm | `provider:model`, e.g. `anthropic:claude-sonnet-4-5-20250929`; bare `gpt-*`/`claude-*`/`gemini-*` are auto-prefixed. Providers: openai/anthropic/google/groq/mistral/cohere/openai_compatible |
 | `OPENOUTFIND_LLM_API_KEY` | llm | **verified by one live ping before every run** — a key rotated out from under a timer fails before a lead is chosen, not mid-pass |
 | `OPENOUTFIND_LLM_API_BASE` | llm | required for `openai_compatible:*`, ignored otherwise |

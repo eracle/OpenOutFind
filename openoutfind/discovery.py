@@ -265,6 +265,19 @@ def company_for(row: dict):
                                for field, key in COMPANY_FIELDS.items()})
 
 
+def company_key_for(row: dict) -> str:
+    """The ``Company.key`` the row's employer is filed under, ``""`` if it names none.
+
+    Read without creating the row, so discovery can check a company before accepting it.
+    """
+    from openoutfind.crm.models import Company
+
+    name = _clean(row.get(COMPANY_FIELDS["name"]))
+    if Company.is_placeholder(name):
+        return ""
+    return Company.key_for(name, _clean(row.get(COMPANY_FIELDS["domain"])))
+
+
 def _clean(value) -> str | None:
     """A provider string, or ``None`` — which is what "they didn't tell us" means."""
     text = str(value).strip() if value is not None else ""

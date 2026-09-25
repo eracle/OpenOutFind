@@ -88,6 +88,10 @@ class SiteConfig:
     product_docs: str = ""
     campaign_target: str = ""
 
+    # Optional: the most qualified leads one company may supply (core/company_cap.py). A
+    # campaign's answer like the two above, fixed for its life. Blank means no cap.
+    max_per_company: str = ""
+
     # Central contacts store (see openoutfind/contacts/). The token names this install to
     # the hub; blank means the run registers for one itself and keeps it for the length of
     # the process.

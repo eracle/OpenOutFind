@@ -40,7 +40,7 @@ these — which is also why nothing ever has to be re-entered in a container or 
 
 | Group | Environment variables |
 |------|----------------------|
-| campaign | `OPENOUTFIND_PRODUCT_DOCS`, `OPENOUTFIND_CAMPAIGN_TARGET` |
+| campaign | `OPENOUTFIND_PRODUCT_DOCS`, `OPENOUTFIND_CAMPAIGN_TARGET`; optional `OPENOUTFIND_MAX_PER_COMPANY` — at most N fits from one company |
 | llm | `OPENOUTFIND_AI_MODEL`, `OPENOUTFIND_LLM_API_KEY` |
 | bettercontact | `OPENOUTFIND_BETTERCONTACT_API_KEY` |
 | account | optional: `OPENOUTFIND_OPERATOR_EMAIL` — the install's contacts-store identity; `OPENOUTFIND_OPERATOR_COUNTRY` — an EEA/UK/CH country stops contributing to the contacts store |

@@ -52,14 +52,18 @@ def fetch_qualification_candidates():
     this refuses to create.
 
     A lead on this run's ``--exclude`` list is left out as well, so it is never put up
-    for a verdict — by the LLM or, under ``--agent-qualify``, by the calling agent.
+    for a verdict — by the LLM or, under ``--agent-qualify``, by the calling agent. So is
+    a lead whose company already holds the campaign's cap of fits
+    (``core/company_cap.py``); it stays stored, it is only never judged.
     """
+    from openoutfind.core.company_cap import full_company_keys
     from openoutfind.core.exclude import is_excluded
     from openoutfind.crm.models import Lead
 
     leads = (
         Lead.objects.filter(disqualified=False, synthetic=False, embedding__isnull=False)
         .exclude(deal__isnull=False)
+        .exclude(company__key__in=full_company_keys())
         .order_by("creation_date")
     )
     return [lead for lead in leads if not is_excluded(lead.profile_url)]

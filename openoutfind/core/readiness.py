@@ -39,6 +39,7 @@ from openoutfind.core.config import (
     SiteConfig,
     missing,
 )
+from openoutfind.core import company_cap
 from openoutfind.core.errors import ErrorType, OpenOutFindError
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,9 @@ def check_ready() -> None:
             f"Optional: {ENV_PREFIX}LLM_API_BASE (required for openai_compatible:*), "
             f"{OPERATOR_EMAIL}, {ENV_PREFIX}OPERATOR_COUNTRY.",
         )
+
+    # A malformed cap stops the run here, before any page is fetched or verdict asked.
+    company_cap.limit()
 
     if not _agent_qualify_active():
         _check_llm()

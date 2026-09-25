@@ -317,7 +317,7 @@ and has nothing to remember. The wizard is not gone — it belongs to
 in its own `SiteConfig` and exports these names to both children.
 
 ```
-campaign        OPENOUTFIND_PRODUCT_DOCS, OPENOUTFIND_CAMPAIGN_TARGET
+campaign        OPENOUTFIND_PRODUCT_DOCS, OPENOUTFIND_CAMPAIGN_TARGET  (+ MAX_PER_COMPANY, optional)
 llm             OPENOUTFIND_AI_MODEL, OPENOUTFIND_LLM_API_KEY  (+ LLM_API_BASE, required for openai_compatible:*)
 bettercontact   OPENOUTFIND_BETTERCONTACT_API_KEY
 account         OPENOUTFIND_OPERATOR_EMAIL, OPENOUTFIND_OPERATOR_COUNTRY  (optional)

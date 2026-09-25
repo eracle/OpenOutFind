@@ -42,19 +42,27 @@ def _harvest(node, rows: list[dict]) -> int:
     "nothing left here" (that was bug 8: a full page of duplicates halting the engine with
     the frontier wide open). Rows that fail ``is_live_profile`` are dropped here, after the
     empty-page check, so a page of forgotten profiles is still a page and the node still
-    advances past it.
+    advances past it. So are rows from a company that already holds the campaign's cap of
+    fits (``core/company_cap.py``), which is how a search draining one team stops yielding.
     """
+    from openoutfind.core.company_cap import full_company_keys
     from openoutfind.core.db.leads import create_lead
-    from openoutfind.discovery import is_live_profile, keyword_terms
+    from openoutfind.discovery import company_key_for, is_live_profile, keyword_terms
 
     live = [row for row in rows if is_live_profile(row)]
     logger.debug("%d of %d row(s) dropped — no headline", len(rows) - len(live), len(rows))
+
+    full = full_company_keys()
+    accepted = [row for row in live if company_key_for(row) not in full]
+    if len(accepted) < len(live):
+        logger.debug("%d row(s) dropped — their company is at the cap",
+                     len(live) - len(accepted))
 
     terms = keyword_terms(node.pairs)
     return sum(
         create_lead(row, country_code=node.country_code,
                     discovered_by=node, query_terms=terms)
-        for row in live
+        for row in accepted
     )
 
 
