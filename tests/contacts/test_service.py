@@ -231,23 +231,10 @@ class TestContribute:
             service.contribute(lead, ["jane@acme.com"], service.ORIGIN_BETTERCONTACT)
         post.assert_called_once()
 
-    def test_the_profile_only_vector_rides_along(self):
-        """Not ``lead.embedding``: that one carries the retrieving query's terms."""
+    def test_no_vector_rides_along(self):
+        """The vector reaches the hub with the discovery page, not a second time here."""
         _config(token="tok")
-        lead = LeadFactory(profile_url="jane-doe", country_code="in",
-                           profile_text="head of ops acme")
-        lead.embedding_array = np.arange(384, dtype=np.float32)
-        with patch("openoutfind.core.ml.embeddings.embed_text",
-                   return_value=np.full(384, 0.5)) as embed, patch.object(
-            service.requests, "post", return_value=_resp(200, {"accepted": 1, "credits": 7}),
-        ) as post:
-            service.contribute(lead, ["jane@acme.com"], service.ORIGIN_BETTERCONTACT)
-        embed.assert_called_once_with("head of ops acme")
-        assert post.call_args.kwargs["json"]["embedding"] == [0.5] * 384
-
-    def test_no_profile_text_means_no_vector(self):
-        _config(token="tok")
-        lead = LeadFactory(country_code="in", profile_text="")
+        lead = LeadFactory(country_code="in", profile_text="head of ops acme", embedded=True)
         with patch.object(
             service.requests, "post", return_value=_resp(200, {"accepted": 1, "credits": 7}),
         ) as post:
@@ -278,16 +265,7 @@ def _lead_finder_row(url="https://www.linkedin.com/in/jane-doe", **over):
     return row
 
 
-@pytest.fixture
-def _profiles_reachable():
-    """The one-strike breaker is per process; each test starts with the hub up."""
-    service._profiles_unreachable = False
-    yield
-    service._profiles_unreachable = False
-
-
 @pytest.mark.django_db
-@pytest.mark.usefixtures("_profiles_reachable")
 class TestShareProfiles:
     def _share(self, rows, country="us", response=None):
         with patch.object(
@@ -369,21 +347,16 @@ class TestShareProfiles:
         _config(token="tok")
         self._share([_lead_finder_row(contact_linkedin_profile_url="")]).assert_not_called()
 
-    def test_an_outage_is_swallowed_and_trips_the_breaker(self):
-        """One timeout per run at most: a down hub must not slow the walk page after page."""
+    def test_an_outage_is_swallowed(self):
         _config(token="tok")
         with patch.object(
-            service.requests, "post", side_effect=requests.Timeout("slow"),
-        ) as post:
+            service.requests, "post", side_effect=requests.ConnectionError("down"),
+        ):
             service.share_profiles([_lead_finder_row()], "us")  # must not raise
-            service.share_profiles([_lead_finder_row()], "us")
-        post.assert_called_once()
-        assert post.call_args.kwargs["timeout"] == service._PROFILES_TIMEOUT_S
 
     def test_an_error_status_is_swallowed(self):
         _config(token="tok")
         self._share([_lead_finder_row()], response=_resp(500))  # must not raise
-        assert service._profiles_unreachable
 
 
 # ── identity, minted at onboarding ───────────────────────────────────

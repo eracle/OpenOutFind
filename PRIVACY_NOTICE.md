@@ -26,7 +26,7 @@ Throughout this notice, an **operator** is a person running a self-hosted instan
 | Country code | `in` | The country the search targeted; drives the geographic exclusion below. |
 | Professional fields | name, headline, job title, seniority, industry, state/region and country, employer name, domain and industry | What the data provider returned for the search, kept so a person can be judged against a business's ideal customer without searching the provider again. |
 
-With both kinds of record the store also holds a **384-dimension numeric profile vector** (an "embedding"): a compact mathematical representation of the professional fields, **computed on the operator's own machine**, used to rank people by how closely they resemble a business's ideal customer. It records which operator token sent each record (provenance), which software build sent it, and when.
+With a profile record the store also holds a **384-dimension numeric profile vector** (an "embedding"): a compact mathematical representation of the professional fields, **computed on the operator's own machine**, used to rank people by how closely they resemble a business's ideal customer. Email records sent by older versions of the software may carry one too. It records which operator token sent each record (provenance), which software build sent it, and when.
 
 **What is _not_ collected:** no phone number, postal address, personal email, photo, or free-text description of the employer; no special-category data.
 
@@ -55,7 +55,7 @@ The maintainer does **not** scrape any website, buy data, or run searches of its
 
 Where data-protection law applies, the store relies on **legitimate interest** (Art. 6(1)(f) GDPR and equivalents) for **resolution** (serving a known work email) and for **finding prospects** (profile records): **facilitating business-to-business professional communication using professional contact data**, by disclosing existing professional contacts to operators who carry out their own outreach and by identifying professionals who match a business's customer profile. This does not involve profiling for the store's own marketing, automated decision-making with legal or similarly significant effects, or the **sending** of marketing email by the store — operators send from their own infrastructure and are responsible for their own sends and the anti-spam law that governs them.
 
-A legitimate-interest assessment balances that interest against the rights of the people in the store. The safeguards that keep the balance reasonable are: the **geographic exclusion** (people located in the EU/EEA, UK, or Switzerland — or whose location cannot be determined — are never written to the store, so they are never in the searchable set); **data minimisation** (professional fields only — no phone, address or personal contact detail, and the provider's free-text employer description is dropped before it is sent); a **twelve-month retention limit** on profile records; the **B2B-only, professional-context** scope, with no special-category and no consumer data; and the **objection and suppression** rights below, honoured across the whole store. Operators contributing or resolving data may be controllers or joint controllers and carry their own responsibilities.
+A legitimate-interest assessment balances that interest against the rights of the people in the store. The safeguards that keep the balance reasonable are: the **geographic exclusion** (people located in the EU/EEA, UK, or Switzerland — or whose location cannot be determined — are never written to the store, so they are never in the searchable set); **data minimisation** (professional fields only — no phone, address or personal contact detail, and the provider's free-text employer description is dropped before it is sent); the **B2B-only, professional-context** scope, with no special-category and no consumer data; and the **objection and suppression** rights below, honoured across the whole store. Operators contributing or resolving data may be controllers or joint controllers and carry their own responsibilities.
 
 ## Your rights and how to exercise them
 
@@ -67,7 +67,7 @@ Suppression is recorded immediately as a request; the suppressed identifiers are
 
 ## Retention
 
-Email records persist while they remain useful for resolution and are refreshed when re-contributed. **Profile records are deleted twelve months after they were received**; a person who appears in a later search is stored again with that later date. A suppressed record is removed from served results immediately and erased from source on the maintenance cycle, and a suppressed profile identifier is refused at entry from then on.
+Email records persist while they remain useful for resolution and are refreshed when re-contributed. Profile records persist while they remain useful for finding prospects; each is dated, and a person who appears in a later search is stored again with that later date. A suppressed record is removed from served results immediately and erased from source on the maintenance cycle, and a suppressed profile identifier is refused at entry from then on.
 
 ## Contact
 

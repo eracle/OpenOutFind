@@ -143,15 +143,11 @@ class TestHarvest:
 
         c = _campaign(contacts_api_token="tok")
         node = _node(c, [("lead_job_title", "founder")], country_code="us")
-        service._profiles_unreachable = False
-        try:
-            with patch.object(discover_mod, "_fetch", return_value=Page([_row()], 10)), \
-                    patch.object(service.requests, "post",
-                                 side_effect=requests.ConnectionError("down")) as post:
-                assert discover(c) is True
-            post.assert_called_once()
-        finally:
-            service._profiles_unreachable = False
+        with patch.object(discover_mod, "_fetch", return_value=Page([_row()], 10)), \
+                patch.object(service.requests, "post",
+                             side_effect=requests.ConnectionError("down")) as post:
+            assert discover(c) is True
+        post.assert_called_once()
 
         assert Lead.objects.count() == 1
         node.refresh_from_db()

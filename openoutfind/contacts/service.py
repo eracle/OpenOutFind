@@ -117,8 +117,9 @@ def contribute(lead, emails: list[str], origin: str) -> None:
     ones reuse it.
 
     Honors the operator's jurisdiction: an operator who declares an EEA/UK/CH country
-    does not contribute, so the whole give-back is skipped (no email, no vector — and
-    so no give-to-get credit). An operator who declares none contributes; the server
+    does not contribute, so the whole give-back is skipped (no email, and so no
+    give-to-get credit). No vector rides along: the person's vector reaches the hub
+    with their discovery page (``share_profiles``). An operator who declares none contributes; the server
     re-gates every record authoritatively.
     """
     operator_country = SiteConfig.load().operator_country_code
@@ -141,7 +142,6 @@ def contribute(lead, emails: list[str], origin: str) -> None:
         "origin": origin,
         **_build_fields(),
     }
-    _attach_embedding(lead, record)
     token = token_in_hand(SiteConfig.load())
     if token:
         _send("contribute", record, lead, headers=_auth(token))
@@ -149,33 +149,12 @@ def contribute(lead, emails: list[str], origin: str) -> None:
         _register(record, lead)
 
 
-def _attach_embedding(lead, record: dict) -> None:
-    """Add the profile-only vector to *record*, in place, when there is text to embed.
-
-    **Not ``lead.embedding``.** That vector folds in the retrieving node's query terms,
-    so it belongs to one campaign's walk; the hub wants the person, which is the same
-    whichever install finds them. Re-embedding the stored ``profile_text`` is one short
-    local call. The 384 floats go on the wire as a JSON list; the hub packs them to f16
-    bytes and validates the length.
-    """
-    from openoutfind.core.ml.embeddings import embed_text
-
-    if not lead.profile_text:
-        return
-    record["embedding"] = [float(x) for x in embed_text(lead.profile_text)]
-
-
 # ── Profiles: every Lead Finder row, given back ──
 # A discovery page is the only place a whole page passes through before most of it is
 # thrown away, and Lead Finder's free access can close on any day. Sending the page to
 # the hub is what lets the pool outlive the index: the lake can re-embed and re-qualify
-# from what is sent here without paging Lead Finder again.
-
-# Short on purpose, and one strike: this call sits inside the discovery walk, and a hub
-# that is down must not cost a run more than one timeout. After a failure the process
-# stops sending pages for the rest of its life; the next run tries again.
-_PROFILES_TIMEOUT_S = 5
-_profiles_unreachable = False
+# from what is sent here without paging Lead Finder again. The profile vector travels
+# here and only here — a contribution carries the address, not a second copy of it.
 
 
 def share_profiles(rows: list[dict], country_code: str) -> None:
@@ -189,9 +168,7 @@ def share_profiles(rows: list[dict], country_code: str) -> None:
     The same gates as ``contribute``: an operator in the EEA/UK/CH sends nothing, and a
     page searched in one — or in no named country — is not sent. The hub gates again.
     """
-    global _profiles_unreachable
-
-    if _profiles_unreachable or is_eea_located(country_code):
+    if is_eea_located(country_code):
         return
     config = SiteConfig.load()
     operator_country = config.operator_country_code
@@ -205,15 +182,7 @@ def share_profiles(rows: list[dict], country_code: str) -> None:
         return
 
     body = {"profiles": _profile_records(rows, country_code), **_build_fields()}
-    try:
-        resp = requests.post(_endpoint("profiles"), json=body, headers=_auth(token),
-                             timeout=_PROFILES_TIMEOUT_S)
-        resp.raise_for_status()
-    except requests.RequestException as exc:
-        _profiles_unreachable = True
-        logger.info("hub: profiles unavailable — not sending pages this run: %s", exc)
-        return
-    logger.debug("hub: shared %s of %d profile(s)", resp.json().get("accepted"), len(rows))
+    _send("profiles", body, headers=_auth(token))
 
 
 def _profile_records(rows: list[dict], country_code: str) -> list[dict]:
