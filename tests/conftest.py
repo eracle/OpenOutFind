@@ -44,7 +44,9 @@ def _mock_embeddings(request):
     if "no_embed_mock" in request.keywords:
         yield
     else:
-        with patch("openoutfind.core.ml.embeddings.embed_text", return_value=np.ones(384)):
+        with patch("openoutfind.core.ml.embeddings.embed_text", return_value=np.ones(384)), \
+                patch("openoutfind.core.ml.embeddings.embed_texts",
+                      side_effect=lambda texts: np.ones((len(texts), 384))):
             yield
 
 

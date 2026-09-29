@@ -231,24 +231,159 @@ class TestContribute:
             service.contribute(lead, ["jane@acme.com"], service.ORIGIN_BETTERCONTACT)
         post.assert_called_once()
 
-    def test_cached_embedding_rides_along(self):
+    def test_the_profile_only_vector_rides_along(self):
+        """Not ``lead.embedding``: that one carries the retrieving query's terms."""
         _config(token="tok")
-        lead = LeadFactory(profile_url="jane-doe", country_code="in")
+        lead = LeadFactory(profile_url="jane-doe", country_code="in",
+                           profile_text="head of ops acme")
         lead.embedding_array = np.arange(384, dtype=np.float32)
-        with patch.object(
+        with patch("openoutfind.core.ml.embeddings.embed_text",
+                   return_value=np.full(384, 0.5)) as embed, patch.object(
             service.requests, "post", return_value=_resp(200, {"accepted": 1, "credits": 7}),
         ) as post:
             service.contribute(lead, ["jane@acme.com"], service.ORIGIN_BETTERCONTACT)
-        assert post.call_args.kwargs["json"]["embedding"] == list(range(384))
+        embed.assert_called_once_with("head of ops acme")
+        assert post.call_args.kwargs["json"]["embedding"] == [0.5] * 384
 
-    def test_uncached_embedding_is_omitted(self):
+    def test_no_profile_text_means_no_vector(self):
         _config(token="tok")
-        lead = LeadFactory(country_code="in")  # no embedding cached
+        lead = LeadFactory(country_code="in", profile_text="")
         with patch.object(
             service.requests, "post", return_value=_resp(200, {"accepted": 1, "credits": 7}),
         ) as post:
             service.contribute(lead, ["jane@acme.com"], service.ORIGIN_BETTERCONTACT)
         assert "embedding" not in post.call_args.kwargs["json"]
+
+
+# ── profiles: every discovery page, given back ───────────────────────
+
+
+def _lead_finder_row(url="https://www.linkedin.com/in/jane-doe", **over):
+    row = {
+        "contact_linkedin_profile_url": url,
+        "contact_full_name": "Jane Doe",
+        "contact_headline": "Head of Ops at Acme",
+        "contact_job_title": "Head of Operations",
+        "contact_industry": "Software",
+        "contact_seniority": "Head",
+        "contact_location_state": "California",
+        "contact_location_country": "United states",
+        "company_name": "Acme",
+        "company_domain": "acme.com",
+        "company_industry": "Software",
+        "company_description": "Meta builds technologies that help people connect.",
+        "company_keywords": "social, metaverse",
+    }
+    row.update(over)
+    return row
+
+
+@pytest.fixture
+def _profiles_reachable():
+    """The one-strike breaker is per process; each test starts with the hub up."""
+    service._profiles_unreachable = False
+    yield
+    service._profiles_unreachable = False
+
+
+@pytest.mark.django_db
+@pytest.mark.usefixtures("_profiles_reachable")
+class TestShareProfiles:
+    def _share(self, rows, country="us", response=None):
+        with patch.object(
+            service.requests, "post",
+            return_value=response or _resp(200, {"accepted": len(rows)}),
+        ) as post:
+            service.share_profiles(rows, country)
+        return post
+
+    def test_a_page_is_one_request_to_the_profiles_endpoint(self):
+        _config(token="tok")
+        post = self._share([_lead_finder_row(), _lead_finder_row(url="https://x/in/b")])
+        post.assert_called_once()
+        assert post.call_args.args[0].endswith("/api/v2/profiles/")
+        assert post.call_args.kwargs["headers"]["Authorization"] == "Bearer tok"
+        assert len(post.call_args.kwargs["json"]["profiles"]) == 2
+
+    def test_a_record_carries_its_fields_apart_and_a_tagged_vector(self):
+        _config(token="tok")
+        record = self._share([_lead_finder_row()]).call_args.kwargs["json"]["profiles"][0]
+        assert record["public_identifier"] == "https://www.linkedin.com/in/jane-doe"
+        assert record["country_code"] == "us"
+        assert record["fields"]["contact_full_name"] == "Jane Doe"
+        assert record["fields"]["company_domain"] == "acme.com"
+        assert len(record["embedding"]) == 384
+        assert record["embedding_model"] == "BAAI/bge-small-en-v1.5"
+
+    def test_the_vector_is_the_profile_alone(self):
+        """No query terms: the same person gets the same vector from any install."""
+        from openoutfind.discovery import profile_text_for
+
+        _config(token="tok")
+        row = _lead_finder_row()
+        with patch("openoutfind.core.ml.embeddings.embed_texts",
+                   side_effect=lambda texts: np.ones((len(texts), 384))) as embed:
+            self._share([row])
+        embed.assert_called_once_with([profile_text_for(row)])
+
+    def test_the_sent_fields_rebuild_the_qualifiers_text(self):
+        """The lake can re-derive ``profile_text`` without paging Lead Finder."""
+        from openoutfind.core.db.leads import create_lead
+        from openoutfind.crm.models import Lead
+        from openoutfind.discovery import profile_text_for
+
+        _config(token="tok")
+        row = _lead_finder_row()
+        create_lead(row, country_code="us")
+        sent = self._share([row]).call_args.kwargs["json"]["profiles"][0]["fields"]
+        assert profile_text_for(sent) == Lead.objects.get().profile_text
+
+    def test_the_company_free_text_stays_home(self):
+        _config(token="tok")
+        fields = self._share([_lead_finder_row()]).call_args.kwargs["json"]["profiles"][0]["fields"]
+        assert "company_description" not in fields
+        assert "company_keywords" not in fields
+
+    def test_the_build_rides_on_the_envelope(self):
+        _config(token="tok")
+        with patch.object(service.version, "commit_sha", return_value="abc123"):
+            body = self._share([_lead_finder_row()]).call_args.kwargs["json"]
+        assert body["client_sha"] == "abc123"
+
+    @pytest.mark.parametrize("country", ["de", "gb", "ch", ""])
+    def test_a_page_searched_in_eea_uk_ch_or_nowhere_is_not_sent(self, country):
+        _config(token="tok")
+        self._share([_lead_finder_row()], country=country).assert_not_called()
+
+    def test_an_eea_operator_sends_nothing(self):
+        _config(token="tok", operator_country_code="fr")
+        self._share([_lead_finder_row()]).assert_not_called()
+
+    def test_no_token_sends_nothing(self, _operator):
+        _operator.email = ""
+        _operator.save()
+        _config(token="")
+        self._share([_lead_finder_row()]).assert_not_called()
+
+    def test_rows_without_a_profile_url_are_not_sent(self):
+        _config(token="tok")
+        self._share([_lead_finder_row(contact_linkedin_profile_url="")]).assert_not_called()
+
+    def test_an_outage_is_swallowed_and_trips_the_breaker(self):
+        """One timeout per run at most: a down hub must not slow the walk page after page."""
+        _config(token="tok")
+        with patch.object(
+            service.requests, "post", side_effect=requests.Timeout("slow"),
+        ) as post:
+            service.share_profiles([_lead_finder_row()], "us")  # must not raise
+            service.share_profiles([_lead_finder_row()], "us")
+        post.assert_called_once()
+        assert post.call_args.kwargs["timeout"] == service._PROFILES_TIMEOUT_S
+
+    def test_an_error_status_is_swallowed(self):
+        _config(token="tok")
+        self._share([_lead_finder_row()], response=_resp(500))  # must not raise
+        assert service._profiles_unreachable
 
 
 # ── identity, minted at onboarding ───────────────────────────────────

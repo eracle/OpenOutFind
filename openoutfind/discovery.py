@@ -252,6 +252,20 @@ COMPANY_FIELDS = {
 }
 
 
+# What a discovery row gives back to the hub (``contacts.service.share_profiles``): the
+# text fields, the person and the employer — **each kept apart**, so the lake can rebuild
+# ``profile_text`` under a future ``TEXT_FIELDS`` without paging Lead Finder again. The
+# stapled company free text (``company_description``, ``company_keywords``) is left out
+# by construction: it is someone else's data about what is often the wrong company.
+SHARED_FIELDS = tuple(dict.fromkeys(
+    [*TEXT_FIELDS, *PERSON_FIELDS.values(), *COMPANY_FIELDS.values()]))
+
+
+def shared_fields(row: dict) -> dict:
+    """The row's ``SHARED_FIELDS`` that it reports, as strings, by their Lead Finder names."""
+    return {key: str(row[key]) for key in SHARED_FIELDS if row.get(key)}
+
+
 def person_for(row: dict) -> dict:
     """The row's person fields as ``Lead`` column values, ``None`` where unreported."""
     return {field: _clean(row.get(key)) for field, key in PERSON_FIELDS.items()}

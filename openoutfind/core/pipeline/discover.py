@@ -44,7 +44,12 @@ def _harvest(node, rows: list[dict]) -> int:
     empty-page check, so a page of forgotten profiles is still a page and the node still
     advances past it. So are rows from a company that already holds the campaign's cap of
     fits (``core/company_cap.py``), which is how a search draining one team stops yielding.
+
+    The whole page — dropped rows and known profiles included — is then given back to the
+    hub (``share_profiles``), best-effort: what this campaign has no use for is still a
+    person the pool did not have, or a newer copy of one it did.
     """
+    from openoutfind.contacts.service import share_profiles
     from openoutfind.core.company_cap import full_company_keys
     from openoutfind.core.db.leads import create_lead
     from openoutfind.discovery import company_key_for, is_live_profile, keyword_terms
@@ -59,11 +64,13 @@ def _harvest(node, rows: list[dict]) -> int:
                      len(live) - len(accepted))
 
     terms = keyword_terms(node.pairs)
-    return sum(
+    created = sum(
         create_lead(row, country_code=node.country_code,
                     discovered_by=node, query_terms=terms)
         for row in accepted
     )
+    share_profiles(rows, node.country_code)
+    return created
 
 
 def _ensure_frontier(site_config, store) -> list[tuple[str, str]]:

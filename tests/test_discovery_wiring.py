@@ -123,6 +123,40 @@ class TestHarvest:
         assert node.state == QueryNode.State.FIRED
         assert node.next_offset == select.DISCOVERY_PAGE_SIZE
 
+    def test_the_whole_page_is_given_back_to_the_hub(self, db):
+        """Dropped rows and known profiles too — the pool wants every person it sees."""
+        c = _campaign()
+        node = _node(c, [("lead_job_title", "founder")], country_code="us")
+        Lead.objects.create(profile_url="https://linkedin.com/in/a", profile_text="x")
+        rows = [_row(), _row(url="https://linkedin.com/in/b", headline=None)]
+
+        with patch.object(discover_mod, "_fetch", return_value=Page(rows, 10)), \
+                patch("openoutfind.contacts.service.share_profiles") as share:
+            assert discover(c) is True
+
+        share.assert_called_once_with(rows, "us")
+
+    def test_a_hub_outage_changes_nothing_about_the_walk(self, db):
+        import requests
+
+        from openoutfind.contacts import service
+
+        c = _campaign(contacts_api_token="tok")
+        node = _node(c, [("lead_job_title", "founder")], country_code="us")
+        service._profiles_unreachable = False
+        try:
+            with patch.object(discover_mod, "_fetch", return_value=Page([_row()], 10)), \
+                    patch.object(service.requests, "post",
+                                 side_effect=requests.ConnectionError("down")) as post:
+                assert discover(c) is True
+            post.assert_called_once()
+        finally:
+            service._profiles_unreachable = False
+
+        assert Lead.objects.count() == 1
+        node.refresh_from_db()
+        assert node.next_offset == select.DISCOVERY_PAGE_SIZE
+
     def test_a_row_without_a_headline_never_becomes_a_lead(self, db):
         # A headline-less row is a forgotten profile. Dropping it must not read as an
         # empty page: the node still advances, and the walk still reports that it moved.

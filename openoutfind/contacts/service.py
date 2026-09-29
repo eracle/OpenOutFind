@@ -2,8 +2,9 @@
 """The central contacts store (the hub) — ask the hub before paying BetterContact,
 give back what we find.
 
-Two best-effort calls; a missing token or an outage degrades to a no-op and never
-breaks outreach. The store caches ``public_identifier -> email`` so the network's
+Best-effort calls; a missing token or an outage degrades to a no-op and never
+breaks outreach. Two give back: ``contribute`` sends a resolved address, and
+``share_profiles`` sends every row of a discovery page. The store caches ``public_identifier -> email`` so the network's
 paid + harvested resolutions lower everyone's BetterContact spend as coverage grows.
 
 The geo-gate that keeps EEA/UK/CH out of the store is enforced **server-side** (the
@@ -149,17 +150,90 @@ def contribute(lead, emails: list[str], origin: str) -> None:
 
 
 def _attach_embedding(lead, record: dict) -> None:
-    """Add the cached profile vector to *record*, in place, when it's in hand.
+    """Add the profile-only vector to *record*, in place, when there is text to embed.
 
-    The operator's opt-in is already checked in ``contribute``, so this only asks
-    whether a vector exists. Reads the cached bytes (``lead.embedding``) — never
-    ``get_embedding``, which would re-scrape — so a lead that was never embedded
-    contributes nothing extra. The 384 floats go on the wire as a JSON list; the
-    hub packs them to f16 bytes and validates the length.
+    **Not ``lead.embedding``.** That vector folds in the retrieving node's query terms,
+    so it belongs to one campaign's walk; the hub wants the person, which is the same
+    whichever install finds them. Re-embedding the stored ``profile_text`` is one short
+    local call. The 384 floats go on the wire as a JSON list; the hub packs them to f16
+    bytes and validates the length.
     """
-    if lead.embedding is None:
+    from openoutfind.core.ml.embeddings import embed_text
+
+    if not lead.profile_text:
         return
-    record["embedding"] = lead.embedding_array.tolist()
+    record["embedding"] = [float(x) for x in embed_text(lead.profile_text)]
+
+
+# ── Profiles: every Lead Finder row, given back ──
+# A discovery page is the only place a whole page passes through before most of it is
+# thrown away, and Lead Finder's free access can close on any day. Sending the page to
+# the hub is what lets the pool outlive the index: the lake can re-embed and re-qualify
+# from what is sent here without paging Lead Finder again.
+
+# Short on purpose, and one strike: this call sits inside the discovery walk, and a hub
+# that is down must not cost a run more than one timeout. After a failure the process
+# stops sending pages for the rest of its life; the next run tries again.
+_PROFILES_TIMEOUT_S = 5
+_profiles_unreachable = False
+
+
+def share_profiles(rows: list[dict], country_code: str) -> None:
+    """Send one discovery page to the hub — best-effort, non-EEA only, no credit.
+
+    Every row goes, a person this install already knew included: a new fetch of a known
+    profile is still news, and the hub dates each copy. Each row carries its fields
+    separately (``shared_fields``), the searched country and the profile-only vector
+    tagged with its model.
+
+    The same gates as ``contribute``: an operator in the EEA/UK/CH sends nothing, and a
+    page searched in one — or in no named country — is not sent. The hub gates again.
+    """
+    global _profiles_unreachable
+
+    if _profiles_unreachable or is_eea_located(country_code):
+        return
+    config = SiteConfig.load()
+    operator_country = config.operator_country_code
+    if operator_country and is_eea_located(operator_country):
+        return
+    rows = [row for row in rows if row.get("contact_linkedin_profile_url")]
+    if not rows:
+        return
+    token = token_in_hand(config)
+    if not token:
+        return
+
+    body = {"profiles": _profile_records(rows, country_code), **_build_fields()}
+    try:
+        resp = requests.post(_endpoint("profiles"), json=body, headers=_auth(token),
+                             timeout=_PROFILES_TIMEOUT_S)
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        _profiles_unreachable = True
+        logger.info("hub: profiles unavailable — not sending pages this run: %s", exc)
+        return
+    logger.debug("hub: shared %s of %d profile(s)", resp.json().get("accepted"), len(rows))
+
+
+def _profile_records(rows: list[dict], country_code: str) -> list[dict]:
+    """The wire records for *rows*, each with its profile-only vector."""
+    from openoutfind.core.conf import CAMPAIGN_CONFIG
+    from openoutfind.core.ml.embeddings import embed_texts
+    from openoutfind.discovery import profile_text_for, shared_fields
+
+    vectors = embed_texts([profile_text_for(row) for row in rows])
+    model = CAMPAIGN_CONFIG["embedding_model"]
+    return [
+        {
+            "public_identifier": row["contact_linkedin_profile_url"],
+            "country_code": country_code,
+            "fields": shared_fields(row),
+            "embedding": [float(x) for x in vector],
+            "embedding_model": model,
+        }
+        for row, vector in zip(rows, vectors)
+    ]
 
 
 def register_operator() -> bool:
