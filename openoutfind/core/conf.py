@@ -17,7 +17,7 @@ PROMPTS_DIR = Path(__file__).parent / "templates" / "prompts"
 # this file. They went to OpenOutSend with the code they governed.
 #
 # They are worth knowing about if anything here ever grows an outbound leg again,
-# because the reasoning was hard-won and is recorded in `cold_outreach/README.md`
+# because the reasoning was hard-won and is recorded in `openoutsend/core/conf.py`
 # on that side: receivers punish *rate* and *volume* separately and a recipient
 # reads the *hour*, so one guard could not have covered the other two.
 #
