@@ -83,5 +83,6 @@ The boundary is **one-way**. Leads leave; nothing comes back. There is no inboun
 Sections 6–8 of this page described the opener, the reply loop and their terminal states:
 `READY_TO_EMAIL → EMAILED → COMPLETED / UNSUBSCRIBED`, driven by one outreach agent doing Mom Test
 research, behind three send guards (working hours, per-box spacing, a measured daily cap). All of it
-moved to [OpenOutSend](https://github.com/eracle/OpenOutSend) under `cold_outreach/`,
-along with the freemium promo campaign that ran the same funnel from the operator's own mailbox.
+moved to [OpenOutSend](https://github.com/eracle/OpenOutSend), the `openoutsend` package. The
+freemium promo campaign that ran the same funnel from the operator's own mailbox did not move: it
+was deleted.

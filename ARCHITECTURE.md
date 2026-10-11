@@ -42,7 +42,7 @@ wiring points (the cycle's hierarchy).
 the three send guards and two pipeline steps; `core` carried the outreach agent and the sending
 window; `chat` and `legacy` were model-less apps holding migration history. All of it is gone.
 The sending half was **ported to [OpenOutSend](https://github.com/eracle/OpenOutSend)**
-(see `cold_outreach/` in that repo, which documents every dangling dependency); the model-less
+(the `openoutsend` package in that repo); the model-less
 anchors went with the migration history they anchored, because the cut was clean rather than
 upgradeable — see *Migrations* below.
 
