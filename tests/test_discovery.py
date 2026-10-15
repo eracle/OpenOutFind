@@ -151,9 +151,32 @@ class TestKeywordsFor:
         keywords = keywords_for({"company_keywords": "cannabis, thc vape, "
                                                      "food_and_drink/restaurants"})
 
-        assert {("company_keywords", w) for w in
-                ("cannabis", "thc", "vape", "food", "drink", "restaurants")} <= keywords
+        assert {("company_keywords", w) for w in ("cannabis", "thc", "vape")} <= keywords
         assert ("lead_job_title", "cannabis") not in keywords
+
+    def test_category_paths_and_generic_words_are_not_learned(self):
+        """GTI and Verano both carry `finance/investing` and `health` beside `cannabis`,
+        and two companies clear the df floor — so the walk fired company "health"."""
+        from openoutfind.core.pipeline.vocabulary import keywords_for
+
+        keywords = keywords_for({"company_keywords": "cannabis, finance/investing, "
+                                                     "health, retail, live resin"})
+
+        assert {pair[1] for pair in keywords} == {"cannabis", "live", "resin"}
+
+    def test_a_seeded_generic_word_is_still_searchable(self):
+        from openoutfind.core.pipeline.icp import ICPSpec, _seed_keywords
+
+        keywords = _seed_keywords(ICPSpec(domain_keywords=["retail"]))
+
+        assert ("company_keywords", "retail") in keywords
+
+    def test_a_rank_abbreviation_is_not_a_title_word(self):
+        from openoutfind.core.pipeline.vocabulary import keywords_for
+
+        keywords = keywords_for({"contact_job_title": "Sr. Manager, Extraction"})
+
+        assert keywords == {("lead_job_title", "manager"), ("lead_job_title", "extraction")}
 
 
 class TestCompanyAxisAdmission:

@@ -396,16 +396,28 @@ def seed_frontier(keywords, seed) -> int:
     A keyword that cannot fire alone (``discovery.REQUIRES`` — a company word) opens
     instead as a depth-2 node with each keyword of the field it needs: ``cannabis`` the
     company opens as {company cannabis, title purchasing}, {…, title founder}, and so on.
+
+    **The ICP's place rides every opening node** when it names one (``seed.location``),
+    and is not opened on its own. Location is one value per node and the walk only adds,
+    so every node below inherits it: a US order whose company + title nodes carried no
+    country put Canadian extraction managers up for a verdict. A depth-1 {United States}
+    node matched everyone in the country and was never worth firing anyway.
     """
+    place = seed.location if seed is not None else ""
     created = 0
-    for node_pairs in _opening_nodes(keywords):
+    for node_pairs in _opening_nodes(keywords, place):
         if _upsert(node_pairs, parent=None, seed=seed) is not None:
             created += 1
     return created
 
 
-def _opening_nodes(keywords) -> list[list[tuple[str, str]]]:
-    """The keyword sets the walk opens with — one per keyword, paired where it must be."""
+def _opening_nodes(keywords, place: str = "") -> list[list[tuple[str, str]]]:
+    """The keyword sets the walk opens with — one per keyword, paired where it must be.
+
+    With a ``place``, other locations are not opened and every node carries that one.
+    """
+    if place:
+        keywords = [pair for pair in keywords if pair[0] != "lead_location"]
     nodes = []
     for pair in keywords:
         if is_fireable([pair]):
@@ -414,6 +426,8 @@ def _opening_nodes(keywords) -> list[list[tuple[str, str]]]:
         partner_field = REQUIRES[pair[0]]
         nodes.extend(sorted([pair, partner]) for partner in keywords
                      if partner[0] == partner_field)
+    if place:
+        nodes = [sorted([*node, ("lead_location", place)]) for node in nodes]
     return nodes
 
 

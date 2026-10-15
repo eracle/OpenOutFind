@@ -45,6 +45,10 @@ logger = logging.getLogger(__name__)
 # dropped — they are never a search term and they match everything.
 _TOKEN = re.compile(r"[a-z][a-z0-9&/+.\-]{1,}")
 
+# Rank abbreviations. ``Sr. Manager, Extraction`` grew ``sr.`` as a title word, and the
+# rank is the seniority axis's job; as a title word it only narrows to whoever spelled it.
+_STOPWORDS = ENGLISH_STOP_WORDS | {"sr", "jr", "snr"}
+
 # Document-frequency floor over the qualified profiles. Two, not one: the singleton tail
 # is 65% of the vocabulary and costs nothing to drop (§13a).
 MIN_DOCUMENT_FREQUENCY = 2
@@ -53,11 +57,13 @@ MIN_DOCUMENT_FREQUENCY = 2
 def tokenize(text: str) -> set[str]:
     """Lowercase word tokens of a text, stopwords stripped.
 
-    ``sklearn``'s stopword list rather than an NLP dependency: sklearn is already
-    required for the qualifier, while ``nltk`` and ``spacy`` are not installed and
-    would each pull a model download into a first run for no measured gain.
+    A trailing ``.`` is punctuation, not part of the word (``sr.``, ``inc.``), so it goes
+    before the stopword check. ``sklearn``'s stopword list rather than an NLP dependency:
+    sklearn is already required for the qualifier, while ``nltk`` and ``spacy`` are not
+    installed and would each pull a model download into a first run for no measured gain.
     """
-    return {t for t in _TOKEN.findall(text.lower()) if t not in ENGLISH_STOP_WORDS}
+    words = (t.rstrip(".") for t in _TOKEN.findall(text.lower()))
+    return {t for t in words if len(t) > 1 and t not in _STOPWORDS}
 
 
 # Separators inside a company tag. Tags are taxonomy paths and slugs as often as words
@@ -65,10 +71,32 @@ def tokenize(text: str) -> set[str]:
 # ``ai/ml`` or ``co-founder`` has no counterpart there, so they split.
 _TAG_SEPARATORS = re.compile(r"[/_\-]")
 
+# Company words the vocabulary never *learns*. Every cannabis operator's tag list carries
+# ``health``, ``medical`` and ``retail`` beside ``cannabis``, so two fits at two operators
+# admitted them, and the walk fired company "health" + a title. They are still searchable
+# when the ICP names one — a seed word is the operator's intent, a learned one is only
+# co-occurrence. Measured on the 2026-10-15 vape order (GTI, Verano).
+_GENERIC_COMPANY_WORDS = frozenset({
+    "health", "healthcare", "care", "medical", "medicine", "alternative", "retail",
+    "finance", "financial", "investing", "services", "service", "business", "technology",
+    "consulting", "manufacturing", "products", "industry", "industrial", "portfolio",
+})
+
 
 def company_words(text: str) -> set[str]:
     """The single words of a company's tags (or of an ICP's domain words)."""
     return tokenize(_TAG_SEPARATORS.sub(" ", text))
+
+
+def learnable_company_words(text: str) -> set[str]:
+    """The words of a company's tags the vocabulary may grow from.
+
+    A tag holding a ``/`` is the provider's category path (``finance/investing``,
+    ``law_and_government/government``), filed on every company in a sector rather than
+    written by the company, so it is skipped whole; so are ``_GENERIC_COMPANY_WORDS``.
+    """
+    own_tags = [tag for tag in text.split(",") if "/" not in tag]
+    return company_words(",".join(own_tags)) - _GENERIC_COMPANY_WORDS
 
 
 def keywords_for(fields: dict) -> set[tuple[str, str]]:
@@ -101,7 +129,7 @@ def keywords_for(fields: dict) -> set[tuple[str, str]]:
     keywords = {("lead_job_title", token)
                 for token in tokenize(str(fields.get(title_key) or ""))}
     keywords |= {("company_keywords", token)
-                 for token in company_words(str(fields.get(company_key) or ""))}
+                 for token in learnable_company_words(str(fields.get(company_key) or ""))}
     country, state = as_place(fields.get(country_key)), as_place(fields.get(state_key))
     if country:
         keywords.add(("lead_location", f"{state}, {country}" if state else country))

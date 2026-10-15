@@ -486,6 +486,19 @@ class TestCompanyAxis:
         assert frozenset({("company_keywords", "cannabis")}) not in opened
         assert len(opened) == 5
 
+    def test_the_icp_place_rides_every_opening_node(self, db):
+        """A US order's company + title nodes carried no country and surfaced Canadians."""
+        keywords = [("company_keywords", "cannabis"), ("lead_job_title", "extraction"),
+                    ("lead_location", "United States"), ("lead_location", "Canada")]
+        select.seed_frontier(keywords, Seed(keywords, (2, 1000), "us", "United States"))
+
+        opened = {frozenset(node.pairs) for node in QueryNode.objects.all()}
+        us = ("lead_location", "United States")
+        assert opened == {
+            frozenset({("lead_job_title", "extraction"), us}),
+            frozenset({("company_keywords", "cannabis"), ("lead_job_title", "extraction"), us}),
+        }
+
 
 class TestSeedFrontier:
     def test_opens_one_depth_one_node_per_keyword(self, db):

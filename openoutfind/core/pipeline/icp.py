@@ -150,14 +150,17 @@ def _seed_keywords(spec: ICPSpec) -> list[tuple[str, str]]:
 class Seed(NamedTuple):
     """The opening vocabulary, and what every node built from it carries into a query.
 
-    Both extras are query attributes rather than configuration: the band rides the
-    filters unchanged, and the country is what a lead surfaced by this walk is tagged
-    with. They travel to ``select.seed_frontier`` and land on the nodes.
+    The extras are query attributes rather than configuration: the band rides the
+    filters unchanged, the country code is what a lead surfaced by this walk is tagged
+    with, and ``location`` — the ICP's place, in the index's casing — is a constraint
+    every opening node carries. They travel to ``select.seed_frontier`` and land on the
+    nodes.
     """
 
     keywords: list[tuple[str, str]]
     headcount: tuple[int, int]
     country_code: str = ""
+    location: str = ""
 
 
 def generate_seed(site_config) -> Seed:
@@ -175,16 +178,17 @@ def generate_seed(site_config) -> Seed:
     the calling agent's ``--icp`` answer instead, or the run stops with ``icp_pending``.
     """
     from openoutfind.core.models import Keyword
-    from openoutfind.discovery import describe_node
+    from openoutfind.discovery import as_place, describe_node
 
     answer = agent_icp_answer(site_config)
     spec = answer.seed if answer is not None else _spec_from_llm(site_config)
 
     band = (spec.headcount_min, spec.headcount_max)
     country_code = spec.country_code.lower()
+    location = as_place(spec.location) if spec.location else ""
     keywords = _seed_keywords(spec)
     if not keywords:
-        return Seed([], band, country_code)
+        return Seed([], band, country_code, location)
 
     Keyword.rows_for(keywords)
 
@@ -195,7 +199,7 @@ def generate_seed(site_config) -> Seed:
                  colored("discovery seed", "cyan", attrs=["bold"]),
                  colored(describe_node(keywords), "cyan"),
                  spec.headcount_min, spec.headcount_max)
-    return Seed(keywords, band, country_code)
+    return Seed(keywords, band, country_code, location)
 
 
 def _spec_from_llm(site_config) -> ICPSpec:
