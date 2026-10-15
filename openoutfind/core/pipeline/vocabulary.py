@@ -19,11 +19,12 @@ any embedding-based ranking, so it would be fired first. See §13a/§13b of the 
 ``p1-e3-leadfinder-index-semantics-and-query-model-rethink``.
 
 **A token's field is measured, not chosen.** ``cto`` is alive in ``lead_job_title`` and
-dead everywhere else; ``belgium`` is the reverse. Reading each axis from the lead-row
+dead everywhere else; ``belgium`` is the reverse; ``cannabis`` in a title finds regulators
+and in ``company_keywords`` finds cannabis companies. Reading each axis from the lead-row
 fields that *are* that axis (``discovery.KEYWORD_SOURCE_FIELDS``) keeps the per-field
-vocabularies nearly disjoint at no cost. ``lead_seniority`` is the exception and the
-easy case: the provider publishes a closed 12-value list, so it is seeded whole and
-never grown.
+vocabularies nearly disjoint at no cost, and the walk counts each axis where its words
+live (``label_tokens``). ``lead_seniority`` is the exception and the easy case: the
+provider publishes a closed 12-value list, so it is seeded whole and never grown.
 
 The upgrade path, if the singleton tail ever needs a sharper cut than df≥2, is Dunning's
 log-likelihood ratio — it kills df=1 junk *and* the high-frequency-uninformative tokens a
@@ -59,12 +60,24 @@ def tokenize(text: str) -> set[str]:
     return {t for t in _TOKEN.findall(text.lower()) if t not in ENGLISH_STOP_WORDS}
 
 
+# Separators inside a company tag. Tags are taxonomy paths and slugs as often as words
+# (``food_and_drink/restaurants_and_delivery``, ``cloud-services``), and a title's
+# ``ai/ml`` or ``co-founder`` has no counterpart there, so they split.
+_TAG_SEPARATORS = re.compile(r"[/_\-]")
+
+
+def company_words(text: str) -> set[str]:
+    """The single words of a company's tags (or of an ICP's domain words)."""
+    return tokenize(_TAG_SEPARATORS.sub(" ", text))
+
+
 def keywords_for(fields: dict) -> set[tuple[str, str]]:
     """One lead row's stored per-field text → the ``(field, token)`` keywords it grows.
 
-    **Two axes, two units of vocabulary, and the difference is the provider's, not a
-    preference.** A job title is free text whose words are matched individually, so it
-    contributes *words* and the walk conjoins them. A location is matched as one whole
+    **Each axis has its own unit of vocabulary, and the difference is the provider's,
+    not a preference.** A job title is free text whose words are matched individually,
+    so it contributes *words* and the walk conjoins them. A company's tags contribute
+    words too, one per node (two read as a phrase). A location is matched as one whole
     place, so it contributes exactly one value.
 
     Splitting a location on spaces is what this replaces, and it was silently fatal:
@@ -82,14 +95,66 @@ def keywords_for(fields: dict) -> set[tuple[str, str]]:
     from openoutfind.discovery import KEYWORD_SOURCE_FIELDS, as_place
 
     (title_key,) = KEYWORD_SOURCE_FIELDS["lead_job_title"]
+    (company_key,) = KEYWORD_SOURCE_FIELDS["company_keywords"]
     state_key, country_key = KEYWORD_SOURCE_FIELDS["lead_location"]
 
     keywords = {("lead_job_title", token)
                 for token in tokenize(str(fields.get(title_key) or ""))}
+    keywords |= {("company_keywords", token)
+                 for token in company_words(str(fields.get(company_key) or ""))}
     country, state = as_place(fields.get(country_key)), as_place(fields.get(state_key))
     if country:
         keywords.add(("lead_location", f"{state}, {country}" if state else country))
     return keywords
+
+
+def _counted_apart() -> dict[str, tuple[str, ...]]:
+    """Axes whose source is not part of ``profile_text`` → the source fields to count.
+
+    Derived, not listed: an axis is counted in ``profile_text`` when every one of its
+    source fields is in ``discovery.TEXT_FIELDS``, and against its own stored text when
+    any is not. Today that is ``company_keywords`` alone.
+    """
+    from openoutfind.discovery import KEYWORD_SOURCE_FIELDS, TEXT_FIELDS
+
+    return {axis: keys for axis, keys in KEYWORD_SOURCE_FIELDS.items()
+            if not set(keys) <= set(TEXT_FIELDS)}
+
+
+def _scoped(field: str, word: str) -> str:
+    """A word as it is stored for an axis counted apart — scoped so it can't collide."""
+    return f"{field}:{word}"
+
+
+def pair_words(field: str, token: str) -> frozenset[str]:
+    """The words a ``(field, token)`` keyword is matched by in a label token set.
+
+    A word on an axis counted in ``profile_text`` is the bare word (``keyword_words``).
+    A word on an axis counted apart is scoped to that axis, so ``cannabis`` the company
+    tag is only ever found among a lead's company tags — never in a title or headline
+    that happens to say it, which is the coincidence the company axis exists to escape.
+    """
+    words = keyword_words(token)
+    if field in _counted_apart():
+        return frozenset(_scoped(field, word) for word in words)
+    return words
+
+
+def label_tokens(profile_text: str, source_fields: dict | None) -> frozenset[str]:
+    """One labelled lead as the token set the walk counts nodes against.
+
+    ``profile_text``'s words (``profile_tokens``), plus the scoped words of every axis
+    counted apart, read from the lead's stored ``source_fields``. A lead stored before
+    an axis had a source contributes nothing on it, which is the truth: we do not know.
+    """
+    tokens = set(profile_tokens(profile_text))
+    fields = source_fields or {}
+    for axis, keys in _counted_apart().items():
+        for key in keys:
+            text = str(fields.get(key) or "")
+            words = company_words(text) if axis == "company_keywords" else tokenize(text)
+            tokens |= {_scoped(axis, word) for word in words}
+    return frozenset(tokens)
 
 
 def keyword_words(token: str) -> frozenset[str]:
@@ -111,13 +176,14 @@ def keyword_words(token: str) -> frozenset[str]:
 
 
 def profile_tokens(profile_text: str) -> frozenset[str]:
-    """The token set of one stored profile — the unit node counting is done over.
+    """The token set of one stored profile's ``profile_text``.
 
-    **Field-agnostic on purpose.** A node's ``a``/``b`` are counted by asking whether a
-    labelled profile contains all of the node's tokens *anywhere*, not whether each token
-    appears in the field the query will put it in. That is exactly how the estimator was
-    measured (§13c), and it is also what lets the whole existing label store count for
-    nodes built from fields those older rows never recorded.
+    **Field-agnostic on purpose** for the axes it carries (title, place, seniority): a
+    node's ``a``/``b`` are counted by asking whether a labelled profile contains its
+    tokens *anywhere* in the text, not in the field the query will put them in. That is
+    how the estimator was measured (§13c), and it lets the whole existing label store
+    count for nodes built from fields those older rows never recorded. Company tags are
+    not in the text; ``label_tokens`` adds them.
     """
     return frozenset(tokenize(profile_text))
 
@@ -185,6 +251,28 @@ def _qualified_source_fields() -> list[dict]:
     ]
 
 
+def _admit(profiles: list[dict]) -> tuple[list[tuple[str, str]], dict]:
+    """The ``(field, token)`` pairs clearing the df floor, and every pair's frequency.
+
+    Document frequency is how many qualified profiles carry a pair — except on the company
+    axis, where the document is the **company**: two fits from Rove share one tag list,
+    and counting it twice would admit ``rove``, ``melted`` and ``diamond`` on the strength
+    of one employer. A company is told apart by its tag text, the field being counted.
+    """
+    from openoutfind.discovery import KEYWORD_SOURCE_FIELDS
+
+    (company_key,) = KEYWORD_SOURCE_FIELDS["company_keywords"]
+    documents: dict[tuple[str, str], set] = {}
+    for index, fields in enumerate(profiles):
+        for pair in keywords_for(fields):
+            document = fields.get(company_key) if pair[0] == "company_keywords" else index
+            documents.setdefault(pair, set()).add(document)
+
+    frequency = {pair: len(seen) for pair, seen in documents.items()}
+    admitted = [pair for pair, df in frequency.items() if df >= MIN_DOCUMENT_FREQUENCY]
+    return admitted, frequency
+
+
 def refresh() -> int:
     """Fold the qualified leads' words into the vocabulary. Returns tokens added.
 
@@ -226,13 +314,7 @@ def refresh() -> int:
                      "nothing to grow from (seed vocabulary stands)")
         return 0
 
-    # Document frequency per (field, token): how many qualified profiles carry it.
-    frequency: dict[tuple[str, str], int] = {}
-    for fields in profiles:
-        for pair in keywords_for(fields):
-            frequency[pair] = frequency.get(pair, 0) + 1
-
-    admitted = [pair for pair, df in frequency.items() if df >= MIN_DOCUMENT_FREQUENCY]
+    admitted, frequency = _admit(profiles)
     logger.debug("vocabulary: %d qualified profile(s) → %d distinct token(s) → "
                  "%d admitted at df>=%d", len(profiles), len(frequency),
                  len(admitted), MIN_DOCUMENT_FREQUENCY)

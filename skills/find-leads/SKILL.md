@@ -159,13 +159,18 @@ one object and re-run the same command with it:
 outfind find 10 --agent-qualify --icp '{"seed": {"role_keywords": ["founder", "owner"],
   "domain_keywords": ["clinic", "agency"], "seniority": "founder", "headcount_min": 1,
   "headcount_max": 50}, "anchors": [{"profile": "founder of a dental clinic group ...",
-  "job_title": "founder", "location_country": "united states"}, ...]}'
+  "job_title": "founder", "location_country": "united states",
+  "company_keywords": "dental clinic, dentistry, orthodontics"}, ...]}'
 ```
 
 Keywords are **single lowercase words**, never phrases — the search ANDs every word in one title, so
-`"head of growth"` finds nobody. An anchor's `profile` is one lowercase line shaped like a lead row
-(headline, industry, title, company, seniority, state, country). It is asked once per store; later
-runs never see it again.
+`"head of growth"` finds nobody. **`role_keywords` search the person's job title; `domain_keywords`
+search the company's LinkedIn tags**, never the title, and a domain word is always fired with a role
+word. So a domain word is what the buyer's *company* would tag itself with (`cannabis`, `dental`),
+and a word that is just as common in unrelated industries (`oil`, `brand`) belongs in neither list.
+An anchor's `profile` is one lowercase line shaped like a lead row (headline, industry, title,
+company, seniority, state, country), and its `company_keywords` are the invented company's tags,
+comma separated. It is asked once per store; later runs never see it again.
 
 ## Reading the output
 

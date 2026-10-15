@@ -51,6 +51,27 @@ LEAD_SENIORITIES = get_args(Seniority)
 #   no department on a lead row, so no vocabulary can ever grow for it, and its
 #   whole live vocabulary is four values nobody would guess (no Engineering, no
 #   Finance — §3). An axis with no token source is dead weight.
+# - ``company_industry`` — real and steering, but it adds little on top of
+#   ``company_keywords``. It is LinkedIn's closed industry list matched on exact value
+#   *and case* (``Alternative Medicine`` 14,748, ``alternative medicine`` 0). Added to a
+#   company-word + title query it kept 57 of 197 rows for one more on-target company,
+#   and on its own it lets in neighbours (supplement and wellness shops for a cannabis
+#   buyer). See ``p1-e1-discovery-searches-the-buyers-company``.
+#
+# ``company_keywords`` is the company axis: the provider's tag list for the employer
+# (``cannabis``, ``thc vape``, ``cannabis extraction and processing``), which is what
+# the filter matches — ``company_description`` is the same field under a second name
+# (identical counts), and ``company_name`` is ignored like ``lead_industry``. Measured
+# against US rows at 2–1,000 staff with a nonsense control (0):
+#
+#     lead_job_title   ["cannabis"]                         1,007
+#     company_keywords ["cannabis"]                        63,599
+#     company_keywords ["cannabis"] + title "purchasing"      197
+#     company_keywords ["cannabis vape"]                      269
+#     company_keywords ["vape cannabis"]                        2   ← order matters
+#
+# Two words inside it behave as a phrase, not an AND, so it carries **one word per
+# node**. And a company word is never fired alone (``REQUIRES``).
 #
 # The field names are the contract; the tokens are search terms. An unknown *key*
 # is dropped without a word and hands back the unfiltered page **with rows**, which
@@ -78,7 +99,23 @@ SEARCH_FIELDS = {
     "lead_job_title": 2,
     "lead_seniority": 1,
     "lead_location": 1,
+    "company_keywords": 1,
 }
+
+# Free-text axes, sent with ``exact_match`` off so a word matches inside a longer value.
+_FREE_TEXT_FIELDS = ("lead_job_title", "company_keywords")
+
+# An axis that may only be fired alongside another. The provider returns a company-word
+# query grouped by employer, so each 100-row page is one company's whole staff — Accela
+# at offset 0, Weedmaps' engineers at 500, an insurer carrying a ``cannabis`` tag at
+# 5,000. Conjoined with a title word the same word spreads over 59–77 companies per page.
+REQUIRES = {"company_keywords": "lead_job_title"}
+
+
+def is_fireable(keywords) -> bool:
+    """Whether a keyword set may be sent as a query: every ``REQUIRES`` partner is present."""
+    fields = {field for field, _ in keywords}
+    return bool(fields) and all(REQUIRES[f] in fields for f in fields if f in REQUIRES)
 
 
 def filters_for(keywords, headcount: tuple[int, int] | None = None) -> dict:
@@ -93,7 +130,8 @@ def filters_for(keywords, headcount: tuple[int, int] | None = None) -> dict:
       narrowing move, and it is the *generator* of the best queries measured
       (``"founder cto"`` counts 9,027 at near-perfect precision, §10). It is also the
       only axis it works on: the closed axes match whole values, where the same join
-      asks for a value nobody has (see ``SEARCH_FIELDS``).
+      asks for a value nobody has, and ``company_keywords`` reads two words as a phrase
+      (see ``SEARCH_FIELDS``) — it is sent free-text like a title, one word at a time.
     - **field vs field ANDs.** Separate keys, as before.
     - **strings inside one list OR.** Real (``["Spain", "France"]`` counts more than
       either alone) and unreachable today: ``SEARCH_FIELDS`` allows one value per node on
@@ -115,7 +153,7 @@ def filters_for(keywords, headcount: tuple[int, int] | None = None) -> dict:
         filters["company_headcount_max"] = int(headcount[1])
 
     for field, tokens in grouped.items():
-        if field == "lead_job_title":
+        if field in _FREE_TEXT_FIELDS:
             filters[field] = {"include": [" ".join(tokens)], "exact_match": False}
         else:
             filters[field] = {"include": list(tokens)}
@@ -166,9 +204,15 @@ TEXT_FIELDS = [
 # campaign grew ``user``, ``agents``, ``agile``, ``shipping`` and ``ai-powered`` as title
 # tokens. Conjoined, they ask for a title nobody holds. Only ``contact_job_title`` says
 # what the provider will match in that field.
+#
+# ``company_keywords`` reads the row's own ``company_keywords`` — the tag list the filter
+# matches. It is the one axis whose source is **not** in ``profile_text`` (see
+# ``TEXT_FIELDS``), so the walk counts it against the stored tags instead
+# (``vocabulary.label_tokens``).
 KEYWORD_SOURCE_FIELDS = {
     "lead_job_title": ("contact_job_title",),
     "lead_location": ("contact_location_state", "contact_location_country"),
+    "company_keywords": ("company_keywords",),
 }
 
 
@@ -198,9 +242,18 @@ def source_fields_for(row: dict) -> dict:
 
     Only the fields ``KEYWORD_SOURCE_FIELDS`` reads — a lead row carries far more, and
     storing the rest would be a second copy of ``profile_text`` under another name.
+    A list (``company_keywords``) is stored as its items joined with ``", "``, so the
+    stored text is the tags and not a Python repr of them.
     """
     wanted = {key for keys in KEYWORD_SOURCE_FIELDS.values() for key in keys}
-    return {key: str(row[key]) for key in wanted if row.get(key)}
+    return {key: _as_text(row[key]) for key in wanted if row.get(key)}
+
+
+def _as_text(value) -> str:
+    """A row value as plain text — list items joined, anything else ``str``'d."""
+    if isinstance(value, list):
+        return ", ".join(str(item) for item in value if item)
+    return str(value)
 
 
 # Words a place name keeps lowercase. Measured, not stylistic: ``Bosnia and Herzegovina``
@@ -320,8 +373,8 @@ def describe_filters(filters: dict) -> str:
     false}}``) and read as machinery in a log line, which is the only place they
     appear. Renders the two headcount bounds as the one range they describe, drops
     the ``lead_`` prefix and the ``include`` wrapper, and keeps ``exact_match``
-    since it changes what the query matches. (The only ``company_*`` keys are the
-    two headcount bounds, both consumed by the range above.)
+    since it changes what the query matches. ``company_keywords`` reads as
+    ``company``.
     """
     if not filters:
         return "(no filters)"
@@ -335,7 +388,7 @@ def describe_filters(filters: dict) -> str:
     for key, value in filters.items():
         if key in ("company_headcount_min", "company_headcount_max"):
             continue
-        label = key.removeprefix("lead_")
+        label = "company" if key == "company_keywords" else key.removeprefix("lead_")
         if isinstance(value, dict):
             rendered = ", ".join(str(v) for v in value.get("include", [])) or "(none)"
             if value.get("exact_match"):

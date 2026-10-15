@@ -81,7 +81,7 @@ class TestGenerateAnchors:
         with _llm_returns([_AnchorProfile(
             profile="head of revenue at northwind california united states",
             job_title="Head Of Revenue", location_state="California",
-            location_country="United States",
+            location_country="United States", company_keywords="Freight, Logistics",
         )]):
             (anchor,) = generate_anchors(_site_config())
 
@@ -89,6 +89,7 @@ class TestGenerateAnchors:
             "contact_job_title": "head of revenue",
             "contact_location_state": "california",
             "contact_location_country": "united states",
+            "company_keywords": "freight, logistics",
         }
 
     def test_an_empty_field_is_dropped_rather_than_stored_blank(self):

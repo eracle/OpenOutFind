@@ -56,7 +56,9 @@ from collections import Counter
 
 import numpy as np
 
-from openoutfind.discovery import SEARCH_FIELDS, describe_filters, filters_for
+from openoutfind.discovery import (
+    REQUIRES, SEARCH_FIELDS, describe_filters, filters_for, is_fireable,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -78,8 +80,8 @@ THOMPSON = True
 
 # How many values one field may hold in a single node lives with the provider contract it
 # comes from (``discovery.SEARCH_FIELDS``): two for ``lead_job_title``, whose words AND
-# inside the string, and one for each closed axis, where a joined pair is a value nobody
-# has. Without a cap the walk descends: a live campaign reached 183 frontier nodes at
+# inside the string, one for each closed axis, where a joined pair is a value nobody
+# has, and one for ``company_keywords``, which reads two words as a phrase. Without a cap the walk descends: a live campaign reached 183 frontier nodes at
 # depth 4 asking for titles like ``ai-powered cto founder user``, each costing a
 # round-trip to learn it matches nobody. The cap is per field, so a node can still narrow
 # on another axis.
@@ -147,7 +149,7 @@ class LabelStore:
         this store cannot reach — a campaign with no acceptances has no vocabulary beyond
         the seed, so its frontier cannot grow past depth-1 however well this ranks it.
         """
-        from openoutfind.core.pipeline.vocabulary import profile_tokens
+        from openoutfind.core.pipeline.vocabulary import label_tokens
         from openoutfind.crm.models import Deal, DealState, Lead, Outcome
 
         verdicts = {}
@@ -159,17 +161,20 @@ class LabelStore:
                                       and outcome == Outcome.WRONG_FIT) else 1
 
         tokens, labels = [], []
-        for lead_id, text in (
-            Lead.objects.filter(pk__in=verdicts).values_list("pk", "profile_text")
+        for lead_id, text, fields in (
+            Lead.objects.filter(pk__in=verdicts)
+            .values_list("pk", "profile_text", "source_fields")
         ):
             if text:
-                tokens.append(profile_tokens(text))
+                tokens.append(label_tokens(text, fields))
                 labels.append(verdicts[lead_id])
 
         anchors = 0
-        for text in Lead.objects.filter(synthetic=True).values_list("profile_text", flat=True):
+        for text, fields in (
+            Lead.objects.filter(synthetic=True).values_list("profile_text", "source_fields")
+        ):
             if text:
-                tokens.append(profile_tokens(text))
+                tokens.append(label_tokens(text, fields))
                 labels.append(1)
                 anchors += 1
         if anchors:
@@ -207,11 +212,12 @@ class LabelStore:
     def counts(self, pairs) -> tuple[int, int]:
         """``(a, b)`` — labelled profiles containing every one of a node's tokens.
 
-        Field-agnostic (see ``vocabulary.profile_tokens``): a node's tokens are matched
-        anywhere in the profile, which is how the estimator was measured and what lets
-        rows predating per-field capture still count. **Word-wise, too** — a keyword may
-        be a phrase (``California, United States``), and a profile is a bag of words, so
-        containment is over the phrase's words.
+        Title, place and seniority tokens are matched anywhere in ``profile_text`` (see
+        ``vocabulary.profile_tokens``), which is how the estimator was measured and what
+        lets rows predating per-field capture still count. A company token is matched
+        among the lead's company tags only (``vocabulary.pair_words``). **Word-wise,
+        too** — a keyword may be a phrase (``California, United States``), and a profile
+        is a bag of words, so containment is over the phrase's words.
         """
         wanted = _words(pairs)
         a = b = 0
@@ -235,7 +241,7 @@ class LabelStore:
         a proposition the evidence has something to say about, and it self-limits with
         depth: a three-token node has few words that ever shared a profile with it.
         """
-        from openoutfind.core.pipeline.vocabulary import keyword_words
+        from openoutfind.core.pipeline.vocabulary import pair_words
 
         wanted = _words(pairs)
         live = set()
@@ -245,7 +251,7 @@ class LabelStore:
         held = set(pairs)
         return [(field, token) for field, token in candidates
                 if (field, token) not in held
-                and (words := keyword_words(token)) and words <= live]
+                and (words := pair_words(field, token)) and words <= live]
 
 
 def _words(pairs) -> set[str]:
@@ -255,11 +261,11 @@ def _words(pairs) -> set[str]:
     ``lead_location`` is a whole place. Counting is over profile *words*, so a phrase
     keyword contributes each of its words and all of them have to be present.
     """
-    from openoutfind.core.pipeline.vocabulary import keyword_words
+    from openoutfind.core.pipeline.vocabulary import pair_words
 
     words: set[str] = set()
-    for _, token in pairs:
-        words |= keyword_words(token)
+    for field, token in pairs:
+        words |= pair_words(field, token)
     return words
 
 
@@ -386,12 +392,29 @@ def seed_frontier(keywords, seed) -> int:
     ``seed`` carries what the ICP said about the *shape* of every query rather than its
     words — the size band and the country — and each opened node keeps its own copy, so a
     later re-seed cannot retroactively change what an already-fired node searched.
+
+    A keyword that cannot fire alone (``discovery.REQUIRES`` — a company word) opens
+    instead as a depth-2 node with each keyword of the field it needs: ``cannabis`` the
+    company opens as {company cannabis, title purchasing}, {…, title founder}, and so on.
     """
     created = 0
-    for pair in keywords:
-        if _upsert([pair], parent=None, seed=seed) is not None:
+    for node_pairs in _opening_nodes(keywords):
+        if _upsert(node_pairs, parent=None, seed=seed) is not None:
             created += 1
     return created
+
+
+def _opening_nodes(keywords) -> list[list[tuple[str, str]]]:
+    """The keyword sets the walk opens with — one per keyword, paired where it must be."""
+    nodes = []
+    for pair in keywords:
+        if is_fireable([pair]):
+            nodes.append([pair])
+            continue
+        partner_field = REQUIRES[pair[0]]
+        nodes.extend(sorted([pair, partner]) for partner in keywords
+                     if partner[0] == partner_field)
+    return nodes
 
 
 def _upsert(pairs, parent, store: LabelStore | None = None, cache: dict | None = None,
@@ -449,8 +472,9 @@ def expand(node, store: LabelStore, candidates) -> int:
     """Grow the frontier with this node's children. Returns how many were created.
 
     A child is this node plus one token that has shared a qualified profile with it
-    (``LabelStore.cooccurring``), that no dead node is a subset of, and that does not push
-    any one field past what ``SEARCH_FIELDS`` allows it.
+    (``LabelStore.cooccurring``), that no dead node is a subset of, that does not push
+    any one field past what ``SEARCH_FIELDS`` allows it, and that can be fired
+    (``discovery.is_fireable`` — a company word joins a node only if it holds a title).
     """
     pairs = node.pairs
     dead = _dead_sets()
@@ -460,10 +484,10 @@ def expand(node, store: LabelStore, candidates) -> int:
     offered = store.cooccurring(pairs, candidates)
     created = pruned = capped = 0
     for pair in offered:
-        if per_field[pair[0]] >= SEARCH_FIELDS[pair[0]]:
+        child_pairs = sorted([*pairs, pair])
+        if per_field[pair[0]] >= SEARCH_FIELDS[pair[0]] or not is_fireable(child_pairs):
             capped += 1
             continue
-        child_pairs = sorted([*pairs, pair])
         child_set = frozenset(child_pairs)
         if any(empty <= child_set for empty in dead):
             pruned += 1

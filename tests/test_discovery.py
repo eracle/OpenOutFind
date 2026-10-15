@@ -95,6 +95,12 @@ class TestSourceFieldsFor:
         }
         assert "users" in discovery.profile_text_for(row)
 
+    def test_company_tags_are_kept_as_text_not_a_list_repr(self):
+        stored = discovery.source_fields_for(
+            {"company_keywords": ["cannabis", "thc vape", ""]})
+
+        assert stored == {"company_keywords": "cannabis, thc vape"}
+
 
 class TestKeywordsFor:
     """A row grows two kinds of keyword, because the index matches two ways: a job title
@@ -138,6 +144,80 @@ class TestKeywordsFor:
 
         assert keywords == {("lead_job_title", "cto")}
 
+    def test_company_tags_grow_single_company_words(self):
+        """Tags are slugs and taxonomy paths as often as words; each word is a keyword."""
+        from openoutfind.core.pipeline.vocabulary import keywords_for
+
+        keywords = keywords_for({"company_keywords": "cannabis, thc vape, "
+                                                     "food_and_drink/restaurants"})
+
+        assert {("company_keywords", w) for w in
+                ("cannabis", "thc", "vape", "food", "drink", "restaurants")} <= keywords
+        assert ("lead_job_title", "cannabis") not in keywords
+
+
+class TestCompanyAxisAdmission:
+    """A company's tags count once toward the df floor, however many of its staff fit."""
+
+    def test_one_company_cannot_admit_its_own_words(self):
+        from openoutfind.core.pipeline.vocabulary import _admit
+
+        rove = {"company_keywords": "cannabis, rove melted diamond vape",
+                "contact_job_title": "VP Sales"}
+        admitted, _ = _admit([rove, dict(rove, contact_job_title="VP Operations")])
+
+        assert ("company_keywords", "rove") not in admitted
+        assert ("lead_job_title", "vp") in admitted  # titles still count per person
+
+    def test_a_word_two_companies_share_is_admitted(self):
+        from openoutfind.core.pipeline.vocabulary import _admit
+
+        admitted, _ = _admit([{"company_keywords": "cannabis, dispensary"},
+                              {"company_keywords": "cannabis, thc vape"}])
+
+        assert ("company_keywords", "cannabis") in admitted
+        assert ("company_keywords", "dispensary") not in admitted
+
+
+class TestCountedApart:
+    """A company word is counted among the company's tags, never in the profile text."""
+
+    def test_a_company_word_is_found_in_the_tags(self):
+        from openoutfind.core.pipeline.vocabulary import label_tokens, pair_words
+
+        tokens = label_tokens("head of extraction acme manufacturing",
+                              {"company_keywords": "cannabis, thc vape"})
+
+        assert pair_words("company_keywords", "cannabis") <= tokens
+
+    def test_a_title_that_says_the_word_does_not_count_for_the_company(self):
+        """The regulator with "cannabis" in their title is the coincidence the axis
+        exists to escape."""
+        from openoutfind.core.pipeline.vocabulary import label_tokens, pair_words
+
+        tokens = label_tokens("cannabis compliance officer state of ohio", {})
+
+        assert not pair_words("company_keywords", "cannabis") <= tokens
+        assert pair_words("lead_job_title", "cannabis") <= tokens
+
+
+class TestIsFireable:
+    """A company word alone pages one employer's whole staff, so it never fires alone."""
+
+    def test_a_company_word_with_a_title_fires(self):
+        assert discovery.is_fireable([("company_keywords", "cannabis"),
+                                      ("lead_job_title", "purchasing")])
+
+    def test_a_company_word_alone_does_not(self):
+        assert not discovery.is_fireable([("company_keywords", "cannabis")])
+
+    def test_a_company_word_with_only_a_place_does_not(self):
+        assert not discovery.is_fireable([("company_keywords", "cannabis"),
+                                          ("lead_location", "United States")])
+
+    def test_the_other_axes_fire_alone(self):
+        assert discovery.is_fireable([("lead_location", "United States")])
+
 
 class TestFiltersFor:
     """The one place a node becomes provider JSON, and the two shapes it can take."""
@@ -159,6 +239,15 @@ class TestFiltersFor:
         assert filters == {
             "lead_seniority": {"include": ["director"]},
             "lead_location": {"include": ["California, United States"]},
+        }
+
+    def test_a_company_word_rides_with_a_title_as_two_free_text_keys(self):
+        filters = discovery.filters_for([("company_keywords", "cannabis"),
+                                         ("lead_job_title", "purchasing")])
+
+        assert filters == {
+            "company_keywords": {"include": ["cannabis"], "exact_match": False},
+            "lead_job_title": {"include": ["purchasing"], "exact_match": False},
         }
 
     def test_the_headcount_band_rides_along_unchanged(self):
@@ -331,23 +420,32 @@ class TestDescribeFilters:
         assert discovery.describe_filters({"some_new_filter": "x"}) == "some_new_filter x"
 
 
+class TestDescribeCompanyAxis:
+    def test_the_company_axis_reads_as_company(self):
+        rendered = discovery.describe_filters(discovery.filters_for(
+            [("company_keywords", "cannabis"), ("lead_job_title", "purchasing")]))
+
+        assert "company cannabis" in rendered
+        assert "job_title purchasing" in rendered
+
+
 class TestSeedKeywords:
     """The ICP becomes a *vocabulary*, not one precise query."""
 
-    def test_domain_words_reach_the_searchable_axis(self):
-        # The gap this closes: ICPSpec had no field for what the target company *does*,
-        # so a health-and-wellness site_config seeded on role words alone and every query
-        # it composed was blind to industry. lead_industry is inert (card §8), but
-        # domain words are alive in lead_job_title, which matches headline text too.
+    def test_domain_words_search_the_company_not_the_job_title(self):
+        # "cannabis" as a title found regulators and bankers whose title says it; as a
+        # company tag it finds cannabis companies (p1-e1-discovery-searches-the-buyers-company).
         from openoutfind.core.pipeline.icp import ICPSpec, _seed_keywords
 
         spec = ICPSpec(role_keywords=["founder", "head"],
-                       domain_keywords=["wellness", "supplement"],
+                       domain_keywords=["cannabis", "thc-vape"],
                        seniority="founder", location="United States")
         keywords = _seed_keywords(spec)
 
-        assert ("lead_job_title", "wellness") in keywords
-        assert ("lead_job_title", "supplement") in keywords
+        assert ("company_keywords", "cannabis") in keywords
+        assert ("company_keywords", "thc") in keywords
+        assert ("company_keywords", "vape") in keywords
+        assert ("lead_job_title", "cannabis") not in keywords
         assert ("lead_job_title", "founder") in keywords
         assert ("lead_seniority", "founder") in keywords
 

@@ -420,6 +420,73 @@ class TestRetirement:
         assert node.leads_found == 9027
 
 
+class TestCompanyAxis:
+    """A company word is counted among the company's tags and always fires with a title
+    (p1-e1-discovery-searches-the-buyers-company)."""
+
+    @staticmethod
+    def _store():
+        # A cannabis extraction manager whose title never names the industry, and a
+        # regulator whose title does — the two the old title-only seed confused.
+        manager = _labelled(None, "head of extraction acme", qualified=True)
+        manager.source_fields = {"contact_job_title": "head of extraction",
+                                 "company_keywords": "cannabis, thc vape"}
+        manager.save(update_fields=["source_fields"])
+        _labelled(None, "cannabis compliance officer state of ohio", qualified=False)
+        return LabelStore.load()
+
+    def test_a_company_word_counts_the_tags_not_the_title(self, db):
+        store = self._store()
+
+        assert store.counts([("company_keywords", "cannabis")]) == (1, 0)
+        assert store.counts([("lead_job_title", "cannabis")]) == (0, 1)
+        assert store.counts([("company_keywords", "cannabis"),
+                             ("lead_job_title", "extraction")]) == (1, 0)
+
+    def test_a_title_node_grows_a_company_child(self, db):
+        store = self._store()
+        parent = _node(None, [("lead_job_title", "extraction")])
+
+        assert select.expand(parent, store, [("company_keywords", "cannabis")]) == 1
+        child = QueryNode.objects.get(parent=parent)
+        assert set(child.pairs) == {("lead_job_title", "extraction"),
+                                    ("company_keywords", "cannabis")}
+
+    def test_a_node_with_no_title_grows_no_company_child(self, db):
+        """It would page one employer's whole staff at a time."""
+        _campaign(anchor_profiles=["head of extraction acme united states"])
+        Lead.objects.filter(synthetic=True).update(
+            source_fields={"company_keywords": "cannabis"})
+        parent = _node(None, [("lead_location", "United States")])
+
+        assert select.expand(parent, LabelStore.load(),
+                             [("company_keywords", "cannabis")]) == 0
+
+    def test_a_node_takes_one_company_word(self, db):
+        """Two words in the field read as a phrase: "vape cannabis" counts 2."""
+        _campaign(anchor_profiles=["head of extraction acme"])
+        Lead.objects.filter(synthetic=True).update(
+            source_fields={"company_keywords": "cannabis, vape"})
+        parent = _node(None, [("lead_job_title", "extraction"),
+                              ("company_keywords", "cannabis")])
+
+        assert select.expand(parent, LabelStore.load(),
+                             [("company_keywords", "vape")]) == 0
+
+    def test_the_seed_opens_a_company_word_paired_with_each_title_word(self, db):
+        keywords = [("company_keywords", "cannabis"), ("lead_job_title", "founder"),
+                    ("lead_job_title", "purchasing"), ("lead_location", "United States")]
+        select.seed_frontier(keywords, Seed(keywords, (2, 1000), "us"))
+
+        opened = {frozenset(node.pairs) for node in QueryNode.objects.all()}
+        assert frozenset({("company_keywords", "cannabis"),
+                          ("lead_job_title", "purchasing")}) in opened
+        assert frozenset({("company_keywords", "cannabis"),
+                          ("lead_job_title", "founder")}) in opened
+        assert frozenset({("company_keywords", "cannabis")}) not in opened
+        assert len(opened) == 5
+
+
 class TestSeedFrontier:
     def test_opens_one_depth_one_node_per_keyword(self, db):
         # No root: the empty query matches everyone and its 10k window is the provider's

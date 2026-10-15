@@ -63,12 +63,11 @@ class ICPSpec(BaseModel):
     nowhere to put "what the target company actually does" — no field for it — so a
     health-and-wellness ICP seeded on ``content``/``lead``/``united``/``states``
     and every query it could compose selected for *role* while being blind to
-    *industry*. The obvious home would be ``lead_industry``, and that field is inert:
-    a nonsense value returns the identical count to no filter at all (§8 of the roadmap
-    card). But domain words are demonstrably alive in ``lead_job_title``, which matches
-    title *and* headline text — ``saas`` counts 3,306, ``startup`` 6,223, ``llm`` 1,214,
-    ``agentic`` 1,213, ``stealth`` 932 (§10). So they go there, alongside the role words,
-    and the frontier conjoins the two.
+    *industry*. They go to ``company_keywords``, the employer's tag list: ``cannabis``
+    there counts 63,599 and finds cannabis companies, where the same word as a job title
+    counts 1,007 and finds regulators, bankers and attorneys whose title says it. A
+    company word is always fired with a title word, so the frontier opens each domain
+    word paired with each role word (``select.seed_frontier``).
 
     ``seniority`` is typed to Lead Finder's vocabulary, not ``str``: an unknown level
     returns an empty page rather than an error, wasting a fetch. Everything else is free
@@ -84,8 +83,9 @@ class ICPSpec(BaseModel):
     domain_keywords: list[str] = Field(
         default_factory=list,
         description="Single lowercase words naming what the target company does or "
-                    "sells — 'wellness', 'supplement', 'nutrition', 'saas'. Words, "
-                    "never phrases.",
+                    "sells, as its own company tags would — 'cannabis', 'supplement', "
+                    "'nutrition', 'saas'. Searched against the employer, never the job "
+                    "title. Words, never phrases.",
     )
     seniority: Seniority | None = None
     location: str = ""
@@ -94,13 +94,14 @@ class ICPSpec(BaseModel):
     country_code: str = ""
 
 
-# Which ``ICPSpec`` attrs feed which search axis. Both keyword lists land in
-# ``lead_job_title`` — the only free-text axis, and the one that matches headline text as
-# well as titles, which is what makes a domain word like ``wellness`` reachable at all.
-# Headcount is absent: numbers riding every query, not search terms.
+# Which ``ICPSpec`` attrs feed which search axis. Role words are job-title words and
+# domain words are company words: ``lead_job_title`` matches the title alone (none of 100
+# rows for ``cannabis`` carried it only in the headline), so a domain word there finds
+# whoever's title happens to say it. Headcount is absent: numbers riding every query,
+# not search terms.
 _SEED_FIELDS = (
     ("lead_job_title", "role_keywords"),
-    ("lead_job_title", "domain_keywords"),
+    ("company_keywords", "domain_keywords"),
     ("lead_seniority", "seniority"),
     ("lead_location", "location"),
 )
@@ -109,7 +110,8 @@ _SEED_FIELDS = (
 def _seed_keywords(spec: ICPSpec) -> list[tuple[str, str]]:
     """The ICP as ``(field, token)`` keywords — the vocabulary the walk opens with.
 
-    **A job title is split into words; the closed axes are not.** Lead Finder reads
+    **A job title and a company's domain are split into words; the closed axes are
+    not.** Lead Finder reads
     ``"Head of Growth"`` as three ANDed words, a query narrow enough to be empty before
     the walk has learned anything, so splitting hands the frontier three separate
     one-token nodes and lets *measurement* decide which pair is worth conjoining — which
@@ -124,7 +126,7 @@ def _seed_keywords(spec: ICPSpec) -> list[tuple[str, str]]:
     seniority is passed through — it is already one of the twelve values the provider
     publishes, typed as such on ``ICPSpec``.
     """
-    from openoutfind.core.pipeline.vocabulary import tokenize
+    from openoutfind.core.pipeline.vocabulary import company_words, tokenize
     from openoutfind.discovery import as_place
 
     keywords = set()
@@ -136,6 +138,8 @@ def _seed_keywords(spec: ICPSpec) -> list[tuple[str, str]]:
                 continue
             if field == "lead_job_title":
                 keywords |= {(field, token) for token in tokenize(str(item))}
+            elif field == "company_keywords":
+                keywords |= {(field, token) for token in company_words(str(item))}
             elif field == "lead_location":
                 keywords.add((field, as_place(item)))
             else:
@@ -260,6 +264,12 @@ class _AnchorProfile(BaseModel):
         default="",
         description="Country alone — e.g. 'united states'.",
     )
+    company_keywords: str = Field(
+        default="",
+        description="The tags LinkedIn would give this lead's company, lowercase and "
+                    "comma separated — what it does, sells and makes, never the "
+                    "company's name — e.g. 'cannabis, thc vape, cannabis extraction'.",
+    )
 
 
 class _AnchorProfiles(BaseModel):
@@ -370,6 +380,7 @@ def _as_anchor(written: _AnchorProfile) -> Anchor:
             "contact_job_title": written.job_title.strip().lower(),
             "contact_location_state": written.location_state.strip().lower(),
             "contact_location_country": written.location_country.strip().lower(),
+            "company_keywords": written.company_keywords.strip().lower(),
         }),
     )
 

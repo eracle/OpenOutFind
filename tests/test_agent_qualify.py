@@ -74,7 +74,7 @@ class TestWritingTheIcp:
 
         seed = generate_seed(site_config)
 
-        assert ("lead_job_title", "bakery") in seed.keywords
+        assert ("company_keywords", "bakery") in seed.keywords
         assert ("lead_location", "United States") in seed.keywords
         assert seed.headcount == (1, 50)
 
