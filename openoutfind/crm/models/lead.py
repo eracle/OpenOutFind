@@ -133,6 +133,18 @@ class Lead(models.Model):
     def get_labeled_arrays(cls) -> tuple[np.ndarray, np.ndarray]:
         """Labeled embeddings for the install as (X, y) numpy arrays for warm start.
 
+        See ``get_labeled_rows`` for what the label means.
+        """
+        _, X, y = cls.get_labeled_rows()
+        return X, y
+
+    @classmethod
+    def get_labeled_rows(cls) -> tuple[list[int], np.ndarray, np.ndarray]:
+        """``(lead_ids, X, y)`` — the labelled embeddings and which lead each row is.
+
+        The ids line up with the rows, so a caller can find a given lead's observation
+        in a qualifier warm-started from ``X, y`` (the calibration's out-of-fold scores).
+
         The label is the LLM *fit* verdict, not the pipeline outcome — a qualified
         lead whose enrichment later missed (NO_EMAIL_FOUND) is still a fit
         positive; only reachability failed. Since that miss now has its own terminal
@@ -158,23 +170,25 @@ class Lead(models.Model):
             else:
                 label_by_lead[lid] = 1
 
+        empty = ([], np.empty((0, 384), dtype=np.float32), np.empty(0, dtype=np.int32))
         if not label_by_lead:
-            return np.empty((0, 384), dtype=np.float32), np.empty(0, dtype=np.int32)
+            return empty
 
         leads_with_emb = dict(
             cls.objects.filter(pk__in=label_by_lead, embedding__isnull=False)
             .values_list("pk", "embedding")
         )
 
-        X_list, y_list = [], []
+        ids, X_list, y_list = [], [], []
         for lid, label in label_by_lead.items():
             emb = leads_with_emb.get(lid)
             if emb is None:
                 continue
+            ids.append(lid)
             X_list.append(np.frombuffer(bytes(emb), dtype=np.float32))
             y_list.append(label)
 
         if not X_list:
-            return np.empty((0, 384), dtype=np.float32), np.empty(0, dtype=np.int32)
+            return empty
 
-        return np.array(X_list, dtype=np.float32), np.array(y_list, dtype=np.int32)
+        return ids, np.array(X_list, dtype=np.float32), np.array(y_list, dtype=np.int32)

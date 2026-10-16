@@ -68,7 +68,12 @@ Not user-configurable; edit the source to change.
 | Key | Value | Description |
 |:----|:------|:------------|
 | `COLLECT_BACKOFF_BASE_S` / `COLLECT_BACKOFF_MAX_S` | `5` / `30d` | The lookup poll doubles its delay on every still-running attempt and **never gives up** — an unterminated job is queued, not lost, so the leg keeps the same `request_id` rather than abandoning the deal and paying for a second job. MAX rails the interval only, so the schedule stays representable. |
-| `CAMPAIGN_CONFIG.min_gp_confidence` | `0.7` | GP probability threshold for promoting `QUALIFIED → READY_TO_FIND_EMAIL`. **A spend gate on the paid lookup and nothing else** — not a quality score, and deliberately absent from the export. |
+| `CAMPAIGN_CONFIG.min_gp_confidence` | `0.7` | The bar until the calibrate arm has derived one: the GP probability exploit judges against and the promote gate (`QUALIFIED → READY_TO_FIND_EMAIL`) reads. **A spend gate and nothing else** — not a quality score, and deliberately absent from the export. |
+| `CAMPAIGN_CONFIG.calibration_min_band_verdicts` | `5` | Calibration verdicts each of the 8 score bands needs. Also switches the arm on: only when √N reaches 40, a pool of 1,600 or more. |
+| `CAMPAIGN_CONFIG.run_hour_dollars` | `0.01786` | An hour of run time, priced as the smallest machine a run needs on its own: a 1 vCPU / 2 GiB DigitalOcean droplet ($12/month). A run peaks at ~0.8 GB. |
+| `CAMPAIGN_CONFIG.search_seconds` | `70` | One Lead Finder page, polling included. Lead Finder bills nothing, so this is a search's whole cost. |
+| `CAMPAIGN_CONFIG.verdict_seconds_model` / `verdict_dollars_model` | `5` / `0.002` | One verdict by the configured model: its time and its LLM bill (a Haiku-class call). |
+| `CAMPAIGN_CONFIG.verdict_seconds_agent` / `verdict_dollars_agent` | `40` / `0.05` | One verdict by a calling agent under `--agent-qualify`. A dearer verdict raises the bar. |
 | `CAMPAIGN_CONFIG.qualification_n_mc_samples` | `100` | Monte Carlo samples for BALD. |
 | `CAMPAIGN_CONFIG.embedding_model` | `BAAI/bge-small-en-v1.5` | FastEmbed model for 384-dim embeddings. |
 

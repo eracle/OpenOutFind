@@ -104,6 +104,46 @@ CAMPAIGN_CONFIG = {
     # the failure closes a loop instead of an absorbing state: gate shut -> discover ->
     # novel leads -> BALD rises -> gate reopens.
     "min_bald_gain": 0.04,
+    # The calibrate arm (core/ml/calibration.py) derives the bar above instead of taking it
+    # as given. While the store holds fewer than √N calibration verdicts (N = the unjudged
+    # pool), each pass judges one lead drawn at random from the thinnest score band; once
+    # √N are in, the fit rate at each score is measured from them, and the bar is the
+    # lowest score where a verdict pays more than a search would. `min_gp_confidence`
+    # stays the fallback until then.
+    #
+    # Why: a 500-lead order held at 0.7 judged 71 people in 17h24m while 21,134 sat in its
+    # pool — 2 of them cleared 0.7, though leads at 0.4–0.7 fit 54–77% of the time out of
+    # fold. See the roadmap card `p1-e1-the-bar-is-measured-on-a-stratified-sample`.
+    #
+    # The two costs the rule weighs, in dollars: run time priced at `run_hour_dollars`,
+    # plus what the step itself is billed. How many new leads a search adds is not a
+    # setting — it is counted from the store.
+    #
+    # A search is one Lead Finder page: ~70 s on the held order's VM run (878 searches in
+    # 17h24m, polling included), and free — Lead Finder bills nothing.
+    #
+    # A verdict is one candidate judged: a few seconds and an LLM call for a model (a
+    # Haiku-class call reads ~1k tokens and writes ~100: about $0.002), and ~40 s for a
+    # calling agent under --agent-qualify (178 verdicts in 1h49m on the same store), whose
+    # turn re-reads its context: a few cents.
+    #
+    # `run_hour_dollars` prices an hour of run time as the smallest machine a run needs on
+    # its own — runs are independent, so the machine's hours are the only cost time has: a
+    # DigitalOcean Basic droplet, 1 vCPU / 2 GiB, $12/month = $0.01786/h
+    # (digitalocean.com/pricing/droplets, 2026-10-16). The heaviest pass measured —
+    # re-measuring the bar on a 21k-lead store, five GP fits and the pool scored — peaked at
+    # 824 MB resident, so 1 GiB is too tight once an OS sits underneath and 2 GiB is not. At
+    # this price time is nearly free next to an LLM's bill, so the bill decides the bar.
+    "run_hour_dollars": 0.01786,
+    "search_seconds": 70,
+    "verdict_seconds_model": 5,
+    "verdict_seconds_agent": 40,
+    "verdict_dollars_model": 0.002,
+    "verdict_dollars_agent": 0.05,
+    # Every band must hold this many calibration verdicts before the bar is believed. It
+    # also switches the arm on: √N must reach bands × this (N ≥ 1,600 at 8 bands × 5), so
+    # a small order's pool never spends verdicts on a sample it cannot fill.
+    "calibration_min_band_verdicts": 5,
     # There is no discovery cadence knob. Growing the vocabulary used to be an LLM call
     # worth rationing ("mint_every_n_qualified"); it is now a tokenize-and-count over a
     # few hundred profiles (pipeline/vocabulary.py), so it simply runs every pass. The

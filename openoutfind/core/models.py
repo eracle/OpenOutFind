@@ -174,3 +174,44 @@ class QueryNode(models.Model):
         suffix = "" if self.state == self.State.FRONTIER else f" [{self.state}]"
         offset = f" @{self.next_offset}" if self.next_offset else ""
         return f"{describe_node(self.pairs)}{offset}{suffix}"
+
+
+class CalibrationDraw(models.Model):
+    """One lead the calibrate arm drew at random from a score band, to be judged.
+
+    Its verdict is a **calibration verdict** once the lead has a deal: a verdict on a
+    lead the model did not choose, which is what lets the bar be measured rather than
+    picked (``core/ml/calibration.py``). The row keeps what the draw saw — the band, the
+    lead's score and the band's size in the pool at that moment — because the weight a
+    verdict carries is the share of the pool it stands for, and the pool moves on.
+    """
+
+    lead = models.OneToOneField("outfind_crm.Lead", on_delete=models.CASCADE)
+    band = models.PositiveSmallIntegerField()
+    p_at_draw = models.FloatField()
+    band_size = models.PositiveIntegerField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"draw band {self.band} · P={self.p_at_draw:.2f} of {self.band_size}"
+
+
+class CalibrationBar(models.Model):
+    """One measurement of the bar, from the calibration verdicts there were at the time.
+
+    The latest row is the bar ``calibration.current_threshold`` returns. ``break_even`` is
+    the fit rate below which a verdict was worth less than searching; ``threshold`` is the
+    lowest score whose measured fit rate is above it, NULL when no score's is — a result,
+    kept so the same verdicts are not measured again, and read as "use the fallback".
+    """
+
+    threshold = models.FloatField(null=True)
+    break_even = models.FloatField()
+    n_verdicts = models.PositiveIntegerField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        if self.threshold is None:
+            return f"no bar above {self.break_even:.1%} from {self.n_verdicts} verdicts"
+        return (f"bar {self.threshold:.2f} (break-even {self.break_even:.1%}) "
+                f"from {self.n_verdicts} verdicts")

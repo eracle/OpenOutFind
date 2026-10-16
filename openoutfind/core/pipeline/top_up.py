@@ -24,8 +24,12 @@ crown jewel and it is ported verbatim:
 - **explore** (``neg ≤ pos``) — label the most *informative* lead (max BALD), with no
   confidence gate: a low-confidence lead is exactly the label that teaches the GP
   most, so filtering by confidence would throw away the point of exploring.
-- **exploit** (``neg > pos``) — qualify the strongest lead clearing
-  ``min_gp_confidence``, the one whose qualification will buy an email rather than
+- **calibrate** (fewer than √N calibration verdicts, N the unjudged pool) — judge one
+  lead drawn at random from the thinnest score band, ahead of explore and exploit, and
+  once √N are in, measure the bar exploit reads. See ``core/ml/calibration.py``.
+- **exploit** (``neg > pos``, calibration verdicts left out) — qualify the strongest lead
+  clearing ``calibration.current_threshold()`` (``min_gp_confidence`` until a bar is
+  measured), the one whose qualification will buy an email rather than
   park at QUALIFIED. When none clears the gate there is nothing here worth an LLM
   call, so **discover instead**: the same constant gates both the LLM call and the
   paid lookup, so a lead the model would not pay for is not a lead it pays to judge.
@@ -45,6 +49,7 @@ import numpy as np
 from termcolor import colored
 
 from openoutfind.core.conf import CAMPAIGN_CONFIG
+from openoutfind.core.ml import calibration
 from openoutfind.core.ml.qualifier import BayesianQualifier
 from openoutfind.core.pipeline import vocabulary
 from openoutfind.core.pipeline.discover import discover
@@ -80,8 +85,29 @@ def top_up(site_config, qualifier: BayesianQualifier) -> bool:
             return False
         return run_qualification(site_config, qualifier, candidates=candidates) is not None
 
-    mode = qualifier.acquisition_mode()
     candidates = fetch_qualification_candidates()
+
+    # Calibrate — ahead of both, because what exploit can judge depends on the bar this
+    # measures. It waits on neither the balance nor the bar, so it cannot stall the way
+    # exploit did at an unmeasured 0.7. See `core/ml/calibration.py`.
+    pool = calibration.calibration_pool(candidates)
+    if calibration.should_calibrate(pool):
+        lead = calibration.next_lead(qualifier, pool)
+        if lead is not None:
+            judged = run_qualification(site_config, qualifier, candidates=[lead],
+                                       preselected=True)
+            if judged is not None and judged != lead.profile_url:
+                # Under --agent-qualify a candidate an earlier run left pending is
+                # answered first, whoever asks. Its verdict is not a calibration verdict;
+                # the draw stays open for the next pass.
+                logger.info("  %s answered a candidate left pending earlier — the "
+                            "calibration draw is next", colored("·", "cyan", attrs=["bold"]))
+            qualifier.exclude_from_balance(*calibration.verdict_counts())
+            return judged is not None
+    elif calibration.needs_measuring():
+        calibration.measure(qualifier, pool)
+
+    mode = qualifier.acquisition_mode()
 
     if mode == "exploit (p)":
         consumable = _consumable_candidates(qualifier, candidates)
@@ -121,8 +147,8 @@ def _consumable_candidates(qualifier: BayesianQualifier, candidates: list) -> li
     """The candidates clearing the spend gate — the ones a qualification can convert.
 
     Empty means exploit has nothing to convert (so it should widen instead): either
-    the GP is unfitted or no lead reaches ``min_gp_confidence``, the same constant the
-    promote gate uses.
+    the GP is unfitted or no lead reaches ``calibration.current_threshold()``, the same
+    bar the promote gate uses.
     """
     if not candidates:
         return []
@@ -131,7 +157,7 @@ def _consumable_candidates(qualifier: BayesianQualifier, candidates: list) -> li
     probs = qualifier.predict_probs(X)
     if probs is None:
         return []
-    threshold = CAMPAIGN_CONFIG["min_gp_confidence"]
+    threshold = calibration.current_threshold()
     return [c for c, p in zip(candidates, probs) if p >= threshold]
 
 

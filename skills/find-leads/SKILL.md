@@ -142,6 +142,16 @@ records the verdict, and keeps going: either the goal is met, the search runs dr
 again at the next `qualify_pending`. A rejected verdict disqualifies the lead the same way an
 LLM's "wrong fit" would; nothing already found is lost either way, same as `goal_unreached`.
 
+**On a large pool, expect a stretch of candidates that look like poor fits, and judge them the
+same way.** Once a store holds 1,600 or more unjudged leads, the run first judges about √N of them
+drawn at random across score bands — most from the low end — to measure the bar a lead must clear
+(the log says `calibrate — verdict n of m`). Those verdicts set the bar, so a fit marked no-fit to
+save time, or a weak lead waved through, moves the bar for the whole order. **The bar is where a
+verdict pays more than a search**, counting each one's run time and LLM bill, and the log says
+where it landed (`judging pays above a 54% fit rate`). Your verdicts cost more than a model's
+call, so under `--agent-qualify` the bar sits higher and the run searches sooner; with a model
+judging it sits lower and the run works through weaker leads first.
+
 **`--verdict` needs both `--agent-qualify` and `--reason`** — passing one without the other is
 `bad_config`. **Don't pass `--agent-qualify` unless you intend to answer every `qualify_pending` it
 raises** — a bare `find` without the flag uses `AI_MODEL` and never stops for a verdict at all,

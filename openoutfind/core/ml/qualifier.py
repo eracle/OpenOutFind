@@ -169,6 +169,10 @@ class BayesianQualifier(GPBaldQualifier):
         # observations, and permanent: they are never trimmed as real positives
         # arrive. See ``set_anchors``.
         self._anchor_X: list[np.ndarray] = []
+        # (n_neg, n_pos) among the observations that are calibration verdicts — fitted
+        # on like any other, but left out of the balance that picks the mode. See
+        # ``balance_counts``.
+        self._calibration_counts: tuple[int, int] = (0, 0)
 
     @property
     def n_obs(self) -> int:
@@ -183,6 +187,22 @@ class BayesianQualifier(GPBaldQualifier):
         """
         n_pos = sum(self._y) + len(self._anchor_X)
         return len(self._y) - sum(self._y), n_pos
+
+    @property
+    def balance_counts(self) -> tuple[int, int]:
+        """``class_counts`` less the calibration verdicts — what picks explore or exploit.
+
+        Calibration verdicts are mostly rejections from the low score bands, the kind
+        active learning never picks. Counted here they would hold the run in exploit
+        for good and end explore after the first calibration; they still train the GP.
+        """
+        n_neg, n_pos = self.class_counts
+        cal_neg, cal_pos = self._calibration_counts
+        return n_neg - cal_neg, n_pos - cal_pos
+
+    def exclude_from_balance(self, n_neg: int, n_pos: int):
+        """Name how many observations are calibration verdicts, by class."""
+        self._calibration_counts = (n_neg, n_pos)
 
     @property
     def n_anchors(self) -> int:
@@ -400,7 +420,8 @@ class BayesianQualifier(GPBaldQualifier):
         rejection, and not one of them a step toward the first acceptance.
 
         Past the cold phase it is balance-driven as before: exploit once real negatives
-        outnumber real positives, explore while the classes are still even.
+        outnumber real positives, explore while the classes are still even — counted
+        without the calibration verdicts (``balance_counts``).
 
         None on cold start (model not fitted yet). Exposed so callers can pick which
         cheap prefilter to run *before* they exact-embed.
@@ -409,7 +430,7 @@ class BayesianQualifier(GPBaldQualifier):
             return None
         if self.is_cold:
             return "exploit (p)"
-        n_neg, n_pos = self.class_counts
+        n_neg, n_pos = self.balance_counts
         return "exploit (p)" if n_neg > n_pos else "explore (BALD)"
 
     # ``acquisition_scores`` is inherited unchanged — it dispatches on
@@ -532,20 +553,38 @@ def qualifier_for():
     such case: the install fits on its own labels, or on its anchors when it has none.
     """
     global _FITTED
-    from openoutfind.core.conf import CAMPAIGN_CONFIG
-    from openoutfind.core.config import SiteConfig
-    from openoutfind.core.pipeline.icp import ensure_anchors, stored_anchors
+    from openoutfind.core.ml import calibration
     from openoutfind.crm.models import Lead
 
     if _FITTED is not None and _FITTED[0] == _label_fingerprint():
         logger.debug("ranking model: reusing the fit — no verdict since")
         return _FITTED[1]
 
+    X, y = Lead.get_labeled_arrays()
+    qualifier = build_qualifier(X, y)
+    qualifier.exclude_from_balance(*calibration.verdict_counts())
+
+    # Fingerprinted *after* the build, because ``ensure_anchors`` may have just written
+    # the first anchor set — keying on the pre-build state would miss on the very next
+    # call and refit for nothing.
+    _FITTED = (_label_fingerprint(), qualifier)
+    return qualifier
+
+
+def build_qualifier(X: np.ndarray, y: np.ndarray) -> BayesianQualifier:
+    """An unfitted qualifier over these labels, with the install's anchors.
+
+    ``qualifier_for`` builds the install's model with it; the calibration builds one
+    over the same labels in a known order, to hold some of them out.
+    """
+    from openoutfind.core.conf import CAMPAIGN_CONFIG
+    from openoutfind.core.config import SiteConfig
+    from openoutfind.core.pipeline.icp import ensure_anchors, stored_anchors
+
     qualifier = BayesianQualifier(
         seed=42,
         n_mc_samples=CAMPAIGN_CONFIG["qualification_n_mc_samples"],
     )
-    X, y = Lead.get_labeled_arrays()
     if len(X) > 0:
         qualifier.warm_start(X, y)
 
@@ -557,9 +596,4 @@ def qualifier_for():
                else ensure_anchors(SiteConfig.load()))
     if anchors is not None:
         qualifier.set_anchors(anchors)
-
-    # Fingerprinted *after* the build, because ``ensure_anchors`` may have just written
-    # the first anchor set — keying on the pre-build state would miss on the very next
-    # call and refit for nothing.
-    _FITTED = (_label_fingerprint(), qualifier)
     return qualifier

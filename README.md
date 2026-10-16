@@ -295,10 +295,13 @@ The run ends when the goal is met, or when **nothing can advance right now** —
 
 Discovered profiles are embedded (384-dim FastEmbed vectors) from the licensed firmographic payload. Which profile to evaluate next is a balance-driven choice:
 
-- **When negatives outnumber positives** → **exploit**: pick the profile with highest predicted qualification probability (fill the pipeline with likely positives)
+- **On a large pool, first** → **calibrate**: judge about √N profiles drawn at random across score bands, so the run learns how often a profile at each score actually fits
+- **When negatives outnumber positives** → **exploit**: pick the profile with highest predicted qualification probability, as long as it clears the bar (fill the pipeline with likely positives)
 - **Otherwise** → **explore**: pick the profile with highest BALD (Bayesian Active Learning by Disagreement) score (seek the most informative label)
 
-All qualification decisions go through the LLM. The GP model selects which candidate to evaluate next and gates promotion from `QUALIFIED` to `READY_TO_FIND_EMAIL`. Every LLM decision feeds back into the model, making candidate selection progressively smarter. **Only the LLM's fit verdict trains it** — no signal from a send has ever entered that loop.
+**The bar is worked out, not chosen.** From the calibration verdicts the run knows the fit rate at each score, and it judges a waiting profile only while that is a cheaper way to a fit than searching for new ones — counting each verdict's LLM bill and each search's machine time. A cheap model judges deep into the pool; a dearer judge takes only the likeliest profiles and searches sooner.
+
+All qualification decisions go through the LLM. The GP model selects which candidate to evaluate next and, through the same bar, gates promotion from `QUALIFIED` to `READY_TO_FIND_EMAIL`. Every LLM decision feeds back into the model, making candidate selection progressively smarter. **Only the LLM's fit verdict trains it** — no signal from a send has ever entered that loop.
 
 **Cold start:** an install with no acceptances yet has nothing to fit on, so the ICP is also written out as a handful of **synthetic ideal profiles** and embedded as the model's positives. They are lead rows like any other (flagged `synthetic`, never contacted and never exported), and they stay — real acceptances simply outnumber them, so a few invented profiles decide less and less as ground truth arrives. When the unlabelled pool empties, discovery pages a fresh batch.
 

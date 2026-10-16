@@ -38,6 +38,7 @@ def _exploiting_qualifier():
 class _Candidate:
     def __init__(self):
         self.embedding_array = np.zeros(8, dtype=np.float64)
+        self.profile_text = "Head of Growth at Acme"
 
 
 @pytest.mark.django_db

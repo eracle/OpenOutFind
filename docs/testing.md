@@ -22,6 +22,7 @@ tests/
 ├── db/
 │   └── test_deals.py           # Deal state ops
 ├── ml/
+│   ├── test_calibration.py     # the calibrate arm: draws, costs, the derived bar, where it is read
 │   ├── test_embeddings.py      # FastEmbed embedding
 │   └── test_qualifier.py       # GP + BALD selection, LLM qualification
 ├── test_bettercontact.py       # finder submit/poll + the discovery transport

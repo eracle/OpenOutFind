@@ -32,7 +32,7 @@ The lead's `profile_text` (headline, company description, title, seniority, indu
 
 **Where:** `core/pipeline/qualify.py`, `core/ml/qualifier.py`
 
-Embedded leads with no Deal are the pool. The GP selects which candidate to evaluate next — **exploit** (highest predicted probability) when negatives outnumber positives, else **explore** (highest BALD). Every decision is an LLM call over the stored `profile_text`. An install with no acceptances yet fits against **synthetic ideal profiles** written from its ICP (`icp.generate_anchors`), which are `Lead` rows carrying `synthetic=True` — excluded from this pool, so one is never judged or contacted. They are permanent — real acceptances outnumber them rather than retiring them.
+Embedded leads with no Deal are the pool. The GP selects which candidate to evaluate next — on a pool of 1,600 or more, first **calibrate** (one lead drawn at random from the thinnest score band, until √N are judged; `core/ml/calibration.py`), then **exploit** (highest predicted probability, at or above the bar) when negatives outnumber positives, else **explore** (highest BALD). Every decision is an LLM call over the stored `profile_text`. An install with no acceptances yet fits against **synthetic ideal profiles** written from its ICP (`icp.generate_anchors`), which are `Lead` rows carrying `synthetic=True` — excluded from this pool, so one is never judged or contacted. They are permanent — real acceptances outnumber them rather than retiring them.
 
 - **Accepted** → `Lead` promoted to a `Deal` at `QUALIFIED`.
 - **Rejected** → `FAILED` Deal with `wrong_fit` outcome (a verdict on this deal; not `Lead.disqualified`).
@@ -41,7 +41,7 @@ Embedded leads with no Deal are the pool. The GP selects which candidate to eval
 
 **Where:** `core/pipeline/ready_pool.py:promote_to_ready`
 
-A GP confidence gate promotes `QUALIFIED → READY_TO_FIND_EMAIL` when `P(f>0.5) >= min_gp_confidence` (0.9). This **rations the paid lookup** — only leads the model is confident about ever cost a credit.
+A GP confidence gate promotes `QUALIFIED → READY_TO_FIND_EMAIL` when `P(f>0.5) >= calibration.current_threshold()` — the bar the calibrate arm derived, or `min_gp_confidence` (0.7) until there is one. It is the same bar exploit judges against. This **rations the paid lookup** — only ranked leads ever cost a credit.
 
 ## 5. Resolve an address — two-leg async (READY_TO_FIND_EMAIL → RESOLVED / NO_EMAIL_FOUND)
 

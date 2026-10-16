@@ -69,13 +69,16 @@ def fetch_qualification_candidates():
     return [lead for lead in leads if not is_excluded(lead.profile_url)]
 
 
-def run_qualification(site_config, qualifier: BayesianQualifier, candidates=None) -> str | None:
+def run_qualification(site_config, qualifier: BayesianQualifier, candidates=None,
+                      preselected: bool = False) -> str | None:
     """Qualify one unlabelled profile via the LLM. Returns profile_url or None.
 
     ``candidates`` restricts the selection to a caller-chosen subset — the consume
     state passes only the leads that can clear the promote gate, so an LLM call is
     never spent on a lead that would park at QUALIFIED. Defaults to the whole
-    unlabelled pool, which is what the explore state wants.
+    unlabelled pool, which is what the explore state wants. ``preselected`` says the
+    caller already chose the one candidate and narrated why (the calibrate arm), so
+    there is no ranking to do or announce.
 
     Which candidate gets the call is the qualifier's balance-driven strategy; the
     verdict itself is always the LLM's. On a cold start that strategy runs against a
@@ -106,7 +109,9 @@ def run_qualification(site_config, qualifier: BayesianQualifier, candidates=None
 
     # Balance-driven candidate selection
     selection_score = None
-    if len(candidates) == 1:
+    if preselected:
+        candidate = candidates[0]
+    elif len(candidates) == 1:
         logger.info("  %s only one candidate waiting — nothing to rank between",
                     colored("·", "cyan", attrs=["bold"]))
         candidate = candidates[0]
@@ -126,7 +131,7 @@ def run_qualification(site_config, qualifier: BayesianQualifier, candidates=None
             best_idx = int(np.argmax(scores))
             candidate = candidates[best_idx]
             selection_score = (strategy, float(scores[best_idx]))
-            n_neg, n_pos = qualifier.class_counts
+            n_neg, n_pos = qualifier.balance_counts
             # Which acquisition strategy picked this candidate is a question an
             # operator watching the run genuinely asks — "is it exploring or
             # exploiting right now, and why" — not just the engine reasoning about
