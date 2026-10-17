@@ -127,12 +127,13 @@ CAMPAIGN_CONFIG = {
     # store), whose turn re-reads its context: a few cents.
     #
     # A model's call is priced from the model that makes it (`MODEL_PRICES` below) times
-    # the tokens one verdict reads and writes. It reads the customer's two texts, the
-    # brief, the profile and the instructions — ~1,700 tokens with a brief of ~400 words —
-    # and writes a one-sentence reason plus whatever a thinking model thinks first: ~400.
-    # So Haiku 5.5 pays ~$0.0004 a verdict, Sonnet 5.5 ~$0.007, Opus 5.5 ~$0.015, and the
-    # bar rises with the judge's price — at $0.50–$2 a lead, even Opus's per-fit bill is a
-    # few cents. A model missing from the table is charged `verdict_dollars_model`.
+    # the tokens one verdict reads and writes, measured over 20 verdicts on the held
+    # order with its ~450-word brief: ~2,760 read (the customer's two texts, the brief,
+    # the profile, the instructions and the answer's schema), and 112 written on Sonnet
+    # 5.5 against 389 on Haiku 5.5, which thinks before it answers. So Haiku 5.5 pays
+    # ~$0.0004 a verdict, Sonnet 5.5 ~$0.006, Opus 5.5 ~$0.012, and the bar rises with
+    # the judge's price — at $0.50–$2 a lead, even Opus's per-fit bill is a few cents. A
+    # model missing from the table is charged `verdict_dollars_model`.
     #
     # `run_hour_dollars` prices an hour of run time as the smallest machine a run needs on
     # its own — runs are independent, so the machine's hours are the only cost time has: a
@@ -145,8 +146,8 @@ CAMPAIGN_CONFIG = {
     "search_seconds": 70,
     "verdict_seconds_model": 5,
     "verdict_seconds_agent": 40,
-    "verdict_input_tokens": 1700,
-    "verdict_output_tokens": 400,
+    "verdict_input_tokens": 2800,
+    "verdict_output_tokens": 300,
     "verdict_dollars_model": 0.005,
     "verdict_dollars_agent": 0.05,
     # Every band must hold this many calibration verdicts before the bar is believed. It
