@@ -94,6 +94,19 @@ def _no_live_model_ping(request):
             yield
 
 
+@pytest.fixture(autouse=True)
+def _no_live_brief_writer():
+    """No test may have a model write a brief.
+
+    Every prompt now reads the brief first (``pipeline/brief.py``), so a test that patches
+    one prompt's ``Agent`` would otherwise feed that fake to the brief's writer too. Tests
+    *of* the brief patch the same target themselves and win, because their patch is
+    applied inside this one.
+    """
+    with patch("openoutfind.core.pipeline.brief._write_with_llm", return_value=""):
+        yield
+
+
 @pytest.fixture
 def configure(monkeypatch):
     """Set this run's configuration, the only way an install is configured: the environment.

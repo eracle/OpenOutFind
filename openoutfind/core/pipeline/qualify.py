@@ -92,6 +92,7 @@ def run_qualification(site_config, qualifier: BayesianQualifier, candidates=None
     """
     from openoutfind.core.ml.qualifier import qualify_with_llm, format_prediction
     from openoutfind.core import agent_qualify
+    from openoutfind.core.pipeline.brief import ensure_rules
     from openoutfind.crm.models import PendingQualification
 
     agent_mode = agent_qualify.active()
@@ -168,6 +169,7 @@ def run_qualification(site_config, qualifier: BayesianQualifier, candidates=None
         candidate.profile_text,
         product_docs=site_config.product_docs,
         campaign_target=site_config.campaign_target,
+        rules=ensure_rules(site_config),
     )
     _save_qualification_result(qualifier, candidate, embedding, label, reason)
     return profile_url
@@ -216,7 +218,11 @@ def _resume_agent_qualification(qualifier: BayesianQualifier, pending) -> str | 
 
 
 def _candidate_payload(lead) -> dict:
-    """The fields an agent needs to judge fit — the same ones the LLM path sees."""
+    """The fields an agent needs to judge fit — the same ones the LLM path sees, the
+    store's brief among them (``""`` when none was handed in)."""
+    from openoutfind.core.pipeline.brief import stored
+
+    brief = stored()
     return {
         "lead_id": lead.pk,
         "profile_url": lead.profile_url,
@@ -224,6 +230,7 @@ def _candidate_payload(lead) -> dict:
         "full_name": lead.full_name,
         "job_title": lead.job_title,
         "company": getattr(lead.company, "name", None),
+        "rules": brief.rules if brief is not None else "",
     }
 
 

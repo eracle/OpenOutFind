@@ -207,19 +207,18 @@ def _spec_from_llm(site_config) -> ICPSpec:
     from pydantic_ai import Agent
 
     from openoutfind.core.llm import get_llm_model, run_agent_sync
+    from openoutfind.core.pipeline.brief import ensure_rules
 
     env = jinja2.Environment(loader=jinja2.FileSystemLoader(str(PROMPTS_DIR)))
     prompt = env.get_template("icp_filters.j2").render(
         product_docs=site_config.product_docs,
         campaign_target=site_config.campaign_target,
+        rules=ensure_rules(site_config),
         seniorities=LEAD_SENIORITIES,
     )
 
-    agent = Agent(
-        get_llm_model(),
-        output_type=ICPSpec,
-        model_settings={"temperature": 0.3, "timeout": 60},
-    )
+    # No temperature: the current Claude models reject one that isn't their default.
+    agent = Agent(get_llm_model(), output_type=ICPSpec, model_settings={"timeout": 60})
     return run_agent_sync(agent.run(prompt)).output
 
 
@@ -300,23 +299,22 @@ def generate_anchors(site_config, count: int = ANCHOR_COUNT, existing=()) -> lis
     from pydantic_ai import Agent
 
     from openoutfind.core.llm import get_llm_model, run_agent_sync
+    from openoutfind.core.pipeline.brief import ensure_rules
 
     env = jinja2.Environment(loader=jinja2.FileSystemLoader(str(PROMPTS_DIR)))
     prompt = env.get_template("anchor_profiles.j2").render(
         product_docs=site_config.product_docs,
         campaign_target=site_config.campaign_target,
+        rules=ensure_rules(site_config),
         count=count,
         existing=list(existing),
     )
 
     try:
-        agent = Agent(
-            get_llm_model(),
-            output_type=_AnchorProfiles,
-            # Warmer than the seed: the seed wants the single most likely conjunction,
-            # these want spread across the ideal region.
-            model_settings={"temperature": 0.8, "timeout": 60},
-        )
+        # No temperature: the current Claude models reject one that isn't their default.
+        # The spread across the ideal region is asked for in the prompt instead.
+        agent = Agent(get_llm_model(), output_type=_AnchorProfiles,
+                      model_settings={"timeout": 60})
         result = run_agent_sync(agent.run(prompt)).output
     except Exception:
         logger.exception("anchor generation failed — install stays unanchored")
@@ -349,17 +347,21 @@ def agent_icp_answer(site_config, existing=()) -> IcpAnswer | None:
     from openoutfind.core import agent_qualify
     from openoutfind.core.pipeline.qualify import IcpPending
 
+    from openoutfind.core.pipeline.brief import stored
+
     if not agent_qualify.active():
         return None
     answer = agent_qualify.icp_answer()
     if answer is not None:
         return answer
+    brief = stored()
     raise IcpPending(
         "this store has no ICP yet — write the opening keywords and "
         f"{ANCHOR_COUNT} ideal profiles",
         payload={
             "product_docs": site_config.product_docs,
             "campaign_target": site_config.campaign_target,
+            "rules": brief.rules if brief is not None else "",
             "seniorities": list(LEAD_SENIORITIES),
             "anchor_count": ANCHOR_COUNT,
             "existing_anchors": list(existing),

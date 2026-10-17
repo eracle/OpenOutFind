@@ -40,6 +40,7 @@ def build_status() -> dict:
 
     return {
         "config": config,
+        "brief": _brief(),
         "totals": totals,
         "credits": credits,
         "hub": hub,
@@ -59,6 +60,22 @@ def _config_state() -> dict:
         "complete": not missing,
         "done": [group for group in GROUPS if group not in missing],
         "missing": missing,
+    }
+
+
+# ── the brief ────────────────────────────────────────────────────
+
+def _brief() -> dict | None:
+    """The rules this store judges by, or ``None`` before any were written."""
+    from openoutfind.core.pipeline.brief import stored
+
+    brief = stored()
+    if brief is None:
+        return None
+    return {
+        "rules": brief.rules,
+        "written_by": brief.written_by,
+        "updated_at": brief.updated_at.isoformat(timespec="seconds"),
     }
 
 

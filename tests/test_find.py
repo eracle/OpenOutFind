@@ -380,6 +380,27 @@ class TestTheCommandContract:
         assert exc.value.error_type == ErrorType.ICP_PENDING
         assert '"title": "IcpAnswer"' in caplog.text
 
+    def test_brief_stores_the_file_as_the_store_brief(self, site_config, booted, tmp_path):
+        from openoutfind.core.pipeline.brief import stored
+
+        path = tmp_path / "brief.md"
+        path.write_text("A fit is: bakers.\n")
+        call_command("find", "0", "--brief", str(path), stdout=io.StringIO())
+
+        assert stored().rules == "A fit is: bakers."
+
+    def test_an_unreadable_or_empty_brief_is_refused_before_any_work(self, site_config, booted,
+                                                                     tmp_path):
+        empty = tmp_path / "empty.md"
+        empty.write_text("  \n")
+        for path in (tmp_path / "missing.md", empty):
+            with patch("openoutfind.core.cycle.run_one_action") as action:
+                with pytest.raises(OpenOutFindError) as exc:
+                    call_command("find", "1", "--brief", str(path), stdout=io.StringIO())
+
+            assert exc.value.error_type == ErrorType.BAD_CONFIG
+            action.assert_not_called()
+
     def test_icp_without_agent_qualify_is_refused(self, site_config, booted):
         with pytest.raises(OpenOutFindError) as exc:
             call_command("find", "1", "--icp", "{}", stdout=io.StringIO())

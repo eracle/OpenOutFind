@@ -107,6 +107,7 @@ exports — the row carries the person, the company and the reason with a blank 
 | `--open` | Opens each new lead's profile in a browser. **Never pass this** — it is for a human at a terminal, and it errors out headless. |
 | `--db PATH` | Work against a SQLite file other than `~/.openoutfind/data/db.sqlite3` (same as `OPENOUTFIND_DB`). Accepted by every verb. |
 | `--agent-qualify` | Opt out of `AI_MODEL` for the qualify step — see *Answering qualify yourself* below. |
+| `--brief PATH` | A file holding the judging rules — who fits, who does not, which companies look like buyers and are not. Stored as the store's brief, replacing any there, and read by the seed, the anchors and every verdict. Without it `AI_MODEL` writes one the first time a prompt needs it. Write it yourself when you are a stronger model than the judge: the judge then applies your rules to every lead. `status` shows the brief in force. An unreadable or empty file is `bad_config`, before any work. |
 | `--exclude PATH` | A file of LinkedIn URLs, one per line (blank lines ignored). Those profiles are never put up for a verdict — not even as a `qualify_pending` stop — never printed, and never counted toward the goal. URLs match with the host lowercased and the query, fragment and trailing slash dropped. An unreadable file is `bad_config`, before any work. |
 
 A run can take a while: each lead is an LLM call, and paid lookups are polled. Give it a generous
@@ -157,7 +158,8 @@ judging it sits lower and the run works through weaker leads first.
 raises** — a bare `find` without the flag uses `AI_MODEL` and never stops for a verdict at all,
 which is the right default for a run nobody is driving turn-by-turn. **`--agent-qualify` also drops
 `OPENOUTFIND_AI_MODEL`/`OPENOUTFIND_LLM_API_KEY` out of what `find` requires** for that run — a run
-driven this way never needs a model key at all.
+driven this way never needs a model key at all. The `qualify_pending` payload carries the store's
+brief as `rules` (`""` when none was given — pass `--brief` first and judge by it).
 
 **A fresh store asks you for its ICP first.** The cold start has two more model calls — the opening
 search keywords and a few invented ideal profiles — so the first `--agent-qualify` run on an empty

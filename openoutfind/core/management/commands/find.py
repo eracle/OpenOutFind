@@ -155,6 +155,11 @@ class Command(OpenOutFindCommand):
             "--icp", dest="icp", metavar="JSON",
             help="Answer an icp_pending stop: the cold start's opening keywords and "
                  "ideal profiles as one JSON object, in the schema the error carried.")
+        parser.add_argument(
+            "--brief", dest="brief", metavar="PATH",
+            help="A file holding the judging rules — who fits, who does not. Stored as "
+                 "this store's brief, replacing any there, and read by every prompt. "
+                 "Without it AI_MODEL writes one the first time a prompt needs it.")
 
     def handle(self, *args, **options):
         if options["count"] < 0:
@@ -171,6 +176,7 @@ class Command(OpenOutFindCommand):
             _enable_agent_qualify(options["verdict"], options["reason"], options["icp"])
         if options["exclude"]:
             _enable_exclude(options["exclude"])
+        brief = _read_brief(options["brief"]) if options["brief"] else None
         # The unit says what to count; the flag says what may be paid for. A goal counted
         # in addresses cannot be met without buying them, so the noun implies the flag —
         # that is the one place the two are not independent.
@@ -183,6 +189,10 @@ class Command(OpenOutFindCommand):
         # that *fails* still raises; what is dropped is "Applying core.0001_initial… OK".
         ensure_database(io.StringIO() if quiet else self.stderr)
         check_ready()
+        if brief is not None:
+            from openoutfind.core.pipeline.brief import adopt
+
+            adopt(brief)
 
         from openoutfind.core.config import SiteConfig
 
@@ -320,8 +330,9 @@ def _announce_the_run(site_config, goal: Goal, buy_addresses: bool) -> None:
     Then the ICP echo: who the system thinks this install sells to. It is the earliest
     chance to notice the product description was misread, and on a first run there is
     nothing to echo yet — the anchors are written during the job, and print themselves
-    there.
+    there. The brief it judges by follows, for the same reason.
     """
+    from openoutfind.core.pipeline.brief import log_brief_echo
     from openoutfind.core.pipeline.icp import log_icp_echo
 
     spending = ("buying addresses, one credit each" if buy_addresses
@@ -329,6 +340,7 @@ def _announce_the_run(site_config, goal: Goal, buy_addresses: bool) -> None:
     work = f"goal: {goal}" if goal.count else "no work — printing what is already there"
     logger.info("%s · %s", work, spending)
     log_icp_echo()
+    log_brief_echo()
 
 
 def _streamer(writer: IncrementalWriter):
@@ -421,6 +433,21 @@ def _enable_exclude(path: str) -> None:
     except (OSError, UnicodeDecodeError) as exc:
         raise OpenOutFindError(ErrorType.BAD_CONFIG, f"--exclude cannot read {path}: {exc}")
     enable(urls)
+
+
+def _read_brief(path: str) -> str:
+    """Read ``--brief`` before any work, refusing a file that cannot be read or is empty.
+
+    Running on without it would judge the whole run by a brief the caller meant to replace.
+    """
+    try:
+        with open(path, encoding="utf-8") as handle:
+            rules = handle.read().strip()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise OpenOutFindError(ErrorType.BAD_CONFIG, f"--brief cannot read {path}: {exc}")
+    if not rules:
+        raise OpenOutFindError(ErrorType.BAD_CONFIG, f"--brief {path} is empty")
+    return rules
 
 
 def _enable_agent_qualify(verdict: str | None, reason: str | None, icp: str | None) -> None:

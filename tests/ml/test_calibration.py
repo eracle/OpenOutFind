@@ -156,10 +156,25 @@ def test_an_agent_verdict_costs_more_than_a_model_verdict():
 def test_a_verdict_costs_its_time_and_its_llm_bill():
     with (
         patch("openoutfind.core.agent_qualify.active", return_value=False),
-        patch.dict(CAMPAIGN_CONFIG, {"run_hour_dollars": 36.0, "verdict_seconds_model": 10,
-                                     "verdict_dollars_model": 0.002}),
+        patch.object(calibration, "model_verdict_bill", return_value=0.002),
+        patch.dict(CAMPAIGN_CONFIG, {"run_hour_dollars": 36.0, "verdict_seconds_model": 10}),
     ):
         assert calibration.verdict_cost() == pytest.approx(0.1 + 0.002)
+
+
+def test_a_model_verdict_is_billed_at_that_models_rates():
+    with patch.dict(CAMPAIGN_CONFIG, {"verdict_input_tokens": 1_000_000,
+                                      "verdict_output_tokens": 1_000_000}):
+        assert calibration.model_verdict_bill("anthropic:claude-haiku-5-5") == pytest.approx(0.60)
+        assert calibration.model_verdict_bill("anthropic:claude-sonnet-5-5") == pytest.approx(12.0)
+        # A dated id bills as its family; the longest matching key wins.
+        assert calibration.model_verdict_bill("claude-haiku-4-5-20251001") == pytest.approx(6.0)
+        assert calibration.model_verdict_bill("anthropic:claude-sonnet-5") == pytest.approx(12.0)
+
+
+def test_an_unpriced_model_is_billed_the_fallback():
+    with patch.dict(CAMPAIGN_CONFIG, {"verdict_dollars_model": 0.004}):
+        assert calibration.model_verdict_bill("openai:gpt-4o") == 0.004
 
 
 def test_a_search_costs_only_its_time():

@@ -215,3 +215,23 @@ class CalibrationBar(models.Model):
             return f"no bar above {self.break_even:.1%} from {self.n_verdicts} verdicts"
         return (f"bar {self.threshold:.2f} (break-even {self.break_even:.1%}) "
                 f"from {self.n_verdicts} verdicts")
+
+
+class Brief(models.Model):
+    """Our reading of the customer's two texts: the rules every prompt is written from.
+
+    The customer's words stay in the environment, untouched — they are answers a person
+    gave. This is what we concluded from them (who fits, who does not, which companies
+    look like buyers and are not), so it is produced, and lives in the store beside the
+    rest of what the pipeline produced. One row; ``core/pipeline/brief.py`` owns it.
+
+    ``written_by`` is the model id that wrote it, or ``--brief`` when the caller handed
+    it in.
+    """
+
+    rules = models.TextField()
+    written_by = models.CharField(max_length=100)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"brief by {self.written_by}, {self.updated_at:%Y-%m-%d %H:%M}"

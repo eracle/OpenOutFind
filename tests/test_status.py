@@ -220,8 +220,22 @@ def test_json_is_one_object_and_nothing_else(site_config, configured, has_key, b
 
     document = json.loads(capsys.readouterr().out)  # would raise on any stray line
     assert set(document) == {
-        "config", "totals", "credits", "hub", "blocked", "next_action",
+        "config", "brief", "totals", "credits", "hub", "blocked", "next_action",
     }
+
+
+@pytest.mark.django_db
+def test_the_brief_in_force_is_reported_and_none_before_one(site_config, configured, has_key,
+                                                            balance, hub):
+    from openoutfind.core.pipeline.brief import adopt
+
+    with balance(value=40), hub(balance=0, known=True):
+        assert status_module.build_status()["brief"] is None
+        adopt("A fit is: bakers.\nNot a fit: florists.")
+        brief = status_module.build_status()["brief"]
+
+    assert brief["rules"] == "A fit is: bakers.\nNot a fit: florists."
+    assert brief["written_by"] == "--brief"
 
 
 @pytest.mark.django_db

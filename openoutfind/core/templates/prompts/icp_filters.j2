@@ -5,7 +5,12 @@ You are a B2B go-to-market analyst. Translate the product and campaign below int
 
 ## Campaign Target
 {{ campaign_target }}
+{% if rules %}
+## Who fits and who does not
+{{ rules }}
 
+Search for the people these rules accept. Leave out words that mostly find the people they turn away, and set the company-size band and the country so they keep every company the rules accept.
+{% endif %}
 ## Instructions
 You are not writing a query. You are handing over the **words worth searching**, and the engine combines them itself, measuring which combinations actually surface good leads. So give several words per list, not one — breadth here is cheap and the engine narrows on its own.
 

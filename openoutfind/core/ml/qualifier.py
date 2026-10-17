@@ -67,14 +67,19 @@ def format_prediction(prob: float, entropy: float, std: float, n_obs: int) -> st
 
 class QualificationDecision(BaseModel):
     """Structured LLM output for lead qualification."""
-    qualified: bool = Field(description="True if the profile is a good prospect, False otherwise")
-    reason: str = Field(description="Brief explanation for the decision")
+    qualified: bool = Field(description="True if the person is a fit by the rules, False otherwise")
+    reason: str = Field(description="One sentence, under 30 words, the customer reads beside "
+                                    "the person's name")
 
 
-def qualify_with_llm(profile_text: str, product_docs: str, campaign_target: str) -> tuple[int, str]:
+def qualify_with_llm(profile_text: str, product_docs: str, campaign_target: str,
+                     rules: str = "") -> tuple[int, str]:
     """Call LLM to qualify a profile. Returns (label, reason).
 
-    label: 1 = accept, 0 = reject.
+    label: 1 = accept, 0 = reject. ``rules`` is the store's brief (``pipeline/brief.py``).
+
+    No temperature: the current Claude models reject one that isn't their default, and
+    consistency comes from the brief, not from sampling.
     """
     from pydantic_ai import Agent
 
@@ -86,13 +91,14 @@ def qualify_with_llm(profile_text: str, product_docs: str, campaign_target: str)
     prompt = template.render(
         product_docs=product_docs,
         campaign_target=campaign_target,
+        rules=rules,
         profile_text=profile_text,
     )
 
     agent = Agent(
         get_llm_model(),
         output_type=QualificationDecision,
-        model_settings={"temperature": 0.7, "timeout": 60},
+        model_settings={"timeout": 60},
     )
     decision = run_agent_sync(agent.run(prompt)).output
 

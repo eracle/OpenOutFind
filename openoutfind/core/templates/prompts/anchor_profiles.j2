@@ -5,7 +5,12 @@ You are a B2B go-to-market analyst. Invent {{ count }} example profiles of peopl
 
 ## Campaign Target
 {{ campaign_target }}
+{% if rules %}
+## Who fits and who does not
+{{ rules }}
 
+Every profile must be one these rules accept.
+{% endif %}
 {% if existing %}
 ## Profiles you have already written
 {% for p in existing %}

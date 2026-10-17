@@ -122,10 +122,17 @@ CAMPAIGN_CONFIG = {
     # A search is one Lead Finder page: ~70 s on the held order's VM run (878 searches in
     # 17h24m, polling included), and free — Lead Finder bills nothing.
     #
-    # A verdict is one candidate judged: a few seconds and an LLM call for a model (a
-    # Haiku-class call reads ~1k tokens and writes ~100: about $0.002), and ~40 s for a
-    # calling agent under --agent-qualify (178 verdicts in 1h49m on the same store), whose
-    # turn re-reads its context: a few cents.
+    # A verdict is one candidate judged: a few seconds and an LLM call for a model, and
+    # ~40 s for a calling agent under --agent-qualify (178 verdicts in 1h49m on the same
+    # store), whose turn re-reads its context: a few cents.
+    #
+    # A model's call is priced from the model that makes it (`MODEL_PRICES` below) times
+    # the tokens one verdict reads and writes. It reads the customer's two texts, the
+    # brief, the profile and the instructions — ~1,700 tokens with a brief of ~400 words —
+    # and writes a one-sentence reason plus whatever a thinking model thinks first: ~400.
+    # So Haiku 5.5 pays ~$0.0004 a verdict, Sonnet 5.5 ~$0.007, Opus 5.5 ~$0.015, and the
+    # bar rises with the judge's price — at $0.50–$2 a lead, even Opus's per-fit bill is a
+    # few cents. A model missing from the table is charged `verdict_dollars_model`.
     #
     # `run_hour_dollars` prices an hour of run time as the smallest machine a run needs on
     # its own — runs are independent, so the machine's hours are the only cost time has: a
@@ -138,7 +145,9 @@ CAMPAIGN_CONFIG = {
     "search_seconds": 70,
     "verdict_seconds_model": 5,
     "verdict_seconds_agent": 40,
-    "verdict_dollars_model": 0.002,
+    "verdict_input_tokens": 1700,
+    "verdict_output_tokens": 400,
+    "verdict_dollars_model": 0.005,
     "verdict_dollars_agent": 0.05,
     # Every band must hold this many calibration verdicts before the bar is believed. It
     # also switches the arm on: √N must reach bands × this (N ≥ 1,600 at 8 bands × 5), so
@@ -151,6 +160,22 @@ CAMPAIGN_CONFIG = {
     # that measured it. Discovery steering is arithmetic over labels — no threshold, no
     # confidence gate, no model. See pipeline/select.py.
     "embedding_model": "BAAI/bge-small-en-v1.5",
+}
+
+# What a verdict's model is billed, in dollars per million tokens (input, output), keyed by
+# the model name without its provider prefix. A dated id (`claude-haiku-4-5-20251001`)
+# matches its family by the longest key it starts with. Anthropic's first-party rates,
+# 2026-10-06; Haiku 5.5's apply to prompts under 100k tokens, which a verdict always is.
+MODEL_PRICES = {
+    "claude-haiku-4-5": (1.00, 5.00),
+    "claude-haiku-5-5": (0.10, 0.50),
+    "claude-sonnet-4-6": (3.00, 15.00),
+    "claude-sonnet-5": (2.00, 10.00),
+    "claude-sonnet-5-5": (2.00, 10.00),
+    "claude-opus-4-8": (5.00, 25.00),
+    "claude-opus-5": (5.00, 25.00),
+    "claude-opus-5-5": (4.00, 20.00),
+    "claude-fable-5-1": (10.00, 50.00),
 }
 
 

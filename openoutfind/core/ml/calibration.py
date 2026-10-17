@@ -37,10 +37,10 @@ Choices worth knowing before changing anything:
   (mostly low-band rejections) move the scores the bar is compared against.
 - **No weights.** Stratifying on the score does not bias the fit rate *at* a score, and
   the rule only ever asks about one score at a time.
-- **The verdict cost depends on who judges**: a model in seconds and a fraction of a
-  cent, a calling agent under ``--agent-qualify`` in tens of seconds and a few cents — so
-  the same store gets a higher bar when an agent is judging, because each verdict costs
-  it more.
+- **The verdict cost depends on who judges**: a model in seconds, at its own per-token
+  rate (``MODEL_PRICES``: Haiku 5.5 ~$0.0004 a verdict, Opus 5.5 ~$0.015), a calling agent
+  under ``--agent-qualify`` in tens of seconds and a few cents — so the same store gets a
+  higher bar under a dearer judge, because each verdict costs it more.
 - **The arm switches itself on** only when √N reaches bands ×
   ``calibration_min_band_verdicts``, so a small order's pool never spends verdicts on a
   sample too thin to draw a curve from.
@@ -228,10 +228,29 @@ def verdict_cost() -> float:
     """What one verdict costs this run, in dollars: a model's call, or a calling agent's
     turn — its time plus the LLM's bill for it."""
     from openoutfind.core import agent_qualify
+    from openoutfind.core.config import SiteConfig
 
-    judge = "agent" if agent_qualify.active() else "model"
-    return _dollars(CAMPAIGN_CONFIG[f"verdict_seconds_{judge}"],
-                    CAMPAIGN_CONFIG[f"verdict_dollars_{judge}"])
+    if agent_qualify.active():
+        return _dollars(CAMPAIGN_CONFIG["verdict_seconds_agent"],
+                        CAMPAIGN_CONFIG["verdict_dollars_agent"])
+    return _dollars(CAMPAIGN_CONFIG["verdict_seconds_model"],
+                    model_verdict_bill(SiteConfig.load().ai_model))
+
+
+def model_verdict_bill(ai_model: str) -> float:
+    """What ``ai_model`` is billed for one verdict: its rates times a verdict's tokens.
+
+    ``verdict_dollars_model`` for a model ``MODEL_PRICES`` does not list.
+    """
+    from openoutfind.core.conf import MODEL_PRICES
+
+    name = ai_model.rpartition(":")[2]
+    family = max((key for key in MODEL_PRICES if name.startswith(key)), key=len, default=None)
+    if family is None:
+        return CAMPAIGN_CONFIG["verdict_dollars_model"]
+    input_rate, output_rate = MODEL_PRICES[family]
+    return (CAMPAIGN_CONFIG["verdict_input_tokens"] * input_rate
+            + CAMPAIGN_CONFIG["verdict_output_tokens"] * output_rate) / 1_000_000
 
 
 # ── The bar ──

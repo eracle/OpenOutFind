@@ -44,6 +44,7 @@ def render(status: dict) -> str:
     """Render the status document as a short human summary."""
     sections = (
         _render_config(status["config"]),
+        _render_brief(status["brief"]),
         _render_pipeline(status["totals"]),
         _render_credits(status["credits"]),
         _render_hub(status["hub"]),
@@ -59,6 +60,14 @@ def _render_config(config: dict) -> str:
     lines = ["Configuration: incomplete."]
     for group, variables in config["missing"].items():
         lines.append(f"  {group}: set {', '.join(variables)}")
+    return "\n".join(lines)
+
+
+def _render_brief(brief: dict | None) -> str:
+    if brief is None:
+        return "Brief: none yet — AI_MODEL writes one on the first verdict, or pass --brief."
+    lines = [f"Brief: by {brief['written_by']}, {brief['updated_at']}"]
+    lines += [f"  {line.rstrip()}" for line in brief["rules"].splitlines() if line.strip()]
     return "\n".join(lines)
 
 

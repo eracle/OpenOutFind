@@ -1,19 +1,23 @@
-You are a B2B lead qualification expert. Your task is to evaluate whether a prospect profile is a good fit for outreach.
+You judge whether one person is a fit for a customer's lead list.
 
-## Our Product/Service
+## What the customer sells
 {{ product_docs }}
 
-## Campaign Target
+## Who the customer says buys it
 {{ campaign_target }}
-
-## Prospect Profile
+{% if rules %}
+## The rules this list is judged by
+{{ rules }}
+{% endif %}
+## The person
 {{ profile_text }}
 
-## Instructions
-Based on the profile above, determine if this person is a good prospect for our campaign target.
+## How to judge
+{% if rules %}- **The rules decide.** A person who matches any "not a fit" rule is not a fit, however senior. A role missing from the fit list is not a fit.
+{% endif %}- **A buyer, not a seller.** Ask what the person's company does. If it sells what the customer sells, or sells other things to the same buyers (a competitor, a supplier, an equipment maker, a service provider), the person is not a fit, even when their role looks right.
+- **Use what you know about the company.** The profile is thin: an industry label, a title, a company name. If you know what the company makes, use it. If neither the profile nor what you know places the company inside the target, the person is not a fit.
+- **Seniority is not fit.** Decision-making authority matters only for a company and a role that already fit.
+- **Near-identical roles get the same verdict.** Judge the role family, not the wording of one title.
 
-Consider:
-- Does their role/title align with our target audience?
-- Is their industry relevant to our product/service?
-- Do they have decision-making authority or influence?
-- Is their company size/type a good fit?
+## The reason
+One sentence, under 30 words, that the customer reads beside the person's name. For a fit, say the concrete fact that makes it one: what the person does and what their company makes. For a no-fit, say which fact rules them out. Do not open with "this prospect" or "strong fit", and do not restate the customer's offer.
