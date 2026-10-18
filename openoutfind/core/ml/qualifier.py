@@ -72,10 +72,12 @@ class QualificationDecision(BaseModel):
                                     "the person's name")
 
 
-def qualify_with_llm(profile_text: str, product_docs: str, campaign_target: str,
+def qualify_with_llm(person: dict, product_docs: str, campaign_target: str,
                      rules: str = "") -> tuple[int, str]:
-    """Call LLM to qualify a profile. Returns (label, reason).
+    """Call LLM to qualify a person. Returns (label, reason).
 
+    ``person`` is ``qualify.verdict_fields(lead)``: the title, company, location and
+    company tags as labelled fields, beside the run-together ``profile_text``.
     label: 1 = accept, 0 = reject. ``rules`` is the store's brief (``pipeline/brief.py``).
 
     No temperature: the current Claude models reject one that isn't their default, and
@@ -92,7 +94,7 @@ def qualify_with_llm(profile_text: str, product_docs: str, campaign_target: str,
         product_docs=product_docs,
         campaign_target=campaign_target,
         rules=rules,
-        profile_text=profile_text,
+        person=person,
     )
 
     agent = Agent(
@@ -296,8 +298,7 @@ class BayesianQualifier(GPBaldQualifier):
         if len(np.unique(y_arr)) < 2:
             return False  # need both classes
 
-        from sklearn.gaussian_process import GaussianProcessRegressor
-        from sklearn.gaussian_process.kernels import ConstantKernel, RBF
+        from openoutlearn.qualifier import gpr_for, record_search
         from sklearn.pipeline import Pipeline
         from sklearn.preprocessing import StandardScaler
 
@@ -309,15 +310,11 @@ class BayesianQualifier(GPBaldQualifier):
         X_fit, y_fit = (X_arr, y_arr) if self.is_cold else self._balance(X_arr, y_arr)
         n = X_fit.shape[0]
 
-        self._pipeline = Pipeline([
-            ('scaler', StandardScaler()),
-            ('gpr', GaussianProcessRegressor(
-                kernel=ConstantKernel(1.0) * RBF(length_scale=np.sqrt(self.embedding_dim)),
-                n_restarts_optimizer=3,
-                random_state=self._seed,
-                alpha=0.1,
-            )),
-        ])
+        # The kernel is searched only when the labels have grown 25% since the last search
+        # (``openoutlearn.qualifier.gpr_for``); otherwise the last search's kernel is
+        # refitted as-is — ~1s instead of ~60s at 2,000 labels, for the same posterior.
+        gpr, kept = gpr_for(self.embedding_dim, self._seed, n)
+        self._pipeline = Pipeline([('scaler', StandardScaler()), ('gpr', gpr)])
         # Announced *before* it runs, not after. This is the run's one genuinely
         # expensive step and it grows as O(n³) in the label count — 17s at 1,220
         # labels — so a line that only appears on completion means the longest stall
@@ -329,10 +326,13 @@ class BayesianQualifier(GPBaldQualifier):
         started = time.monotonic()
         self._pipeline.fit(X_fit, y_fit)
         lml = self._pipeline.named_steps['gpr'].log_marginal_likelihood_value_
+        elapsed = time.monotonic() - started
+        if not kept:
+            record_search(self.embedding_dim, gpr, n, elapsed)
 
         self._fitted = True
-        logger.info("ranking model trained on %d judged lead(s) in %.1fs",
-                    n, time.monotonic() - started)
+        logger.info("ranking model trained on %d judged lead(s) in %.1fs (%s kernel %s)",
+                    n, elapsed, "kept" if kept else "searched", gpr.kernel_)
         logger.debug("GPR fitted on %d observations (%d anchors, %d after balancing, "
                       "LML=%.2f)", self.n_obs, len(self._anchor_X), n, lml)
         return True
