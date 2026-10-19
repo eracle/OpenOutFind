@@ -128,8 +128,12 @@ outfind find 10 --agent-qualify --json
 It runs discovery exactly as normal — free either way — and exits non-zero with `qualify_pending`,
 which carries the candidate's own fields right on the error object under `--json`
 (`{"error": {"type": "qualify_pending", "profile_text", "company", "job_title", "full_name",
-"profile_url", "lead_id", ...}}`; without `--json` the profile URL and text are narrated on stderr
-just above the one-line error). Judge the fit the
+"location", "company_tags", "profile_url", "lead_id", ...}}`; without `--json` the profile URL and
+text are narrated on stderr just above the one-line error). `profile_text` is the provider's fields
+run together and unlabelled (headline, industry label, title, company, seniority bucket, company
+industry, location), so read the title and company from their own keys; `company_tags` are
+LinkedIn's tags for the matched company, which say what it makes or sells but are sometimes the
+wrong company. Judge the fit the
 same way you would judge anything else in this conversation, then re-run the **same command** with
 your verdict attached:
 

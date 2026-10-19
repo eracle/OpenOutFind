@@ -166,7 +166,7 @@ def run_qualification(site_config, qualifier: BayesianQualifier, candidates=None
                               payload=_candidate_payload(candidate))
 
     label, reason = qualify_with_llm(
-        candidate.profile_text,
+        verdict_fields(candidate),
         product_docs=site_config.product_docs,
         campaign_target=site_config.campaign_target,
         rules=ensure_rules(site_config),
@@ -217,19 +217,44 @@ def _resume_agent_qualification(qualifier: BayesianQualifier, pending) -> str | 
     return candidate.profile_url
 
 
+def verdict_fields(lead) -> dict:
+    """The person as the verdict reads them: labelled fields beside ``profile_text``.
+
+    ``profile_text`` is the provider's fields run together, lowercased and unlabelled,
+    which is right for the embedding and wrong for a reader — a model glued the industry
+    label to the seniority bucket ("manufacturing … president/vice president") and wrote
+    "VP of Manufacturing" for a VP of finance. So the fields the store keeps apart are
+    handed over by name, the company's LinkedIn tags among them: they say what the
+    company makes or sells, where the profile text often says nothing.
+    """
+    source = lead.source_fields or {}
+    location = ", ".join(part for part in (
+        source.get("contact_location_state"), source.get("contact_location_country")) if part)
+    return {
+        "title": lead.job_title or "",
+        "company": getattr(lead.company, "name", None) or "",
+        "location": location,
+        "company_tags": source.get("company_keywords", ""),
+        "profile_text": lead.profile_text,
+    }
+
+
 def _candidate_payload(lead) -> dict:
     """The fields an agent needs to judge fit — the same ones the LLM path sees, the
     store's brief among them (``""`` when none was handed in)."""
     from openoutfind.core.pipeline.brief import stored
 
     brief = stored()
+    person = verdict_fields(lead)
     return {
         "lead_id": lead.pk,
         "profile_url": lead.profile_url,
-        "profile_text": lead.profile_text,
+        "profile_text": person["profile_text"],
         "full_name": lead.full_name,
         "job_title": lead.job_title,
         "company": getattr(lead.company, "name", None),
+        "location": person["location"],
+        "company_tags": person["company_tags"],
         "rules": brief.rules if brief is not None else "",
     }
 

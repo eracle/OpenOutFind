@@ -10,7 +10,13 @@ You judge whether one person is a fit for a customer's lead list.
 {{ rules }}
 {% endif %}
 ## The person
-{{ profile_text }}
+{% if person.title %}- **Title:** {{ person.title }}
+{% endif %}{% if person.company %}- **Company:** {{ person.company }}
+{% endif %}{% if person.location %}- **Location:** {{ person.location }}
+{% endif %}{% if person.company_tags %}- **Company tags:** {{ person.company_tags }}
+{% endif %}- **Profile text:** {{ person.profile_text }}
+
+The profile text is the data provider's fields run together, lowercased and unlabelled, in this order: the person's headline (their own words about themselves, not the customer's), LinkedIn's industry label for the person, their title, the company, a seniority bucket (such as "director" or "president/vice president"), the company's industry label, and the location. An industry label such as "manufacturing" or "alternative medicine" is never part of a job title and never a company name: take the title and the company from the lines above. The company tags are LinkedIn's tags for the company the provider matched; they usually say what the company makes or sells, but the match is sometimes the wrong company, so when they contradict the rest of the profile, trust the profile.
 
 ## How to judge
 {% if rules %}- **The rules decide.** A person who matches any "not a fit" rule is not a fit, however senior. A role missing from the fit list is not a fit.

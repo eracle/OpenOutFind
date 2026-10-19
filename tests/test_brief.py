@@ -92,9 +92,9 @@ class TestPrompts:
         from openoutfind.core.conf import PROMPTS_DIR
 
         env = jinja2.Environment(loader=jinja2.FileSystemLoader(str(PROMPTS_DIR)))
+        values.setdefault("person", {"profile_text": "baker"})
         return env.get_template(name).render(product_docs="ovens", campaign_target="bakeries",
-                                             profile_text="baker", seniorities=[], count=3,
-                                             existing=[], **values)
+                                             seniorities=[], count=3, existing=[], **values)
 
     @pytest.mark.parametrize("name", ["qualify_lead.j2", "icp_filters.j2", "anchor_profiles.j2"])
     def test_every_prompt_carries_the_rules(self, name):
@@ -102,6 +102,27 @@ class TestPrompts:
 
     def test_without_rules_the_verdict_prompt_has_no_rules_section(self):
         assert "The rules decide" not in self._render("qualify_lead.j2", rules="")
+
+    def test_the_verdict_prompt_labels_the_person(self):
+        prompt = self._render("qualify_lead.j2", rules="", person={
+            "title": "Vice president finance", "company": "Nug", "location": "California",
+            "company_tags": "carts, flower vapes",
+            "profile_text": "manufacturing vice president finance nug president/vice president",
+        })
+
+        assert "- **Title:** Vice president finance" in prompt
+        assert "- **Company:** Nug" in prompt
+        assert "- **Company tags:** carts, flower vapes" in prompt
+        assert "never part of a job title" in prompt
+
+    def test_the_verdict_prompt_leaves_out_fields_the_lead_lacks(self):
+        prompt = self._render("qualify_lead.j2", rules="", person={
+            "title": "", "company": "", "location": "", "company_tags": "",
+            "profile_text": "baker"})
+
+        assert "**Title:**" not in prompt
+        assert "**Company tags:**" not in prompt
+        assert "- **Profile text:** baker" in prompt
 
 
 @pytest.mark.django_db
@@ -133,3 +154,54 @@ class TestTheVerdictReadsTheBrief:
 
         brief_module.adopt("A fit is: bakers.")
         assert _candidate_payload(lead)["rules"] == "A fit is: bakers."
+
+
+@pytest.mark.django_db
+class TestVerdictFields:
+    def test_the_stored_fields_are_handed_over_by_name(self):
+        from openoutfind.core.pipeline.qualify import _candidate_payload, verdict_fields
+        from openoutfind.crm.models import Company, Lead
+
+        lead = Lead.objects.create(
+            profile_url="https://www.linkedin.com/in/viktoria/",
+            profile_text="manufacturing vice president finance nug",
+            job_title="Vice president finance",
+            company=Company.from_row("Nug", None),
+            source_fields={"contact_location_state": "California",
+                           "contact_location_country": "United states",
+                           "company_keywords": "carts, flower vapes"})
+
+        assert verdict_fields(lead) == {
+            "title": "Vice president finance", "company": "Nug",
+            "location": "California, United states", "company_tags": "carts, flower vapes",
+            "profile_text": "manufacturing vice president finance nug",
+        }
+        assert _candidate_payload(lead)["company_tags"] == "carts, flower vapes"
+
+    def test_a_lead_with_nothing_stored_apart_still_has_its_profile_text(self):
+        from openoutfind.core.pipeline.qualify import verdict_fields
+        from openoutfind.crm.models import Lead
+
+        lead = Lead.objects.create(profile_url="https://www.linkedin.com/in/bob/",
+                                   profile_text="baker")
+
+        assert verdict_fields(lead) == {"title": "", "company": "", "location": "",
+                                        "company_tags": "", "profile_text": "baker"}
+
+    def test_the_model_is_handed_the_labelled_person(self, described):
+        from openoutfind.core.ml.qualifier import BayesianQualifier
+        from openoutfind.core.pipeline.qualify import run_qualification
+        from openoutfind.crm.models import Lead
+
+        Lead.objects.create(profile_url="https://www.linkedin.com/in/alice/",
+                            profile_text="baker at forno", job_title="Head baker",
+                            embedding=np.ones(384, dtype=np.float32).tobytes())
+
+        with patch("openoutfind.core.ml.qualifier.qualify_with_llm",
+                   return_value=(1, "Bakes for Forno.")) as qualify, \
+                patch("openoutfind.core.db.leads.promote_lead_to_deal"):
+            run_qualification(described, BayesianQualifier(seed=42))
+
+        person = qualify.call_args.args[0]
+        assert person["title"] == "Head baker"
+        assert person["profile_text"] == "baker at forno"
