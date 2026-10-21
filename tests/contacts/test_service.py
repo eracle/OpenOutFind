@@ -359,6 +359,89 @@ class TestShareProfiles:
         self._share([_lead_finder_row()], response=_resp(500))  # must not raise
 
 
+# ── companies: each page's employers, given back ─────────────────────
+
+
+def _company_row(url="https://www.linkedin.com/company/verano-holdings", **over):
+    company = {
+        "company_linkedin_url": url,
+        "company_name": "Verano",
+        "company_domain": "verano.com",
+        "company_industry": "Alternative Medicine",
+        "company_keywords": ["cannabis", "alternative medicine"],
+        "company_description": "A vertically integrated multi-state cannabis operator.",
+        "company_employees_range_start": 1001,
+        "company_employees_range_end": 5000,
+        "company_head_quarters_country": "United States",
+    }
+    return _lead_finder_row(**{**company, **over})
+
+
+@pytest.mark.django_db
+class TestShareCompanies:
+    def _share(self, rows, country="us"):
+        with patch.object(
+            service.requests, "post", return_value=_resp(200, {"accepted": 1}),
+        ) as post:
+            service.share_companies(rows, country)
+        return post
+
+    def test_a_page_is_one_request_with_one_record_per_company(self):
+        _config(token="tok")
+        other = "https://www.linkedin.com/company/connected-cannabis-co"
+        post = self._share([_company_row(), _company_row(), _company_row(url=other)])
+        post.assert_called_once()
+        assert post.call_args.args[0].endswith("/api/v2/companies/")
+        urls = [r["linkedin_url"] for r in post.call_args.kwargs["json"]["companies"]]
+        assert urls == ["https://www.linkedin.com/company/verano-holdings", other]
+
+    def test_a_record_is_the_company_alone_with_its_text_and_size(self):
+        _config(token="tok")
+        record = self._share([_company_row()]).call_args.kwargs["json"]["companies"][0]
+        fields = record["fields"]
+        assert fields["company_keywords"] == "cannabis, alternative medicine"
+        assert fields["company_description"].startswith("A vertically integrated")
+        assert fields["company_employees_range_end"] == "5000"
+        assert not any(key.startswith("contact_") for key in fields)
+        assert len(record["embedding"]) == 384
+
+    def test_the_vector_is_the_companys_own_text(self):
+        from openoutfind.discovery import company_records, company_text_for
+
+        _config(token="tok")
+        row = _company_row()
+        with patch("openoutfind.core.ml.embeddings.embed_texts",
+                   side_effect=lambda texts: np.ones((len(texts), 384))) as embed:
+            self._share([row])
+        expected = company_text_for(company_records([row])[0]["fields"])
+        embed.assert_called_once_with([expected])
+        assert expected.startswith("verano alternative medicine cannabis")
+
+    def test_a_placeholder_employer_or_no_company_page_is_not_sent(self):
+        _config(token="tok")
+        rows = [
+            _company_row(company_name="Self employed"),
+            _company_row(company_linkedin_url=""),
+        ]
+        self._share(rows).assert_not_called()
+
+    @pytest.mark.parametrize("country", ["de", "gb", "ch", ""])
+    def test_a_page_searched_in_eea_uk_ch_or_nowhere_is_not_sent(self, country):
+        _config(token="tok")
+        self._share([_company_row()], country=country).assert_not_called()
+
+    def test_an_eea_operator_sends_nothing(self):
+        _config(token="tok", operator_country_code="fr")
+        self._share([_company_row()]).assert_not_called()
+
+    def test_an_outage_is_swallowed(self):
+        _config(token="tok")
+        with patch.object(
+            service.requests, "post", side_effect=requests.ConnectionError("down"),
+        ):
+            service.share_companies([_company_row()], "us")  # must not raise
+
+
 # ── identity, minted at onboarding ───────────────────────────────────
 
 

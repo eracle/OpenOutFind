@@ -3,8 +3,9 @@
 give back what we find.
 
 Best-effort calls; a missing token or an outage degrades to a no-op and never
-breaks outreach. Two give back: ``contribute`` sends a resolved address, and
-``share_profiles`` sends every row of a discovery page. The store caches ``public_identifier -> email`` so the network's
+breaks outreach. Three give back: ``contribute`` sends a resolved address,
+``share_profiles`` sends every row of a discovery page, and ``share_companies`` the
+page's distinct employers. The store caches ``public_identifier -> email`` so the network's
 paid + harvested resolutions lower everyone's BetterContact spend as coverage grows.
 
 The geo-gate that keeps EEA/UK/CH out of the store is enforced **server-side** (the
@@ -168,21 +169,61 @@ def share_profiles(rows: list[dict], country_code: str) -> None:
     The same gates as ``contribute``: an operator in the EEA/UK/CH sends nothing, and a
     page searched in one — or in no named country — is not sent. The hub gates again.
     """
-    if is_eea_located(country_code):
-        return
-    config = SiteConfig.load()
-    operator_country = config.operator_country_code
-    if operator_country and is_eea_located(operator_country):
-        return
     rows = [row for row in rows if row.get("contact_linkedin_profile_url")]
-    if not rows:
-        return
-    token = token_in_hand(config)
+    token = _page_token(country_code) if rows else ""
     if not token:
         return
 
     body = {"profiles": _profile_records(rows, country_code), **_build_fields()}
     _send("profiles", body, headers=_auth(token))
+
+
+def share_companies(rows: list[dict], country_code: str) -> None:
+    """Send one discovery page's distinct employers to the hub — best-effort, no credit.
+
+    One record per company LinkedIn page the page carried (``discovery.company_records``),
+    with its vector of the company's own text. No person rides along, so nothing here is
+    about anyone; the page's gates still hold, so an install that may not share the page
+    shares none of it.
+    """
+    from openoutfind.discovery import company_records
+
+    records = company_records(rows)
+    token = _page_token(country_code) if records else ""
+    if not token:
+        return
+
+    body = {"companies": _with_company_vectors(records), **_build_fields()}
+    _send("companies", body, headers=_auth(token))
+
+
+def _page_token(country_code: str) -> str:
+    """The token to share a page searched in *country_code* with, or ``""`` when it may not go.
+
+    A page searched in the EEA/UK/CH (or in no named country) is not shared, nor is
+    anything from an operator there; past those, it is the run's hub token.
+    """
+    if is_eea_located(country_code):
+        return ""
+    config = SiteConfig.load()
+    operator_country = config.operator_country_code
+    if operator_country and is_eea_located(operator_country):
+        return ""
+    return token_in_hand(config)
+
+
+def _with_company_vectors(records: list[dict]) -> list[dict]:
+    """*records* with the vector of each company's text and the model that made it."""
+    from openoutfind.core.conf import CAMPAIGN_CONFIG
+    from openoutfind.core.ml.embeddings import embed_texts
+    from openoutfind.discovery import company_text_for
+
+    vectors = embed_texts([company_text_for(record["fields"]) for record in records])
+    model = CAMPAIGN_CONFIG["embedding_model"]
+    return [
+        {**record, "embedding": [float(x) for x in vector], "embedding_model": model}
+        for record, vector in zip(records, vectors)
+    ]
 
 
 def _profile_records(rows: list[dict], country_code: str) -> list[dict]:

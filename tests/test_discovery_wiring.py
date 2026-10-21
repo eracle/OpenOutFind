@@ -131,10 +131,12 @@ class TestHarvest:
         rows = [_row(), _row(url="https://linkedin.com/in/b", headline=None)]
 
         with patch.object(discover_mod, "_fetch", return_value=Page(rows, 10)), \
-                patch("openoutfind.contacts.service.share_profiles") as share:
+                patch("openoutfind.contacts.service.share_profiles") as share, \
+                patch("openoutfind.contacts.service.share_companies") as companies:
             assert discover(c) is True
 
         share.assert_called_once_with(rows, "us")
+        companies.assert_called_once_with(rows, "us")
 
     def test_a_hub_outage_changes_nothing_about_the_walk(self, db):
         import requests

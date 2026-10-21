@@ -47,9 +47,10 @@ def _harvest(node, rows: list[dict]) -> int:
 
     The whole page — dropped rows and known profiles included — is then given back to the
     hub (``share_profiles``), best-effort: what this campaign has no use for is still a
-    person the pool did not have, or a newer copy of one it did.
+    person the pool did not have, or a newer copy of one it did. Its distinct employers
+    go too (``share_companies``), for the hub's company index.
     """
-    from openoutfind.contacts.service import share_profiles
+    from openoutfind.contacts.service import share_companies, share_profiles
     from openoutfind.core.company_cap import full_company_keys
     from openoutfind.core.db.leads import create_lead
     from openoutfind.discovery import company_key_for, is_live_profile, keyword_terms
@@ -70,6 +71,7 @@ def _harvest(node, rows: list[dict]) -> int:
         for row in accepted
     )
     share_profiles(rows, node.country_code)
+    share_companies(rows, node.country_code)
     return created
 
 

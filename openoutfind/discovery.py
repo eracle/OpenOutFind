@@ -319,6 +319,53 @@ def shared_fields(row: dict) -> dict:
     return {key: str(row[key]) for key in SHARED_FIELDS if row.get(key)}
 
 
+# What a discovery page gives back about its employers (``contacts.service.share_companies``):
+# the company record Lead Finder staples to each row, keyed by the company's LinkedIn page —
+# the one handle its ``company_linkedin_url`` filter pages a company's people by. Sent apart
+# from the person, with no person attached, and *with* the description and tags
+# ``SHARED_FIELDS`` leaves out: the staple can name the wrong employer for this person, but
+# the record is still a true account of the company it names, and that is all the hub's
+# company index keeps. The size is LinkedIn's band (51–200, 1,001–5,000).
+COMPANY_RECORD_FIELDS = (
+    "company_name",
+    "company_domain",
+    "company_industry",
+    "company_keywords",
+    "company_description",
+    "company_employees_range_start",
+    "company_employees_range_end",
+    "company_head_quarters_city",
+    "company_head_quarters_country",
+)
+
+# What a company's vector is built from: what the company says it is.
+COMPANY_TEXT_FIELDS = ("company_name", "company_industry", "company_keywords", "company_description")
+
+
+def company_records(rows: list[dict]) -> list[dict]:
+    """The page's distinct employers as ``{"linkedin_url", "fields"}``, first sighting kept.
+
+    A row whose employer has no LinkedIn page gives none, and so does a placeholder
+    employer ("Self employed"), whose stapled record is some unrelated company. A list
+    (the tags) is sent as its items joined with ``", "``.
+    """
+    from openoutfind.crm.models import Company
+
+    records: dict[str, dict] = {}
+    for row in rows:
+        url = str(row.get("company_linkedin_url") or "").strip()
+        if not url or url in records or Company.is_placeholder(row.get("company_name")):
+            continue
+        fields = {key: _as_text(row[key]) for key in COMPANY_RECORD_FIELDS if row.get(key)}
+        records[url] = {"linkedin_url": url, "fields": fields}
+    return list(records.values())
+
+
+def company_text_for(fields: dict) -> str:
+    """The text a company record's vector is built from, lowercased like ``profile_text``."""
+    return " ".join(fields[key] for key in COMPANY_TEXT_FIELDS if fields.get(key)).lower()
+
+
 def person_for(row: dict) -> dict:
     """The row's person fields as ``Lead`` column values, ``None`` where unreported."""
     return {field: _clean(row.get(key)) for field, key in PERSON_FIELDS.items()}
