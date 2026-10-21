@@ -34,6 +34,11 @@ Two things make that different from what you may have used before:
 
 It has **zero platform-ToS surface**: browserless, no social-network account, no scraping. There is no account to get banned, because there is no account.
 
+> **Rather not run it yourself?** I run it for you. Tell me what you sell and who buys it at
+> **[openoutreach.app](https://openoutreach.app/?utm_source=github&utm_medium=readme&utm_campaign=openoutfind)**
+> and I send back ten LinkedIn profiles that fit, each with the reason written out, free. After
+> that it's $2 a lead. Nothing to install, no keys, no account.
+
 **How it works:**
 
 1. **You provide** a product description and a campaign objective (e.g. "SaaS analytics platform" targeting "VP of Engineering at Series B startups")
