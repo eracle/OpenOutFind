@@ -304,6 +304,14 @@ COMPANY_FIELDS = {
     "domain": "company_domain",
 }
 
+# The employer's LinkedIn size band, kept on the ``crm.Company`` row for the verdict to
+# read — a customer's "small" is a size, and the judge cannot see it in ``profile_text``.
+# Not in ``SHARED_FIELDS``: the band reaches the hub with the company record instead.
+COMPANY_SIZE_FIELDS = {
+    "employees_min": "company_employees_range_start",
+    "employees_max": "company_employees_range_end",
+}
+
 
 # What a discovery row gives back to the hub (``contacts.service.share_profiles``): the
 # text fields, the person and the employer — **each kept apart**, so the lake can rebuild
@@ -372,11 +380,15 @@ def person_for(row: dict) -> dict:
 
 
 def company_for(row: dict):
-    """The row's employer as a ``crm.Company``, created on first sight. ``None`` if unnamed."""
+    """The row's employer as a ``crm.Company``, created on first sight. ``None`` if unnamed.
+
+    The row's size band, when it reports one, is written onto the row.
+    """
     from openoutfind.crm.models import Company
 
-    return Company.from_row(**{field: _clean(row.get(key))
-                               for field, key in COMPANY_FIELDS.items()})
+    return Company.from_row(
+        **{field: _clean(row.get(key)) for field, key in COMPANY_FIELDS.items()},
+        **{field: _count(row.get(key)) for field, key in COMPANY_SIZE_FIELDS.items()})
 
 
 def company_key_for(row: dict) -> str:
@@ -396,6 +408,14 @@ def _clean(value) -> str | None:
     """A provider string, or ``None`` — which is what "they didn't tell us" means."""
     text = str(value).strip() if value is not None else ""
     return text or None
+
+
+def _count(value) -> int | None:
+    """A provider headcount bound as an int, or ``None`` when it is missing or not a number."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def describe_node(keywords) -> str:

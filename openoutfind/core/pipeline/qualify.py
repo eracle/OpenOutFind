@@ -225,7 +225,9 @@ def verdict_fields(lead) -> dict:
     label to the seniority bucket ("manufacturing … president/vice president") and wrote
     "VP of Manufacturing" for a VP of finance. So the fields the store keeps apart are
     handed over by name, the company's LinkedIn tags among them: they say what the
-    company makes or sells, where the profile text often says nothing.
+    company makes or sells, where the profile text often says nothing. The company's
+    size band rides beside them, since a customer's "small" is a size the profile text
+    does not carry.
     """
     source = lead.source_fields or {}
     location = ", ".join(part for part in (
@@ -233,6 +235,7 @@ def verdict_fields(lead) -> dict:
     return {
         "title": lead.job_title or "",
         "company": getattr(lead.company, "name", None) or "",
+        "company_size": lead.company.size_text() if lead.company else "not reported",
         "location": location,
         "company_tags": source.get("company_keywords", ""),
         "profile_text": lead.profile_text,
@@ -253,6 +256,7 @@ def _candidate_payload(lead) -> dict:
         "full_name": lead.full_name,
         "job_title": lead.job_title,
         "company": getattr(lead.company, "name", None),
+        "company_size": person["company_size"],
         "location": person["location"],
         "company_tags": person["company_tags"],
         "rules": brief.rules if brief is not None else "",

@@ -350,6 +350,37 @@ class TestCompanyFor:
 
         assert first.pk == second.pk  # the key lowercases, so casing cannot fork the row
 
+    def test_keeps_the_size_band(self):
+        company = discovery.company_for({
+            "company_name": "Acme", "company_domain": "acme.com",
+            "company_employees_range_start": 51, "company_employees_range_end": "200"})
+
+        assert (company.employees_min, company.employees_max) == (51, 200)
+        assert company.size_text() == "51–200 employees (LinkedIn)"
+
+    def test_a_later_band_replaces_the_stored_one_and_a_missing_one_does_not(self):
+        discovery.company_for({"company_name": "Acme", "company_domain": "acme.com",
+                               "company_employees_range_start": 11,
+                               "company_employees_range_end": 50})
+        discovery.company_for({"company_name": "Acme", "company_domain": "acme.com",
+                               "company_employees_range_start": 1001,
+                               "company_employees_range_end": 5000})
+        company = discovery.company_for({"company_name": "Acme", "company_domain": "acme.com"})
+
+        assert company.size_text() == "1,001–5,000 employees (LinkedIn)"
+
+    def test_a_band_that_is_not_a_number_is_not_reported(self):
+        company = discovery.company_for({"company_name": "Acme",
+                                         "company_employees_range_start": "n/a"})
+
+        assert company.size_text() == "not reported"
+
+    def test_an_open_band_reads_as_a_floor(self):
+        company = discovery.company_for({"company_name": "Acme",
+                                         "company_employees_range_start": 10001})
+
+        assert company.size_text() == "10,001+ employees (LinkedIn)"
+
     def test_a_company_with_no_domain_keys_on_its_name(self):
         company = discovery.company_for({"company_name": "Acme"})
 

@@ -47,6 +47,11 @@ class Company(models.Model):
     fuzzy-matches them to a real domain like any other name — hundreds of unrelated leads
     then share one row carrying somebody else's website. ``from_row`` returns ``None`` for
     them, exactly as for a row that named nothing.
+
+    **The size is LinkedIn's employee band** (51–200, 1,001–5,000), kept so the verdict
+    can read it: a customer's "small" is a size, and without the band the judge guessed
+    it from the name. It comes from the same fuzzy-matched record as everything else
+    here, and the latest sighting that reports one wins.
     """
 
     class Meta:
@@ -57,6 +62,9 @@ class Company(models.Model):
     key = models.CharField(max_length=255, unique=True)
     name = models.CharField(max_length=200, null=True, blank=True, default=None)
     domain = models.CharField(max_length=200, null=True, blank=True, default=None)
+    # LinkedIn's employee band; ``None`` when the provider reported no bound.
+    employees_min = models.PositiveIntegerField(null=True, blank=True, default=None)
+    employees_max = models.PositiveIntegerField(null=True, blank=True, default=None)
     creation_date = models.DateTimeField(auto_now_add=True)
     update_date = models.DateTimeField(auto_now=True)
 
@@ -76,14 +84,35 @@ class Company(models.Model):
         normalised = " ".join(re.sub(r"[^a-z0-9]+", " ", (name or "").lower()).split())
         return normalised in PLACEHOLDER_NAMES
 
+    def size_text(self) -> str:
+        """The band as the verdict reads it: ``51–200 employees (LinkedIn)``, or
+        ``not reported``."""
+        if self.employees_min is None and self.employees_max is None:
+            return "not reported"
+        if self.employees_max is None:
+            return f"{self.employees_min:,}+ employees (LinkedIn)"
+        return f"{self.employees_min or 0:,}–{self.employees_max:,} employees (LinkedIn)"
+
     @classmethod
-    def from_row(cls, name: str | None, domain: str | None) -> "Company | None":
-        """Get or create the Company for one discovery row. ``None`` when it named none."""
+    def from_row(cls, name: str | None, domain: str | None,
+                 employees_min: int | None = None,
+                 employees_max: int | None = None) -> "Company | None":
+        """Get or create the Company for one discovery row. ``None`` when it named none.
+
+        A row that reports a size band updates the stored one; a row that reports none
+        leaves it alone.
+        """
         if cls.is_placeholder(name):
             return None
         key = cls.key_for(name, domain)
         if not key:
             return None
-        company, _created = cls.objects.get_or_create(
-            key=key, defaults={"name": name, "domain": domain})
+        size = {"employees_min": employees_min, "employees_max": employees_max}
+        company, created = cls.objects.get_or_create(
+            key=key, defaults={"name": name, "domain": domain, **size})
+        reported = employees_min is not None or employees_max is not None
+        if not created and reported and (
+                (company.employees_min, company.employees_max) != (employees_min, employees_max)):
+            company.employees_min, company.employees_max = employees_min, employees_max
+            company.save(update_fields=["employees_min", "employees_max", "update_date"])
         return company

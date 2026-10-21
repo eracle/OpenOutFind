@@ -115,6 +115,13 @@ class TestPrompts:
         assert "- **Company tags:** carts, flower vapes" in prompt
         assert "never part of a job title" in prompt
 
+    def test_the_verdict_prompt_shows_the_company_size(self):
+        prompt = self._render("qualify_lead.j2", rules="", person={
+            "company": "Nug", "company_size": "51–200 employees (LinkedIn)",
+            "profile_text": "baker"})
+
+        assert "- **Company size:** 51–200 employees (LinkedIn)" in prompt
+
     def test_the_verdict_prompt_leaves_out_fields_the_lead_lacks(self):
         prompt = self._render("qualify_lead.j2", rules="", person={
             "title": "", "company": "", "location": "", "company_tags": "",
@@ -166,17 +173,20 @@ class TestVerdictFields:
             profile_url="https://www.linkedin.com/in/viktoria/",
             profile_text="manufacturing vice president finance nug",
             job_title="Vice president finance",
-            company=Company.from_row("Nug", None),
+            company=Company.from_row("Nug", None, employees_min=51, employees_max=200),
             source_fields={"contact_location_state": "California",
                            "contact_location_country": "United states",
                            "company_keywords": "carts, flower vapes"})
 
         assert verdict_fields(lead) == {
             "title": "Vice president finance", "company": "Nug",
+            "company_size": "51–200 employees (LinkedIn)",
             "location": "California, United states", "company_tags": "carts, flower vapes",
             "profile_text": "manufacturing vice president finance nug",
         }
-        assert _candidate_payload(lead)["company_tags"] == "carts, flower vapes"
+        payload = _candidate_payload(lead)
+        assert payload["company_tags"] == "carts, flower vapes"
+        assert payload["company_size"] == "51–200 employees (LinkedIn)"
 
     def test_a_lead_with_nothing_stored_apart_still_has_its_profile_text(self):
         from openoutfind.core.pipeline.qualify import verdict_fields
@@ -185,7 +195,8 @@ class TestVerdictFields:
         lead = Lead.objects.create(profile_url="https://www.linkedin.com/in/bob/",
                                    profile_text="baker")
 
-        assert verdict_fields(lead) == {"title": "", "company": "", "location": "",
+        assert verdict_fields(lead) == {"title": "", "company": "",
+                                        "company_size": "not reported", "location": "",
                                         "company_tags": "", "profile_text": "baker"}
 
     def test_the_model_is_handed_the_labelled_person(self, described):
