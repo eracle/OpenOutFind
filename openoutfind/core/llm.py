@@ -97,10 +97,28 @@ def _build_openai(model, api_key, api_base):
     return OpenAIChatModel(model, provider=OpenAIProvider(openai_client=client))
 
 
+def _accept_union_message_param() -> None:
+    """Let pydantic-ai build Anthropic messages against `anthropic` 2.x.
+
+    `anthropic` 2.0 made `BetaMessageParam` a `Union` of per-role TypedDicts, and
+    pydantic-ai still calls it as a constructor, so every request raised `TypeError:
+    Cannot instantiate typing.Union` (pydantic/pydantic-ai#10923). Calling a TypedDict
+    only ever built a plain dict, so `dict` is the same call. A no-op once pydantic-ai
+    stops calling it.
+    """
+    import typing
+
+    import pydantic_ai.models.anthropic as pydantic_ai_anthropic
+
+    if typing.get_origin(pydantic_ai_anthropic.BetaMessageParam) is typing.Union:
+        pydantic_ai_anthropic.BetaMessageParam = dict
+
+
 def _build_anthropic(model, api_key, api_base):
     from anthropic import AsyncAnthropic
     from pydantic_ai.models.anthropic import AnthropicModel
     from pydantic_ai.providers.anthropic import AnthropicProvider
+    _accept_union_message_param()
     client = AsyncAnthropic(api_key=api_key, max_retries=_MAX_RETRIES)
     return AnthropicModel(model, provider=AnthropicProvider(anthropic_client=client))
 
