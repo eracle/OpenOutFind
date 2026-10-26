@@ -201,7 +201,7 @@ def pipeline_summary(site_config, buy_addresses: bool = True) -> str:
     from openoutfind.enrichment import bettercontact
 
     counts = dict(
-        Deal.objects.filter(lead__disqualified=False)
+        Deal.objects.filter(lead__disqualified=False, lead__marked=False)
         .values_list("state")
         .annotate(n=Count("state"))
         .values_list("state", "n"),

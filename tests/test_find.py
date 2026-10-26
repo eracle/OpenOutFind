@@ -285,6 +285,41 @@ class TestTheCommandContract:
         assert "--exclude" in str(exc.value)
         action.assert_not_called()
 
+    def test_labels_load_before_any_work_and_ride_the_run_object(self, site_config, booted,
+                                                                 tmp_path, capsys):
+        from openoutfind.crm.models import Lead
+
+        path = tmp_path / "ratings.json"
+        path.write_text(json.dumps([{
+            "linkedin_url": "https://www.linkedin.com/in/ada/", "value": "good",
+            "value_reason": "", "note": "", "profile_text": "ada cto at acme",
+            "source_fields": {}, "employees_min": None, "employees_max": None,
+        }]))
+
+        def sees_the_mark(c, buy_addresses=False, max_new_lookups=None):
+            assert Lead.objects.filter(marked=True).count() == 1
+            return False
+
+        out = io.StringIO()
+        with patch("openoutfind.core.cycle.run_one_action", side_effect=sees_the_mark):
+            call_command("find", "0", "--json", "--labels", str(path), stdout=out)
+
+        document = json.loads(capsys.readouterr().err)
+        assert document["labels"]["fits"] == 1
+        assert out.getvalue() == ""  # the customer already has them
+
+    def test_an_unreadable_labels_file_fails_before_any_work(self, site_config, booted, tmp_path):
+        path = tmp_path / "ratings.json"
+        path.write_text("not json")
+
+        with patch("openoutfind.core.cycle.run_one_action") as action:
+            with pytest.raises(OpenOutFindError) as exc:
+                call_command("find", "1", "--labels", str(path), stdout=io.StringIO())
+
+        assert exc.value.error_type == ErrorType.BAD_CONFIG
+        assert "--labels" in str(exc.value)
+        action.assert_not_called()
+
     def test_streaming_puts_the_run_metadata_on_stderr_and_nothing_else(self, site_config, booted,
                                                                         capsys):
         _exportable(site_config, "old@acme.com")

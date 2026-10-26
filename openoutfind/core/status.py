@@ -86,7 +86,8 @@ def _pipeline_counts() -> dict:
     from openoutfind.core.export import export_counts
     from openoutfind.crm.models import Deal, DealState
 
-    deals = Deal.objects.all()
+    # A marked lead's deal is the customer's verdict, not this store's work.
+    deals = Deal.objects.filter(lead__marked=False)
     by_state = {
         state: deals.filter(state=state).count()
         for state in (
@@ -110,6 +111,7 @@ def _pipeline_counts() -> dict:
         "exportable": exportable,
         "exportable_with_email": with_email,
         "exportable_without_email": exportable - with_email,
+        "marked": Deal.objects.filter(lead__marked=True).count(),
     }
 
 

@@ -22,10 +22,14 @@ _STATE_LOG_STYLE = {
 
 
 def _deals_at_state(state: DealState) -> list:
-    """Return profile dicts for all Deals at the given state."""
+    """Return profile dicts for all Deals at the given state.
+
+    A marked lead (``find --labels``) is left out: its verdict is the customer's, and the
+    promote gate must never queue an address lookup for somebody they already have.
+    """
     from openoutfind.crm.models import Deal
 
-    qs = Deal.objects.filter(state=state).select_related("lead")
+    qs = Deal.objects.filter(state=state, lead__marked=False).select_related("lead")
     return [d.lead.to_profile_dict() for d in qs]
 
 

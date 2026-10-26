@@ -9,6 +9,7 @@ to try.
     outfind find 10 --open           # ...and open each new profile in the browser
     outfind find 10 --debug          # ...and show the walk's reasoning as it goes
     outfind find 10 --exclude F      # ...never judging or printing the URLs listed in F
+    outfind find 10 --labels F       # ...a fresh store starting from a customer's marks
 
 **Finding is free; buying an address is not, and the free thing is the default.**
 Discovery and qualification cost only the operator's own LLM key, so a bare ``find 10``
@@ -160,6 +161,13 @@ class Command(OpenOutFindCommand):
             help="A file holding the judging rules — who fits, who does not. Stored as "
                  "this store's brief, replacing any there, and read by every prompt. "
                  "Without it AI_MODEL writes one the first time a prompt needs it.")
+        parser.add_argument(
+            "--labels", dest="labels", metavar="PATH",
+            help="A customer's marks (a JSON array or JSON Lines, as the hub's /ratings/ "
+                 "returns them), taken in as verdicts on a fresh store: good and already "
+                 "a customer or contact train as fits, not a fit as no-fits. A marked "
+                 "lead is never judged, printed or looked up. Marks already in the "
+                 "store are skipped, so the flag can ride every call.")
 
     def handle(self, *args, **options):
         if options["count"] < 0:
@@ -177,6 +185,7 @@ class Command(OpenOutFindCommand):
         if options["exclude"]:
             _enable_exclude(options["exclude"])
         brief = _read_brief(options["brief"]) if options["brief"] else None
+        marks = _read_labels(options["labels"]) if options["labels"] else None
         # The unit says what to count; the flag says what may be paid for. A goal counted
         # in addresses cannot be met without buying them, so the noun implies the flag —
         # that is the one place the two are not independent.
@@ -193,6 +202,12 @@ class Command(OpenOutFindCommand):
             from openoutfind.core.pipeline.brief import adopt
 
             adopt(brief)
+        # What the marks became rides `options` to `_report`, the one place that prints it.
+        options["loaded_labels"] = None
+        if marks is not None:
+            from openoutfind.core.pipeline.labels import load
+
+            options["loaded_labels"] = load(marks).as_dict()
 
         from openoutfind.core.config import SiteConfig
 
@@ -240,23 +255,20 @@ class Command(OpenOutFindCommand):
         ends with ranked leads and an empty wallet has to say so, and this is the only
         moment it can: the ask is about the state the run left behind, so it is read
         after the work rather than carried through it.
+
+        ``options["loaded_labels"]`` is what ``--labels`` did with the customer's marks,
+        and rides the run object under ``--json`` — its stderr has no other line to say
+        it on.
         """
         action = build_status()["next_action"]
+        labels = options.get("loaded_labels")
 
         if writer is not None:
             # Streaming already wrote every row it has, one at a time — `writer.count`
             # is what actually went out, whole-campaign bulk plus whatever this run
             # produced, which is `--new`-narrowed already if that flag was set.
             if options["as_json"]:
-                sys.stderr.write(json.dumps({
-                    "goal": {"count": result.goal.count, "unit": result.goal.unit},
-                    "produced": result.produced,
-                    "reached": result.reached,
-                    "stopped_because": result.stopped_because,
-                    "detail": result.detail or None,
-                    "next_action": action,
-                    "rows": writer.count,
-                }) + "\n")
+                _write_run_object(result, action, writer.count, labels)
                 return
 
             logger.info("%d of %d %s · %s · %d row(s) printed",
@@ -278,15 +290,7 @@ class Command(OpenOutFindCommand):
             # an escape sequence around an object a caller parses is the same corruption
             # a log line would be. The error object below it, if the run fell short, is
             # written the same way by `base.format_failure`.
-            sys.stderr.write(json.dumps({
-                "goal": {"count": result.goal.count, "unit": result.goal.unit},
-                "produced": result.produced,
-                "reached": result.reached,
-                "stopped_because": result.stopped_because,
-                "detail": result.detail or None,
-                "next_action": action,
-                "rows": len(records),
-            }) + "\n")
+            _write_run_object(result, action, len(records), labels)
             return
 
         write_csv(records, self.stdout)
@@ -314,6 +318,25 @@ class Command(OpenOutFindCommand):
 
         configure_logging(level=resolve_log_level(log_level, verbosity))
         print_banner()
+
+
+def _write_run_object(result: JobResult, action, rows: int, labels: dict | None) -> None:
+    """The run's metadata as the one JSON object on stderr under ``--json``.
+
+    ``labels`` appears only on a run given ``--labels``.
+    """
+    run = {
+        "goal": {"count": result.goal.count, "unit": result.goal.unit},
+        "produced": result.produced,
+        "reached": result.reached,
+        "stopped_because": result.stopped_because,
+        "detail": result.detail or None,
+        "next_action": action,
+        "rows": rows,
+    }
+    if labels is not None:
+        run["labels"] = labels
+    sys.stderr.write(json.dumps(run) + "\n")
 
 
 # ── minute 0 ─────────────────────────────────────────────────────
@@ -448,6 +471,19 @@ def _read_brief(path: str) -> str:
     if not rules:
         raise OpenOutFindError(ErrorType.BAD_CONFIG, f"--brief {path} is empty")
     return rules
+
+
+def _read_labels(path: str) -> list[dict]:
+    """Read ``--labels`` before any work, refusing a file that cannot be read as marks.
+
+    Running on without it would start the store from a guess the caller meant to replace.
+    """
+    from openoutfind.core.pipeline.labels import read_labels_file
+
+    try:
+        return read_labels_file(path)
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        raise OpenOutFindError(ErrorType.BAD_CONFIG, f"--labels cannot read {path}: {exc}")
 
 
 def _enable_agent_qualify(verdict: str | None, reason: str | None, icp: str | None) -> None:

@@ -80,6 +80,12 @@ class Lead(models.Model):
     # cold start, standing alongside whatever real positives arrive, for the whole life
     # of the install.
     synthetic = models.BooleanField(default=False)
+    # A real person the customer already judged — a mark handed in with ``find --labels``
+    # (``core/pipeline/labels.py``), stored with a ``Deal`` holding that verdict. The GP,
+    # the vocabulary and the walk's counts read the deal like any other verdict; the
+    # export, the promote gate and the counts leave the lead out, because the customer
+    # already has this person. So a marked lead is never judged, printed or looked up.
+    marked = models.BooleanField(default=False)
     # First-touch discovery provenance: the query node that first surfaced this
     # profile. A profile re-surfaced by a later node keeps its original node here
     # (creation is deduped by profile_url), so this records who *found* it, not
