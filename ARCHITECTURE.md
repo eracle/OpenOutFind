@@ -753,13 +753,18 @@ emitted rather than the message. **Note the operator-side duty this creates**: i
 opt-in on Smartlead and undocumented on Instantly, so a re-exported lead who never opted out can be
 contacted twice unless the operator enables it — say so in every adapter's docs.
 
-- **One record, two serialisations.** `JSON_FIELDS` is the record — the ten columns above plus
-  `profile_text`, the raw firmographic string the qualifier judged on. `RECORD_FIELDS` is the
+- **One record, two serialisations.** `JSON_FIELDS` is the record — the columns above plus
+  `profile_text`, the raw firmographic string the qualifier judged on, `source_fields` (the
+  lead's `Lead.source_fields`: title, state, country and the company's LinkedIn tags, kept apart
+  under their Lead Finder names, as the walk reads them) and `employees_min`/`employees_max` (the
+  employer's LinkedIn band, null when unreported or there is no company). Those three are there
+  so a record carries the whole person a store holds: a lead the customer marked can be taken
+  back in as a verdict on a fresh store, without the store it was found in. `RECORD_FIELDS` is the
   **importer-shaped projection** of it, and `write_csv` projects (`extrasaction="ignore"`) rather
   than defining a second schema, so a field added for a sender never becomes a column an importer
   has to map. `None` writes as an empty cell, which is what an importer expects for a field we
-  were never told; `profile_text` is `""`, never absent, so a receiver keying on it need not tell
-  *no text* from *no such key*.
+  were never told; `profile_text` is `""` and `source_fields` is `{}`, never absent, so a
+  receiver keying on them need not tell *no text* from *no such key*.
 
   ```
   outfind find 50 --json | outsend       # the full record, profile text included

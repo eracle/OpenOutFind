@@ -20,7 +20,8 @@ importer-shaped projection of it, and the CSV writer projects rather than defini
 schema, so the two cannot drift. The whole record crosses as JSON Lines (``find --json``,
 read by a sender on the other side of a pipe); the CSV drops ``profile_text``, because a
 paragraph in a custom variable is useless to an importer and would cost the property that
-makes the CSV worth having.
+makes the CSV worth having — and ``source_fields`` and the size band with it, which are
+there for a store taking the lead back in, not for an importer.
 
 **The compatibility rule is the substitute for the shared package we are not building**: a
 receiver ignores keys it does not know, and this side never renames a key or repurposes
@@ -85,7 +86,19 @@ RECORD_FIELDS = (
 # it (an opener wants the recent and the specific, a verdict wants the durable), it is
 # paid for only for people actually written to, and one text derived twice on two sides
 # with no rule for which wins is the drift this avoids.
-JSON_FIELDS = RECORD_FIELDS + ("profile_text",)
+#
+# `source_fields` and the size band are the rest of the person as the store holds it:
+# the row's searchable fields kept apart under their Lead Finder names (title, state,
+# country, the company's LinkedIn tags — what the walk learns its keywords from) and the
+# employer's LinkedIn band the verdict reads. With them a record carries everything a
+# store needs to take the lead back in as a verdict, so a marked lead can seed a fresh
+# store without the store it was found in.
+JSON_FIELDS = RECORD_FIELDS + (
+    "profile_text",
+    "source_fields",
+    "employees_min",
+    "employees_max",
+)
 
 
 def lead_record(deal) -> dict:
@@ -122,6 +135,11 @@ def lead_record(deal) -> dict:
         # Empty, never absent, for a lead that has none: a receiver keying on the field
         # should not have to tell "no text" from "no such key".
         "profile_text": lead.profile_text or "",
+        # ``{}`` for a lead stored before ``Lead.source_fields`` existed, on the same rule.
+        "source_fields": lead.source_fields or {},
+        # Null when LinkedIn reported no bound, as on the Company row.
+        "employees_min": company.employees_min if company else None,
+        "employees_max": company.employees_max if company else None,
     }
 
 

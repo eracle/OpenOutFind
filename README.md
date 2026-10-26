@@ -106,7 +106,7 @@ outfind find 50 --json | outsend
 outsend send                        # a separate invocation, on the mailbox's clock
 ```
 
-`--json` is **JSON Lines**: one record per line on stdout — the ten CSV columns plus `profile_text`, the raw firmographic text the qualifier judged on — with the run's metadata as a single JSON object on stderr and nothing else there. The receiver ingests idempotently, keyed on `lead_id`, so re-running the pipe is a correction rather than a second contact.
+`--json` is **JSON Lines**: one record per line on stdout — the CSV columns plus `profile_text`, the raw firmographic text the qualifier judged on, `source_fields` (title, state, country and company tags, kept apart) and the company's LinkedIn size band (`employees_min`/`employees_max`) — with the run's metadata as a single JSON object on stderr and nothing else there. The receiver ingests idempotently, keyed on `lead_id`, so re-running the pipe is a correction rather than a second contact.
 
 Two things that are *not* privileges, and that is the point:
 

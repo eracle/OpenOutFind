@@ -246,7 +246,10 @@ what to run for *give me that file again*; there is no `export` verb and none is
 
 For anything programmatic, prefer `--json` over parsing the CSV. It is **JSON Lines**: one record
 per line on stdout, carrying every CSV column plus `profile_text` — the raw firmographic text the
-qualifier judged on, which is what a sender writes a message from. The run's own metadata is one
+qualifier judged on, which is what a sender writes a message from — `source_fields` (the title,
+state, country and company tags, each under its Lead Finder name; `{}` when the store has none)
+and `employees_min`/`employees_max` (the employer's LinkedIn size band, null when unreported).
+The run's own metadata is one
 JSON object on stderr:
 
 ```bash

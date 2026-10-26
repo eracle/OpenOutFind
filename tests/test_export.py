@@ -105,6 +105,43 @@ class TestLeadRecord:
 
         assert record["profile_text"] == ""
 
+    def test_the_record_carries_the_fields_the_walk_learns_from(self, site_config):
+        """Kept apart under their Lead Finder names, so a store taking the lead back in
+        files each word under the field it is searchable in."""
+        fields = {"contact_job_title": "CTO", "company_keywords": "devtools, saas"}
+        deal = _deal(site_config, source_fields=fields)
+
+        assert export.lead_record(deal)["source_fields"] == fields
+
+    def test_a_lead_with_no_source_fields_carries_an_empty_object(self, site_config):
+        record = export.lead_record(_deal(site_config, source_fields={}))
+
+        assert record["source_fields"] == {}
+
+    def test_the_record_carries_the_employers_size_band(self, site_config):
+        company = Company.objects.create(
+            key="beta.com", name="Beta", domain="beta.com",
+            employees_min=51, employees_max=200)
+
+        record = export.lead_record(_deal(site_config, company=company))
+
+        assert (record["employees_min"], record["employees_max"]) == (51, 200)
+
+    def test_a_lead_with_no_company_carries_no_size_band(self, site_config):
+        record = export.lead_record(_deal(site_config, company=None))
+
+        assert record["employees_min"] is None and record["employees_max"] is None
+
+    def test_the_csv_leaves_the_store_fields_out(self, site_config):
+        """Fields added for a store taking leads back in are not importer columns."""
+        _deal(site_config, source_fields={"contact_job_title": "CTO"})
+        stream = io.StringIO()
+
+        export.write_csv(export.lead_records(), stream)
+
+        header = stream.getvalue().splitlines()[0]
+        assert "source_fields" not in header and "employees_min" not in header
+
     def test_every_row_carries_when_it_was_qualified(self, site_config):
         """Provenance the file keeps: a caller tells which rows its own call produced by
         comparing against the time it started, and a sequencer imports only what is newer
