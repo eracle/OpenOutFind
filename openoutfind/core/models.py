@@ -217,6 +217,27 @@ class CalibrationBar(models.Model):
                 f"from {self.n_verdicts} verdicts")
 
 
+class RunningMean(models.Model):
+    """One measured quantity, kept as its sum and count: the mean is ``total / count``.
+
+    What a search and a verdict cost, and how often the pool's verdicts fit, are measured
+    on the store's own run rather than taken from settings (``core/meter.py``). A row is a
+    plain running average — each event adds its value and one to the count — so the next
+    mean follows from the last without keeping the events. It lives in the store because
+    an ``--agent-qualify`` run is many processes, and each one must read what the last
+    one measured.
+    """
+
+    name = models.CharField(max_length=40, unique=True)
+    total = models.FloatField(default=0.0)
+    count = models.PositiveIntegerField(default=0)
+
+    def __str__(self):
+        if not self.count:
+            return f"{self.name}: no measurement"
+        return f"{self.name}: {self.total / self.count:.3f} over {self.count}"
+
+
 class Brief(models.Model):
     """Our reading of the customer's two texts: the rules every prompt is written from.
 

@@ -30,12 +30,11 @@ crown jewel and it is ported verbatim:
 - **exploit** (``neg > pos``, calibration verdicts left out) — qualify the strongest lead
   clearing ``calibration.current_threshold()`` (``min_gp_confidence`` until a bar is
   measured), the one whose qualification will buy an email rather than
-  park at QUALIFIED. When none clears the gate there is nothing here worth an LLM
-  call, so **discover instead**: the same constant gates both the LLM call and the
-  paid lookup, so a lead the model would not pay for is not a lead it pays to judge.
-  The pool is what widens, never the bar — a pass that discovers leaves the class
-  balance untouched and the frontier one node further on, and when the frontier is
-  drained too the campaign has honestly run out and ``top_up`` says so.
+  park at QUALIFIED. When none clears it, **judge or search, whichever is cheaper per
+  fit** on this run's measured costs (``judge_or_search``): judging takes the best lead
+  by P from the whole pool, searching fires the walk's next page. The bar itself never
+  moves here — a pass that discovers leaves the class balance untouched and the frontier
+  one node further on, and when the frontier is drained the pool is judged to its end.
 
 There used to be a second path here: the freemium promo campaign ran none of the
 above, because its leads were already in the account and a downloaded kit model
@@ -48,12 +47,12 @@ import logging
 import numpy as np
 from termcolor import colored
 
-from openoutfind.core.conf import CAMPAIGN_CONFIG
 from openoutfind.core.ml import calibration
 from openoutfind.core.ml.qualifier import BayesianQualifier
 from openoutfind.core.pipeline import vocabulary
 from openoutfind.core.pipeline.discover import discover
 from openoutfind.core.pipeline.icp import ANCHOR_COUNT
+from openoutfind.core.pipeline.judge_or_search import judging_pays
 from openoutfind.core.pipeline.qualify import fetch_qualification_candidates, run_qualification
 
 logger = logging.getLogger(__name__)
@@ -113,23 +112,23 @@ def top_up(site_config, qualifier: BayesianQualifier) -> bool:
         consumable = _consumable_candidates(qualifier, candidates)
         if consumable:
             return run_qualification(site_config, qualifier, candidates=consumable) is not None
-        # **Exploit finding nothing worth buying for is not evidence the pool is spent.**
-        # It is evidence the model cannot tell the pool apart yet — which is the case
-        # explore exists for — so reach for the *informative* leads before widening.
-        # Falling straight to discovery here cost a live install 14h33m: with 3 real
-        # positives no lead could reach `min_gp_confidence` (the whole 26,737-lead pool
-        # topped out at P=0.37), so every pass discovered, discovery labels nothing, and
-        # the posterior that would have opened the gate never moved. 295 pages, 19
-        # verdicts, 0 addresses. The two arms select disjoint leads by construction, so
-        # this one reaches exactly the leads the first cannot.
-        informative = _informative_candidates(qualifier, candidates)
-        if informative:
-            return run_qualification(site_config, qualifier, candidates=informative) is not None
+        # **Nothing clearing the bar is not evidence the pool is spent**, nor that a
+        # search is the better move: it is a choice between two costs, measured on this
+        # run (`judge_or_search`). Judging takes the best lead by P from the whole pool.
+        # Falling straight to discovery here cost a live install 14h33m with 3 real
+        # positives and a pool that topped out at P=0.37, so the rule judges a fresh
+        # pool before its first verdict is in.
+        if candidates and judging_pays(qualifier):
+            return run_qualification(site_config, qualifier, candidates=candidates) is not None
         # A fired page is the work, however much of it we had already seen. Reading
         # *new leads* here is what stopped a live run with 100 rows in hand: the page
         # was all familiar profiles, so discovery reported nothing and the whole job
         # ended `goal_unreached` with the frontier untouched below it.
-        return discover(site_config, qualifier)
+        if discover(site_config, qualifier):
+            return True
+        # Nothing left to search, so the pool is all there is.
+        return bool(candidates) and run_qualification(
+            site_config, qualifier, candidates=candidates) is not None
 
     # Explore — label the most informative lead we have. The GP is fitted here, so it
     # ranks the pool and there is a best lead to pick; an empty pool is the one case
@@ -159,26 +158,3 @@ def _consumable_candidates(qualifier: BayesianQualifier, candidates: list) -> li
         return []
     threshold = calibration.current_threshold()
     return [c for c, p in zip(candidates, probs) if p >= threshold]
-
-
-def _informative_candidates(qualifier: BayesianQualifier, candidates: list) -> list:
-    """The candidates worth a verdict for what it *teaches*, by expected information.
-
-    The second arm of the gate, in the unit the first one cannot express. ``min_bald_gain``
-    is a floor in nats — *is there anything left to learn from this pool* — which is a
-    scale-meaningful question in a way "is any lead 70% likely" is not on an unfitted
-    posterior. Empty means the pool is redundant with what is already labelled, and *then*
-    widening is the right move.
-
-    Deliberately not a quantile: a top-decile rule can never be empty, so it would not be
-    a gate at all and discovery would never run again.
-    """
-    if not candidates:
-        return []
-
-    X = np.array([c.embedding_array for c in candidates], dtype=np.float64)
-    bald = qualifier.compute_bald(X)
-    if bald is None:
-        return []
-    floor = CAMPAIGN_CONFIG["min_bald_gain"]
-    return [c for c, gain in zip(candidates, bald) if gain >= floor]

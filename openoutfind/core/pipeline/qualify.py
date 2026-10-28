@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import logging
+import time
 
 import numpy as np
+from django.utils import timezone
 from termcolor import colored
 
+from openoutfind.core import meter
+from openoutfind.core.conf import CAMPAIGN_CONFIG
 from openoutfind.core.errors import ErrorType
 from openoutfind.core.ml.qualifier import BayesianQualifier
 
@@ -165,12 +169,15 @@ def run_qualification(site_config, qualifier: BayesianQualifier, candidates=None
         raise QualifyPending(f"{_who(candidate)} needs a verdict",
                               payload=_candidate_payload(candidate))
 
+    rules = ensure_rules(site_config)
+    started = time.monotonic()
     label, reason = qualify_with_llm(
         verdict_fields(candidate),
         product_docs=site_config.product_docs,
         campaign_target=site_config.campaign_target,
-        rules=ensure_rules(site_config),
+        rules=rules,
     )
+    meter.record(meter.VERDICT_SECONDS_MODEL, time.monotonic() - started)
     _save_qualification_result(qualifier, candidate, embedding, label, reason)
     return profile_url
 
@@ -211,6 +218,12 @@ def _resume_agent_qualification(qualifier: BayesianQualifier, pending) -> str | 
         raise QualifyPending(f"{_who(candidate)} is still waiting on a verdict",
                               payload=_candidate_payload(candidate))
 
+    # The agent's verdict took from the hand-over to now: its reading, its turn and the
+    # process the answer arrived in. That is the time a verdict costs this run — unless
+    # the gap is longer than any verdict takes, which is a session left waiting, not work.
+    waited = (timezone.now() - pending.created).total_seconds()
+    if waited <= CAMPAIGN_CONFIG["verdict_seconds_agent_max"]:
+        meter.record(meter.VERDICT_SECONDS_AGENT, waited)
     label = 1 if verdict.fit else 0
     _save_qualification_result(qualifier, candidate, candidate.embedding_array, label, verdict.reason)
     pending.delete()
@@ -315,6 +328,7 @@ def _save_qualification_result(qualifier: BayesianQualifier, lead, embedding: np
 
     profile_url = lead.profile_url
     qualifier.update(embedding, label)
+    meter.record(meter.POOL_FIT, label)
 
     # **Both verdicts are printed, and they differ at a glance** — QUALIFIED in green,
     # DISQUALIFIED in red, each said once. Watching it turn people down is what makes the

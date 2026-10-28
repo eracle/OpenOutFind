@@ -106,6 +106,54 @@ class TestHarvest:
         assert node.leads_found == 9027
         assert Lead.objects.get().discovered_by_id == node.pk
 
+    def test_a_query_whose_first_page_holds_everyone_is_drained_with_its_subtree(self, db):
+        """Batch 5: 21 of 27 searches deepened queries matching 1–15 people the store
+        already held. A child matches a subset of its parent's people, so once the first
+        page carried all of them there is nothing new below it."""
+        c = _campaign()
+        node = _node(c, [("lead_job_title", "founder")])
+        child = _node(c, [("lead_job_title", "founder"), ("lead_job_title", "cto")],
+                      parent=node)
+        page = Page([_row("https://linkedin.com/in/a"), _row("https://linkedin.com/in/b")], 2)
+
+        with patch.object(discover_mod, "_fetch", return_value=page):
+            assert discover(c) is True
+
+        node.refresh_from_db()
+        child.refresh_from_db()
+        assert node.state == QueryNode.State.DRAINED
+        assert child.state != QueryNode.State.FRONTIER
+        assert Lead.objects.count() == 2
+
+    def test_a_count_past_the_first_page_is_not_believed(self, db):
+        c = _campaign()
+        node = _node(c, [("lead_job_title", "founder")], state=QueryNode.State.FIRED,
+                     next_offset=100)
+
+        with patch.object(discover_mod, "_fetch", return_value=Page([_row()], 1)):
+            assert discover(c) is True
+
+        node.refresh_from_db()
+        assert node.state == QueryNode.State.FIRED
+
+    def test_a_fresh_walk_opens_on_the_icps_words_only(self, db):
+        """The customer's words (here a rare tag the marks share) narrow the ICP's nodes;
+        they do not open nodes of their own."""
+        from openoutfind.core.pipeline.icp import Seed
+
+        c = _campaign()
+        Keyword.rows_for([("lead_job_title", "capsules")])
+        seed = Seed([("lead_job_title", "founder")], (1, 50), "us")
+
+        with (
+            patch("openoutfind.core.pipeline.icp.generate_seed", return_value=seed),
+            patch.object(discover_mod, "_fetch", return_value=Page([_row()], 9027)),
+        ):
+            assert discover(c) is True
+
+        opened = {tuple(n.pairs) for n in QueryNode.objects.filter(parent=None)}
+        assert opened == {(("lead_job_title", "founder"),)}
+
     def test_a_page_of_duplicates_is_not_a_stall(self, db):
         # Bug 8: `_harvest` counts *newly created* leads, and a page of already-seen
         # profiles used to read as "nothing left to do" and halt the engine with the

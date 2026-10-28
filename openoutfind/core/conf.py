@@ -75,8 +75,8 @@ CAMPAIGN_CONFIG = {
     # GP confidence gate: P(f>0.5) above this promotes QUALIFIED → READY_TO_FIND_EMAIL,
     # rationing the paid lookup to leads the model is confident about. It is also the
     # *first* arm of the qualification gate in pipeline/top_up.py — a lead worth buying an
-    # address for is certainly worth a verdict — but no longer the only one: see
-    # `min_bald_gain` below for why an unfitted posterior can never open this one.
+    # address for is certainly worth a verdict — and below it `judge_or_search` decides
+    # on measured costs whether the best lead is still worth judging or a search is cheaper.
     #
     # 0.7, down from 0.9. The bar is what the exploit state has to clear to do anything at
     # all, and at 0.9 a live campaign cleared it with nothing: 7 leads waited to be ranked
@@ -84,26 +84,6 @@ CAMPAIGN_CONFIG = {
     # never moved. A gate the pool cannot reach rations the pipeline shut rather than
     # rationing the spend.
     "min_gp_confidence": 0.7,
-    # The second arm of the qualification gate, in nats of expected information.
-    #
-    # ``min_gp_confidence`` alone cannot open on a cold campaign, and the reason is
-    # arithmetic rather than tuning: ``P(f>0.5)`` is ``norm.sf(0.5, mean, std)``, so a wide
-    # posterior pulls *every* candidate toward 0.5. Measured on a live campaign with 3 real
-    # positives, the highest-scoring lead of 26,737 reached **0.37** — no bar above 0.5
-    # admits anything, and discovery cannot help because it adds unlabelled leads, which
-    # move no posterior. The run spent 14h33m on 295 discovery pages and 19 LLM calls.
-    #
-    # So a lead is worth judging if the model is either confident about it *or* uncertain
-    # enough to learn from it. The two arms are anti-correlated by construction (BALD peaks
-    # where P is near 0.5): on the same live data, leads clearing P>=0.7 and leads in the
-    # top BALD decile were **disjoint sets**, in both campaigns.
-    #
-    # 0.04 measured: it admits 92.9% of the 3-positive campaign's pool and 1.1% of the
-    # 122-positive one's, so the arm carries a cold start and then retires itself as the
-    # posterior tightens. An absolute floor is safe *here* where it was not on P, because
-    # the failure closes a loop instead of an absorbing state: gate shut -> discover ->
-    # novel leads -> BALD rises -> gate reopens.
-    "min_bald_gain": 0.04,
     # The calibrate arm (core/ml/calibration.py) derives the bar above instead of taking it
     # as given. While the store holds fewer than √N calibration verdicts (N = the unjudged
     # pool), each pass judges one lead drawn at random from the thinnest score band; once
@@ -116,15 +96,21 @@ CAMPAIGN_CONFIG = {
     # fold. See the roadmap card `p1-e1-the-bar-is-measured-on-a-stratified-sample`.
     #
     # The two costs the rule weighs, in dollars: run time priced at `run_hour_dollars`,
-    # plus what the step itself is billed. How many new leads a search adds is not a
-    # setting — it is counted from the store.
+    # plus what the step itself is billed. The same two costs drive `judge_or_search`,
+    # which decides below the bar. How many new leads a search adds is not a setting — it
+    # is counted from the store.
+    #
+    # **The times below are starting values only.** Each store measures its own as a
+    # running mean (`core/meter.py`: every page fetched, every verdict given), and a
+    # setting stands in only until its first measurement.
     #
     # A search is one Lead Finder page: ~70 s on the held order's VM run (878 searches in
     # 17h24m, polling included), and free — Lead Finder bills nothing.
     #
     # A verdict is one candidate judged: a few seconds and an LLM call for a model, and
     # ~40 s for a calling agent under --agent-qualify (178 verdicts in 1h49m on the same
-    # store), whose turn re-reads its context: a few cents.
+    # store), whose turn re-reads its context: a few cents. The bill is not measured: it
+    # is the tokens below at the model's rates, or `verdict_dollars_agent`.
     #
     # A model's call is priced from the model that makes it (`MODEL_PRICES` below) times
     # the tokens one verdict reads and writes, measured over 20 verdicts on the held
@@ -146,6 +132,10 @@ CAMPAIGN_CONFIG = {
     "search_seconds": 70,
     "verdict_seconds_model": 5,
     "verdict_seconds_agent": 40,
+    # An agent's verdict longer than this is not measured: the candidate waited on a
+    # session that had stopped, not on a verdict. Batch 5's first measured one had waited
+    # 1h46m, and the plain running mean would have carried it for the rest of the store.
+    "verdict_seconds_agent_max": 600,
     "verdict_input_tokens": 2800,
     "verdict_output_tokens": 300,
     "verdict_dollars_model": 0.005,
@@ -157,9 +147,10 @@ CAMPAIGN_CONFIG = {
     # There is no discovery cadence knob. Growing the vocabulary used to be an LLM call
     # worth rationing ("mint_every_n_qualified"); it is now a tokenize-and-count over a
     # few hundred profiles (pipeline/vocabulary.py), so it simply runs every pass. The
-    # walk's only other constant is the df≥2 admission floor, which lives with the code
-    # that measured it. Discovery steering is arithmetic over labels — no threshold, no
-    # confidence gate, no model. See pipeline/select.py.
+    # walk's other constants are the df≥2 admission floor and the ten-person prior on a
+    # node's score (`select.PRIOR_WEIGHT`), each beside the code that measured it.
+    # Discovery steering ranks each fired node by the GP's view of the people it found —
+    # no threshold and no confidence gate. See pipeline/select.py.
     "embedding_model": "BAAI/bge-small-en-v1.5",
 }
 

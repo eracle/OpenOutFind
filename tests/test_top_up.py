@@ -60,45 +60,42 @@ def test_exploit_qualifies_only_a_lead_clearing_the_spend_gate(site_config):
 
 
 @pytest.mark.django_db
-def test_exploit_falls_to_the_informative_lead_below_the_spend_gate(site_config):
-    """Below the spend gate is not "nothing to do" — it is "the model cannot tell these
-    apart yet", which is a reason to *label*, not to widen.
+def test_below_the_bar_exploit_judges_the_whole_pool_when_judging_is_cheaper(site_config):
+    """Below the bar is not "nothing to do": when a verdict on the pool buys a fit for
+    less than a search would, the best lead by P is judged, from every candidate.
 
-    This is the 14h33m failure. On a live site_config with 3 real positives the whole
-    26,737-lead pool topped out at P=0.37, so exploit cleared nobody and discovered every
-    pass; discovery labels nothing, so the posterior that would open the gate never moved.
-    295 pages, 19 verdicts, 0 addresses, ended by the operator."""
+    This is the 14h33m failure turned round: with 3 real positives a live pool topped out
+    at P=0.37, every pass discovered, and the posterior that would open the bar never
+    moved."""
     qualifier = _exploiting_qualifier()
+    pool = [_Candidate(), _Candidate()]
 
     with (
-        patch.object(qualifier, "predict_probs", return_value=np.array([0.37])),
-        patch.object(qualifier, "compute_bald", return_value=np.array([0.05])),
+        patch.object(qualifier, "predict_probs", return_value=np.array([0.37, 0.2])),
         patch("openoutfind.core.pipeline.top_up.fetch_qualification_candidates",
-              return_value=[_Candidate()]),
+              return_value=pool),
+        patch("openoutfind.core.pipeline.top_up.judging_pays", return_value=True),
         patch("openoutfind.core.pipeline.top_up.run_qualification",
               return_value="https://example.com/in/alice/") as qualify,
         patch("openoutfind.core.pipeline.top_up.discover", return_value=True) as discover,
     ):
         assert top_up(site_config, qualifier) is True
 
-    assert qualify.called
+    assert qualify.call_args.kwargs["candidates"] == pool
     assert not discover.called
 
 
 @pytest.mark.django_db
-def test_exploit_discovers_when_the_pool_teaches_nothing_either(site_config):
-    """Both arms shut is the one honest reason to widen: the model will not pay for these
-    leads *and* cannot learn from them, so the pool really is redundant.
-
-    The floor has to be an absolute one for this branch to exist at all — a quantile can
-    never be empty, so discovery would never run again."""
+def test_below_the_bar_exploit_searches_when_searching_is_cheaper(site_config):
+    """CaleafTech's batch 5: 42 verdicts, no fit, 6 queries in the whole store. A pool
+    that stops fitting is left for a fresh page."""
     qualifier = _exploiting_qualifier()
 
     with (
         patch.object(qualifier, "predict_probs", return_value=np.array([0.5])),
-        patch.object(qualifier, "compute_bald", return_value=np.array([0.001])),
         patch("openoutfind.core.pipeline.top_up.fetch_qualification_candidates",
               return_value=[_Candidate()]),
+        patch("openoutfind.core.pipeline.top_up.judging_pays", return_value=False),
         patch("openoutfind.core.pipeline.top_up.run_qualification") as qualify,
         patch("openoutfind.core.pipeline.top_up.discover", return_value=True) as discover,
     ):
@@ -106,6 +103,41 @@ def test_exploit_discovers_when_the_pool_teaches_nothing_either(site_config):
 
     assert not qualify.called
     assert discover.called
+
+
+@pytest.mark.django_db
+def test_with_nothing_left_to_search_the_pool_is_judged(site_config):
+    """Searching was cheaper, but the frontier is spanned: the job must not end with
+    candidates still waiting."""
+    qualifier = _exploiting_qualifier()
+
+    with (
+        patch.object(qualifier, "predict_probs", return_value=np.array([0.5])),
+        patch("openoutfind.core.pipeline.top_up.fetch_qualification_candidates",
+              return_value=[_Candidate()]),
+        patch("openoutfind.core.pipeline.top_up.judging_pays", return_value=False),
+        patch("openoutfind.core.pipeline.top_up.run_qualification",
+              return_value="https://example.com/in/alice/") as qualify,
+        patch("openoutfind.core.pipeline.top_up.discover", return_value=False),
+    ):
+        assert top_up(site_config, qualifier) is True
+
+    assert qualify.called
+
+
+@pytest.mark.django_db
+def test_an_empty_pool_with_nothing_to_search_is_the_end(site_config):
+    qualifier = _exploiting_qualifier()
+
+    with (
+        patch("openoutfind.core.pipeline.top_up.fetch_qualification_candidates",
+              return_value=[]),
+        patch("openoutfind.core.pipeline.top_up.run_qualification") as qualify,
+        patch("openoutfind.core.pipeline.top_up.discover", return_value=False),
+    ):
+        assert top_up(site_config, qualifier) is False
+
+    assert not qualify.called
 
 
 @pytest.mark.django_db

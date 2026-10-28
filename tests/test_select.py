@@ -1,11 +1,10 @@
 # tests/test_select.py
-"""Query selection — the counted, add-only frontier walk.
+"""Query selection — the add-only frontier walk.
 
-A node is a keyword set; its value is arithmetic over the label store
-(``P̂ = (a + 2·P̂(parent)) / (a + b + 2)``) and nothing here touches a model. The GP used
-to score candidates by embedding their keywords; §13 of the roadmap card measured that
-against plain counting and the counts won, so these tests assert counting behaviour and
-the retirement rules — the two things the walk's correctness rests on.
+A node is a keyword set. Its value is what the people it found look like
+(``P̂ = (s + 10·P̂(parent)) / (n + 10)``, a judged lead counting its verdict and any other
+the GP's score); the label store decides which children exist. These tests assert the
+estimate, the expansion and the retirement rules — what the walk's correctness rests on.
 """
 import numpy as np
 import pytest
@@ -29,15 +28,27 @@ def _node(_site_config, pairs, parent=None, **kw):
     return node
 
 
-def _labelled(_site_config, profile_text, qualified):
-    """A lead with a verdict — the only evidence the walk reads."""
+def _labelled(_site_config, profile_text, qualified, found_by=None):
+    """A lead with a verdict — what expansion counts, and, found by a node, its harvest."""
     lead = Lead.objects.create(
-        profile_url=f"https://x/{Lead.objects.count()}", profile_text=profile_text)
+        profile_url=f"https://x/{Lead.objects.count()}", profile_text=profile_text,
+        discovered_by=found_by)
     Deal.objects.create(
         lead=lead,
         state=DealState.QUALIFIED if qualified else DealState.FAILED,
         outcome="" if qualified else Outcome.WRONG_FIT)
     return lead
+
+
+def _found(node, fits, misses):
+    """``fits`` + ``misses`` judged people the node's pages brought in."""
+    for qualified, count in ((True, fits), (False, misses)):
+        for _ in range(count):
+            _labelled(None, "someone", qualified, found_by=node)
+
+
+def _scores(qualifier=None):
+    return select.HarvestScores.load(qualifier, LabelStore.load().base_rate)
 
 
 class TestTokenKey:
@@ -145,16 +156,6 @@ class TestAnchorsAsPositives:
 
         assert select.expand(node, store, [("lead_job_title", "telecom")]) == 0
 
-    def test_anchors_lift_a_matching_node_above_a_rejected_one(self, db):
-        c = _campaign(anchor_profiles=["founder cto health supplements"] * 4)
-        for _ in range(4):
-            _labelled(c, "content manager utilities", qualified=False)
-        store = LabelStore.load()
-        good = _node(c, [("lead_job_title", "founder")])
-        bad = _node(c, [("lead_job_title", "content")])
-
-        assert select.estimate(good, store) > select.estimate(bad, store)
-
     def test_an_anchor_keeps_counting_after_a_real_positive_arrives(self, db):
         # The anchors are permanent: a real acceptance joins them rather than replacing
         # them, so what changes is that real evidence starts to outweigh the invented
@@ -169,47 +170,90 @@ class TestAnchorsAsPositives:
         assert store.counts([("lead_job_title", "invented")]) == (1, 0)
 
 
+class TestHarvestScores:
+    def test_a_judged_lead_counts_its_verdict(self, db):
+        node = _node(None, [("lead_job_title", "founder")])
+        _found(node, fits=3, misses=1)
+
+        assert _scores().counts(node) == (3.0, 4)
+
+    def test_an_unjudged_lead_counts_as_the_gps_score(self, db):
+        class _Model:
+            def predict_probs(self, X):
+                return np.full(len(X), 0.25)
+
+        node = _node(None, [("lead_job_title", "founder")])
+        _found(node, fits=1, misses=0)
+        Lead.objects.create(profile_url="https://x/unjudged", discovered_by=node,
+                            embedding=np.ones(4, dtype=np.float32).tobytes())
+
+        assert _scores(_Model()).counts(node) == (pytest.approx(1.25), 2)
+
+    def test_without_a_model_only_judged_leads_count(self, db):
+        node = _node(None, [("lead_job_title", "founder")])
+        Lead.objects.create(profile_url="https://x/unjudged", discovered_by=node,
+                            embedding=np.ones(4, dtype=np.float32).tobytes())
+
+        assert _scores().counts(node) == (0.0, 0)
+
+    def test_the_customers_marks_and_the_anchors_are_no_nodes_harvest(self, db):
+        node = _node(None, [("lead_job_title", "founder")])
+        mark = _labelled(None, "marked", qualified=True, found_by=node)
+        Lead.objects.filter(pk=mark.pk).update(marked=True)
+        Lead.objects.create(profile_url="https://x/anchor", synthetic=True, discovered_by=node)
+
+        assert _scores().counts(node) == (0.0, 0)
+
+    def test_the_root_is_every_searched_lead_smoothed(self, db):
+        node = _node(None, [("lead_job_title", "founder")])
+        _found(node, fits=1, misses=3)
+
+        assert _scores().root == pytest.approx((1 + 1) / (4 + 2))
+
+    def test_with_nothing_searched_the_root_is_the_fallback(self, db):
+        assert select.HarvestScores.load(None, fallback_level=0.3).root == 0.3
+
+
 class TestEstimate:
-    def test_an_unseen_node_sits_at_the_inherited_level(self, db):
-        c = _campaign()
-        _labelled(c, "alpha", qualified=True)
-        _labelled(c, "beta", qualified=False)
-        store = LabelStore.load()
-        node = _node(c, [("lead_job_title", "unseen")])
-        # a=b=0, level=0.5 → (0 + 1) / (0 + 0 + 2)
-        assert select.estimate(node, store) == pytest.approx(0.5)
+    def test_an_unfired_node_sits_at_the_inherited_level(self, db):
+        found = _node(None, [("lead_job_title", "founder")])
+        _found(found, fits=2, misses=6)
+        scores = _scores()
+        node = _node(None, [("lead_job_title", "unseen")])
 
-    def test_smoothing_points_at_the_parent_not_at_a_half(self, db):
-        # The measured design decision: the parent supplies the level, the child's own
-        # counts move it off. A thin-evidence child stays near its parent.
-        c = _campaign()
-        for _ in range(8):
-            _labelled(c, "founder ai", qualified=True)
-        _labelled(c, "founder ai rare", qualified=True)
-        store = LabelStore.load()
+        assert select.estimate(node, scores) == pytest.approx(scores.root)
 
-        parent = _node(c, [("lead_job_title", "founder")])
-        child = _node(c, [("lead_job_title", "founder"), ("lead_job_title", "rare")],
+    def test_few_people_stay_near_the_parent(self, db):
+        """The sample size: one good person cannot drag a child far from its parent."""
+        parent = _node(None, [("lead_job_title", "founder")])
+        _found(parent, fits=10, misses=30)
+        child = _node(None, [("lead_job_title", "founder"), ("lead_job_title", "rare")],
                       parent=parent)
+        _found(child, fits=1, misses=0)
+        scores = _scores()
 
-        parent_p = select.estimate(parent, store)      # 9 pos, 0 neg → high
-        child_p = select.estimate(child, store)        # 1 pos, 0 neg → thin
-        assert parent_p > 0.85
-        # One observation cannot drag the child far from its parent's level.
-        assert abs(child_p - parent_p) < 0.15
+        parent_p = select.estimate(parent, scores)
+        assert select.estimate(child, scores) - parent_p < 0.1
 
-    def test_negatives_pull_a_child_below_its_parent(self, db):
-        c = _campaign()
-        for _ in range(6):
-            _labelled(c, "founder ai", qualified=True)
-        for _ in range(6):
-            _labelled(c, "founder sales", qualified=False)
-        store = LabelStore.load()
+    def test_many_people_are_mostly_themselves(self, db):
+        parent = _node(None, [("lead_job_title", "founder")])
+        _found(parent, fits=10, misses=30)
+        child = _node(None, [("lead_job_title", "founder"), ("lead_job_title", "cannabis")],
+                      parent=parent)
+        _found(child, fits=80, misses=20)
+        scores = _scores()
 
-        parent = _node(c, [("lead_job_title", "founder")])
-        bad = _node(c, [("lead_job_title", "founder"), ("lead_job_title", "sales")],
+        assert select.estimate(child, scores) > 0.7
+
+    def test_poor_people_pull_a_child_below_its_parent(self, db):
+        parent = _node(None, [("lead_job_title", "founder")])
+        _found(parent, fits=6, misses=6)
+        bad = _node(None, [("lead_job_title", "founder"), ("lead_job_title", "sales")],
                     parent=parent)
-        assert select.estimate(bad, store) < select.estimate(parent, store)
+        _found(bad, fits=0, misses=12)
+        scores = _scores()
+
+        assert select.estimate(bad, scores) < select.estimate(parent, scores)
 
 
 class TestFrontier:
@@ -228,49 +272,44 @@ class TestFrontier:
     def test_next_node_is_none_when_nothing_is_fireable(self, db):
         c = _campaign()
         _node(c, [("lead_job_title", "a")], state=QueryNode.State.DEAD)
-        assert select.next_node(LabelStore.load()) is None
+        assert select.next_node(_scores()) is None
 
     @pytest.mark.parametrize("qualified", [True, False])
     def test_a_single_class_store_can_still_be_drawn_from(self, db, qualified):
         # Reproduces a live crash: a campaign whose every verdict was a rejection gave
-        # base_rate 0, so `rng.beta(0, ...)` raised `ValueError: a <= 0` and killed the
+        # a level of 0, so `rng.beta(0, ...)` raised `ValueError: a <= 0` and killed the
         # find_email task. Both saturated directions must stay drawable.
-        c = _campaign()
-        for _ in range(20):
-            _labelled(c, "seen", qualified=qualified)
-        store = LabelStore.load()
-        _node(c, [("lead_job_title", "seen")])
-        _node(c, [("lead_job_title", "unseen")])
+        seen = _node(None, [("lead_job_title", "seen")], state=QueryNode.State.FIRED,
+                     next_offset=100)
+        _found(seen, fits=20 if qualified else 0, misses=0 if qualified else 20)
+        _node(None, [("lead_job_title", "unseen")])
 
-        assert select.next_node(store) is not None
+        assert select.next_node(_scores()) is not None
 
     def test_greedy_picks_the_best_estimate(self, db, monkeypatch):
         monkeypatch.setattr(select, "THOMPSON", False)
-        c = _campaign()
-        for _ in range(5):
-            _labelled(c, "good", qualified=True)
-        for _ in range(5):
-            _labelled(c, "bad", qualified=False)
-        store = LabelStore.load()
-        _node(c, [("lead_job_title", "bad")])
-        good = _node(c, [("lead_job_title", "good")])
+        bad = _node(None, [("lead_job_title", "bad")], state=QueryNode.State.FIRED,
+                    next_offset=100)
+        good = _node(None, [("lead_job_title", "good")], state=QueryNode.State.FIRED,
+                     next_offset=100)
+        _found(bad, fits=1, misses=9)
+        _found(good, fits=8, misses=2)
 
-        assert select.next_node(store).pk == good.pk
+        assert select.next_node(_scores()).pk == good.pk
 
     def test_thompson_still_favours_the_better_node_on_average(self, db):
         # A draw, not a shuffle: width tracks evidence, so a well-measured good node
         # wins most of the time without ever locking the frontier.
-        c = _campaign()
-        for _ in range(20):
-            _labelled(c, "good", qualified=True)
-        for _ in range(20):
-            _labelled(c, "bad", qualified=False)
-        store = LabelStore.load()
-        _node(c, [("lead_job_title", "bad")])
-        good = _node(c, [("lead_job_title", "good")])
+        bad = _node(None, [("lead_job_title", "bad")], state=QueryNode.State.FIRED,
+                    next_offset=100)
+        good = _node(None, [("lead_job_title", "good")], state=QueryNode.State.FIRED,
+                     next_offset=100)
+        _found(bad, fits=5, misses=45)
+        _found(good, fits=40, misses=10)
+        scores = _scores()
 
         rng = np.random.default_rng(0)
-        wins = sum(select.next_node(store, rng).pk == good.pk for _ in range(50))
+        wins = sum(select.next_node(scores, rng).pk == good.pk for _ in range(50))
         assert wins > 45
 
 
@@ -360,14 +399,17 @@ class TestExpansion:
             _labelled(c, "cto agency", qualified=False)
         store = LabelStore.load()
 
-        strong = _node(c, [("lead_job_title", "founder")])   # all positive
-        weak = _node(c, [("lead_job_title", "cto")])         # mixed
-        select.expand(weak, store, [("lead_job_title", "founder")])
+        strong = _node(c, [("lead_job_title", "founder")])
+        weak = _node(c, [("lead_job_title", "cto")])
+        _found(strong, fits=9, misses=1)
+        _found(weak, fits=1, misses=9)
+        scores = _scores()
+        select.expand(weak, store, [("lead_job_title", "founder")], scores)
         child = QueryNode.objects.get(
             token_key=token_key([("lead_job_title", "founder"), ("lead_job_title", "cto")]))
         assert child.parent_id == weak.pk
 
-        select.expand(strong, store, [("lead_job_title", "cto")])
+        select.expand(strong, store, [("lead_job_title", "cto")], scores)
         child.refresh_from_db()
         assert child.parent_id == strong.pk
 

@@ -22,8 +22,10 @@ worth. The bar is the lowest score where judging is the cheaper way to a fit
 - **the break-even rate**: what a dollar of searching buys at its best — a search adds
   the leads a page adds on this store, those worth it are judged — times a verdict's
   cost. Costs are in dollars: run time priced at ``run_hour_dollars`` plus what the step
-  is billed — nothing for a Lead Finder page, the LLM's bill for a verdict. Times and
-  bills are settings; leads per search is counted from the walk's own pages.
+  is billed — nothing for a Lead Finder page, the LLM's bill for a verdict. Times are
+  measured on the store (``core/meter.py``), the settings standing in until the first
+  measurement; bills are a verdict's tokens at the model's rates; leads per search is
+  counted from the walk's own pages.
 
 Once √N are in, ``measure`` stores the result as a ``CalibrationBar``, read by both
 places through ``current_threshold``.
@@ -61,6 +63,7 @@ from termcolor import colored
 
 from openoutlearn.calibration import break_even_rate, fit_rate_curve, lowest_bar
 
+from openoutfind.core import meter
 from openoutfind.core.conf import CAMPAIGN_CONFIG
 
 logger = logging.getLogger(__name__)
@@ -200,7 +203,8 @@ def leads_per_search() -> float:
     """New leads a search has added on this store: leads discovered over pages fetched.
 
     A page is counted where the walk left a trace of it: every 100 offset a node
-    advanced, plus the empty page that retired each dead or drained node.
+    advanced, plus the empty page that retired each dead or drained node. A lead the
+    customer marked (``--labels``) was never found by a search, so it is not counted.
     """
     from openoutfind.core.models import QueryNode
     from openoutfind.core.pipeline.select import DISCOVERY_PAGE_SIZE
@@ -211,7 +215,7 @@ def leads_per_search() -> float:
         state__in=[QueryNode.State.DEAD, QueryNode.State.DRAINED]).count()
     if not pages:
         return 0.0
-    return Lead.objects.filter(synthetic=False).count() / pages
+    return Lead.objects.filter(synthetic=False, marked=False).count() / pages
 
 
 def _dollars(seconds: float, billed: float) -> float:
@@ -220,21 +224,29 @@ def _dollars(seconds: float, billed: float) -> float:
 
 
 def search_cost() -> float:
-    """What one search costs, in dollars: its time — Lead Finder bills nothing."""
-    return _dollars(CAMPAIGN_CONFIG["search_seconds"], 0.0)
+    """What one search costs, in dollars: its measured time — Lead Finder bills nothing.
+
+    ``search_seconds`` until this store has fetched a page.
+    """
+    return _dollars(meter.mean(meter.SEARCH_SECONDS, CAMPAIGN_CONFIG["search_seconds"]), 0.0)
 
 
 def verdict_cost() -> float:
     """What one verdict costs this run, in dollars: a model's call, or a calling agent's
-    turn — its time plus the LLM's bill for it."""
+    turn — its measured time plus the LLM's bill for it.
+
+    The bill is not metered: it is a verdict's tokens at the model's rates
+    (``model_verdict_bill``), or ``verdict_dollars_agent`` for a calling agent. The time
+    is the store's running mean for that judge, its setting until the first verdict.
+    """
     from openoutfind.core import agent_qualify
     from openoutfind.core.config import SiteConfig
 
     if agent_qualify.active():
-        return _dollars(CAMPAIGN_CONFIG["verdict_seconds_agent"],
-                        CAMPAIGN_CONFIG["verdict_dollars_agent"])
-    return _dollars(CAMPAIGN_CONFIG["verdict_seconds_model"],
-                    model_verdict_bill(SiteConfig.load().ai_model))
+        seconds = meter.mean(meter.VERDICT_SECONDS_AGENT, CAMPAIGN_CONFIG["verdict_seconds_agent"])
+        return _dollars(seconds, CAMPAIGN_CONFIG["verdict_dollars_agent"])
+    seconds = meter.mean(meter.VERDICT_SECONDS_MODEL, CAMPAIGN_CONFIG["verdict_seconds_model"])
+    return _dollars(seconds, model_verdict_bill(SiteConfig.load().ai_model))
 
 
 def model_verdict_bill(ai_model: str) -> float:

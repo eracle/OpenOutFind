@@ -144,6 +144,42 @@ def test_no_search_yet_adds_no_leads():
     assert calibration.leads_per_search() == 0.0
 
 
+@pytest.mark.django_db
+def test_the_customers_marks_were_not_found_by_a_search():
+    from openoutfind.core.models import QueryNode
+
+    QueryNode.objects.create(token_key="a", next_offset=100, state=QueryNode.State.FIRED)
+    _pool(10)
+    for i in range(30):
+        LeadFactory(marked=True, profile_text=f"marked {i}")
+
+    assert calibration.leads_per_search() == pytest.approx(10)
+
+
+@pytest.mark.django_db
+def test_a_search_costs_its_measured_time_once_there_is_one():
+    from openoutfind.core import meter
+
+    meter.record(meter.SEARCH_SECONDS, 30)
+    meter.record(meter.SEARCH_SECONDS, 50)
+    with patch.dict(CAMPAIGN_CONFIG, {"run_hour_dollars": 36.0, "search_seconds": 70}):
+        assert calibration.search_cost() == pytest.approx(0.4)
+
+
+@pytest.mark.django_db
+def test_an_agent_verdict_costs_its_measured_time_plus_its_fixed_bill():
+    from openoutfind.core import meter
+
+    meter.record(meter.VERDICT_SECONDS_AGENT, 20)
+    meter.record(meter.VERDICT_SECONDS_MODEL, 1000)  # another judge's time is not this one's
+    with (
+        patch("openoutfind.core.agent_qualify.active", return_value=True),
+        patch.dict(CAMPAIGN_CONFIG, {"run_hour_dollars": 36.0, "verdict_dollars_agent": 0.05}),
+    ):
+        assert calibration.verdict_cost() == pytest.approx(0.2 + 0.05)
+
+
+@pytest.mark.django_db
 def test_an_agent_verdict_costs_more_than_a_model_verdict():
     with patch("openoutfind.core.agent_qualify.active", return_value=False):
         model = calibration.verdict_cost()
@@ -153,6 +189,7 @@ def test_an_agent_verdict_costs_more_than_a_model_verdict():
     assert agent > model > 0
 
 
+@pytest.mark.django_db
 def test_a_verdict_costs_its_time_and_its_llm_bill():
     with (
         patch("openoutfind.core.agent_qualify.active", return_value=False),
@@ -177,6 +214,7 @@ def test_an_unpriced_model_is_billed_the_fallback():
         assert calibration.model_verdict_bill("openai:gpt-4o") == 0.004
 
 
+@pytest.mark.django_db
 def test_a_search_costs_only_its_time():
     with patch.dict(CAMPAIGN_CONFIG, {"run_hour_dollars": 36.0, "search_seconds": 70}):
         assert calibration.search_cost() == pytest.approx(0.7)
@@ -377,7 +415,7 @@ def test_without_a_measured_bar_the_fallback_gates_exploit(site_config):
 
     with (
         patch.object(qualifier, "predict_probs", return_value=np.array([0.5])),
-        patch.object(qualifier, "compute_bald", return_value=np.array([0.0])),
+        patch("openoutfind.core.pipeline.top_up.judging_pays", return_value=False),
         patch("openoutfind.core.pipeline.top_up.fetch_qualification_candidates",
               return_value=[_Candidate()]),
         patch("openoutfind.core.pipeline.top_up.run_qualification") as qualify,

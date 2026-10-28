@@ -1,5 +1,5 @@
 # openoutfind/core/pipeline/select.py
-"""Query selection — the frontier is counted, drawn from, and fired. No model involved.
+"""Query selection — the frontier is scored, drawn from, and fired.
 
 The whole discovery walk, from first principles. A **node** is a set of ``(field, token)``
 keywords; firing it pages Lead Finder for the conjunction. Its **children** are itself
@@ -7,39 +7,41 @@ plus one more token. There is no remove move: the frontier is global — every u
 of every fired node, all in one pool — so a shallow node's untried siblings are always
 still reachable and removal would be a second way to say the same thing.
 
-**A node's value is arithmetic over labels.**
+**A node's value is what its own people look like.**
 
-    P̂(node) = (a + 2·P̂(parent)) / (a + b + 2)
+    P̂(node) = (s + 10·P̂(parent)) / (n + 10)
 
-where ``a``/``b`` are the qualified/rejected leads in the store whose profile contains all
-of this node's tokens. That is ordinary Laplace smoothing with the prior pointed at the
-**parent's rate** instead of at 0.5, which is the whole idea: the parent supplies the
-level, the child's own counts move it off, and a child with thin evidence stays near its
-parent rather than swinging to 0 or 1.
+where ``n`` is how many people the node's pages brought in and ``s`` what they add up to
+as fits: a judged lead counts its verdict, any other the GP's ``P(f > 0.5)``
+(``HarvestScores``). The prior is ten people at the **parent's level**, so a node that has
+found few people stays near its parent and one that has found a hundred is mostly itself;
+an unfired node holds none of its own and sits at its parent's level.
 
-**Why not the GP.** It used to score candidates by embedding their keywords. Measured
-head-to-head on 4,100 parent→child edges with the GP fit on one half of the labels and
-every truth measured on the other, the counts win outright and the GP adds *nothing* on
-top of them:
+**Why not count words.** The walk used to count, for each node, the labelled profiles
+holding all its words. That measures how well a query's words describe the people
+already judged, not what firing it returns — and the judged people are a skewed sample:
+on CaleafTech's batch 5, mostly the customer's marks. Rare tags on two marked fits
+(``capsules``, ``cbga``) scored 0.8–0.9 and matched 1–15 people on LinkedIn, most of them
+already in the store. Measured on the held 500-lead order (70 queries with 8 or more
+verdicts, each scored by a GP that never saw that query's verdicts), the rank correlation
+of a query's score with its real fit rate:
 
-    child counts smoothed to parent   pearson 0.661     P(parent) only        0.567
-    P(child) counts alone             0.653             GP(child) alone       0.450
-    counts + 0.15·GP delta            0.660             P(parent) + GP delta  0.452
+    store age (verdicts)      60     150    400    all
+    word counts            −0.04      —      —    0.18
+    GP over its people      0.32    0.14   0.26   0.52   (shrunk, weight 10)
 
-The GP is not gone from the system — it still qualifies leads, and it is what produces the
-``a``/``b`` this module counts. It is gone from *choosing queries*. The residual-anchoring
-idea (``P(parent) + λ·GP delta``) was measured too: real, but worth 0.02 pearson at
-λ≈0.15, and worse than doing nothing at λ=1. See §13 of the roadmap card
-``p1-e3-leadfinder-index-semantics-and-query-model-rethink``.
+Nothing ranks queries well on a young store, which is why a fresh walk opens on the ICP's
+own words (``seed_frontier``) and the customer's words only narrow it. An earlier GP
+attempt embedded a query's *keywords* and lost to the counts; this scores the people the
+query returned. The label store still decides which children exist (``expand``).
 
-**Sampling is Thompson over the same two numbers.** ``θ ~ Beta(a + 2·P̂(parent), b +
-2·(1−P̂(parent)))`` — the Beta parameters *are* the smoothed estimate, so this is one line
-rather than a mechanism, and there is no constant to tune. Width tracks evidence:
-``Beta(141, 3)`` is razor-tight and ``Beta(2, 1)`` is wide, so a node nobody has tried gets
-tried and a node measured bad three times stops appearing. Set ``THOMPSON = False`` to fall
-back to greedy — defensible here, because depletion pushes the walk along on its own, and
-which is better cannot be settled offline (simulating it needs corpus answers for queries
-never fired).
+**Sampling is Thompson over the same two numbers.** ``θ ~ Beta(s + 10·P̂(parent), (n − s)
++ 10·(1−P̂(parent)))`` — the Beta parameters *are* the shrunk estimate, so this is one line
+rather than a mechanism. Width tracks evidence, so a node nobody has tried gets tried and a
+node whose people keep looking poor stops appearing. Set ``THOMPSON = False`` to fall back
+to greedy — defensible here, because depletion pushes the walk along on its own, and which
+is better cannot be settled offline (simulating it needs corpus answers for queries never
+fired).
 
 **Retirement is a corpus fact, never a model fact.** Nothing is retired for scoring badly —
 the qualifier refits constantly, and a barren yield is a verdict about a view, not about
@@ -269,25 +271,95 @@ def _words(pairs) -> set[str]:
     return words
 
 
+# ── the harvest scores ───────────────────────────────────────────────
+
+class HarvestScores:
+    """What each fired node's own people look like: soft fit counts per node.
+
+    A lead a node found counts as its verdict when it has one, and otherwise as the GP's
+    ``P(f > 0.5)`` for it — a fraction of a fit. Summed per node that is ``(s, n)``: how
+    many fits its people add up to, out of how many people. The root level is the same
+    sum over every searched lead in the store, so the level and the counts are in one unit.
+
+    Loaded once per pass and held in memory: one GP prediction over the searched leads.
+    A lead the customer marked (``--labels``) was never found by a search, so it is in
+    neither; an anchor neither.
+    """
+
+    def __init__(self, soft: dict[int, tuple[float, int]], root: float):
+        self._soft = soft
+        self.root = root
+
+    @classmethod
+    def load(cls, qualifier, fallback_level: float) -> "HarvestScores":
+        """Score every searched lead, or count only the judged ones without a model.
+
+        ``fallback_level`` is the root when nothing has been scored yet — the label
+        store's base rate, so a fresh walk starts where it always has.
+        """
+        from openoutfind.crm.models import Deal, DealState, Lead, Outcome
+
+        verdicts = {
+            lead_id: 0 if (state == DealState.FAILED and outcome == Outcome.WRONG_FIT) else 1
+            for lead_id, state, outcome in Deal.objects.filter(
+                lead__discovered_by__isnull=False).values_list("lead_id", "state", "outcome")
+        }
+        rows = list(
+            Lead.objects.filter(discovered_by__isnull=False, synthetic=False, marked=False)
+            .values_list("pk", "discovered_by_id", "embedding")
+        )
+        scores = dict(verdicts)
+        unjudged = [(pk, emb) for pk, _, emb in rows if pk not in verdicts and emb]
+        if qualifier is not None and unjudged:
+            X = np.array([np.frombuffer(emb, dtype=np.float32) for _, emb in unjudged],
+                         dtype=np.float64)
+            probs = qualifier.predict_probs(X)
+            if probs is not None:
+                scores.update(zip((pk for pk, _ in unjudged), (float(p) for p in probs)))
+
+        soft: dict[int, tuple[float, int]] = {}
+        for pk, node_id, _ in rows:
+            if pk in scores:
+                s, n = soft.get(node_id, (0.0, 0))
+                soft[node_id] = (s + scores[pk], n + 1)
+        total = sum(s for s, _ in soft.values())
+        people = sum(n for _, n in soft.values())
+        # Laplace-smoothed like ``LabelStore.base_rate``, and for the same reason: a store
+        # whose searched leads are all fits (or all misses) would put the level at 1 (or
+        # 0), and every unfired node's Beta would lose a side.
+        return cls(soft, (total + 1) / (people + 2) if people else fallback_level)
+
+    def counts(self, node) -> tuple[float, int]:
+        """``(s, n)`` — the node's people as soft fits, and how many people it found."""
+        return self._soft.get(node.pk, (0.0, 0))
+
+
 # ── the estimator ────────────────────────────────────────────────────
 
-def _beta_params(node, store: LabelStore, cache: dict) -> tuple[float, float]:
-    """``(α, β)`` of a node's Beta — the smoothed estimate, in the form Thompson wants.
+# How many people of the parent's quality a node is assumed to hold before its own count:
+# its score is (s + W·level) / (n + W). Measured on the held 500-lead order's store, as
+# the rank correlation of each query's score with its real fit rate over 70 queries, GP
+# never trained on that query's verdicts: 10 beat both the plain average and 2 at every
+# store age — first 60 verdicts 0.32 (plain 0.27), 150 0.14 (0.09), 400 0.26 (0.18), all
+# 0.52 (0.52), and 0.37 on the smaller half of queries (0.34).
+PRIOR_WEIGHT = 10
 
-    Two pseudo-counts of prior mass pointed at the parent's rate. The budget of 2 is
-    ordinary Laplace, not a tuned knob: it is the same "one imagined success and one
-    imagined failure" that keeps a zero-count node from reading as certain.
 
-    Both sides are strictly positive because the level is (see ``LabelStore.base_rate``),
-    which is what makes the result a usable Beta rather than a degenerate one.
+def _beta_params(node, scores: HarvestScores, cache: dict) -> tuple[float, float]:
+    """``(α, β)`` of a node's Beta — the shrunk estimate, in the form Thompson wants.
+
+    ``PRIOR_WEIGHT`` people of prior mass at the parent's level, plus the node's own
+    people as soft fits. A node nobody has fired holds none of its own, so it sits at its
+    parent's level with the prior's width; a node that found 100 people is mostly itself.
+    Both sides are strictly positive while the level is inside (0, 1).
     """
-    a, b = store.counts(node.pairs)
-    level = estimate(node.parent, store, cache) if node.parent_id else store.base_rate
-    return a + 2 * level, b + 2 * (1 - level)
+    s, n = scores.counts(node)
+    level = estimate(node.parent, scores, cache) if node.parent_id else scores.root
+    return s + PRIOR_WEIGHT * level, (n - s) + PRIOR_WEIGHT * (1 - level)
 
 
-def estimate(node, store: LabelStore, cache: dict | None = None) -> float:
-    """``P̂(node)`` — the node's smoothed qualification rate.
+def estimate(node, scores: HarvestScores, cache: dict | None = None) -> float:
+    """``P̂(node)`` — the node's shrunk fit rate, its people seen through the GP.
 
     Recurses to the parent for the level. Depth is the number of tokens in a node, so the
     recursion is a handful of frames; the cache keeps a frontier of thousands from
@@ -295,10 +367,10 @@ def estimate(node, store: LabelStore, cache: dict | None = None) -> float:
     """
     cache = {} if cache is None else cache
     if node is None:
-        return store.base_rate
+        return scores.root
     if node.pk in cache:
         return cache[node.pk]
-    alpha, beta = _beta_params(node, store, cache)
+    alpha, beta = _beta_params(node, scores, cache)
     cache[node.pk] = value = alpha / (alpha + beta)
     return value
 
@@ -310,7 +382,7 @@ def frontier() -> list:
 
     One pool, deliberately. Deepening a proven vein and opening a fresh one are not two
     policies needing an alternation rule — they are two rows scored the same way, and the
-    draw decides. A vein that stops paying accumulates ``b`` and sinks on its own.
+    draw decides. A vein whose people stop looking like fits sinks on its own.
     """
     from openoutfind.core.models import QueryNode
 
@@ -321,7 +393,18 @@ def frontier() -> list:
     )
 
 
-def next_node(store: LabelStore, rng=None):
+def best_estimate(scores: HarvestScores) -> float:
+    """The highest ``P̂`` on the frontier: the fit rate the walk expects of its best next
+    page. ``0.0`` when there is nothing left to fire.
+
+    The greedy value, not a Thompson draw — it answers *what would a search be worth*,
+    which wants the estimate, not the exploration noise the draw adds to pick a node.
+    """
+    cache: dict = {}
+    return max((estimate(node, scores, cache) for node in frontier()), default=0.0)
+
+
+def next_node(scores: HarvestScores, rng=None):
     """The node to fire next, or ``None`` when the frontier is empty.
 
     ``None`` is the saturation signal: nothing left unfired and nothing left to deepen,
@@ -335,7 +418,7 @@ def next_node(store: LabelStore, rng=None):
     cache: dict = {}
     scored = []
     for node in candidates:
-        alpha, beta = _beta_params(node, store, cache)
+        alpha, beta = _beta_params(node, scores, cache)
         score = rng.beta(alpha, beta) if THOMPSON else alpha / (alpha + beta)
         scored.append((score, node))
 
@@ -344,17 +427,16 @@ def next_node(store: LabelStore, rng=None):
 
     if logger.isEnabledFor(logging.DEBUG):
         # Why *this* query: the whole decision is these numbers, so print them rather
-        # than the conclusion. `a`/`b` are the node's own counts, `lvl` its inherited
-        # level, `P̂` the smoothed estimate and `draw` what Thompson actually sampled —
-        # a node winning on a low P̂ means its posterior was wide, which is the point.
-        logger.debug("frontier: %d node(s), base rate %.3f over %d label(s)",
-                     len(candidates), store.base_rate, len(store))
+        # than the conclusion. `s`/`n` are the node's own people as soft fits, `lvl` its
+        # inherited level, `P̂` the shrunk estimate and `draw` what Thompson actually
+        # sampled — a node winning on a low P̂ means its posterior was wide, which is the point.
+        logger.debug("frontier: %d node(s), root level %.3f", len(candidates), scores.root)
         for rank, (drawn, node) in enumerate(scored[:_DEBUG_FRONTIER_ROWS], start=1):
-            a, b = store.counts(node.pairs)
-            level = estimate(node.parent, store, cache) if node.parent_id else store.base_rate
+            s, n = scores.counts(node)
+            level = estimate(node.parent, scores, cache) if node.parent_id else scores.root
             marker = "→" if node.pk == best.pk else " "
-            logger.debug("  %s #%d draw=%.3f P̂=%.3f  a=%d b=%d lvl=%.3f  %s@%d %s",
-                         marker, rank, drawn, estimate(node, store, cache), a, b, level,
+            logger.debug("  %s #%d draw=%.3f P̂=%.3f  s=%.1f n=%d lvl=%.3f  %s@%d %s",
+                         marker, rank, drawn, estimate(node, scores, cache), s, n, level,
                          describe_filters(filters_for(node.pairs)),
                          node.next_offset, node.state)
         if len(scored) > _DEBUG_FRONTIER_ROWS:
@@ -385,9 +467,14 @@ def _dead_sets() -> list[frozenset]:
 def seed_frontier(keywords, seed) -> int:
     """Open the walk with one depth-1 node per keyword. Returns nodes created.
 
+    ``discover`` passes the ICP's own words, not the whole vocabulary: on a store started
+    from a customer's marks the vocabulary already holds every word two of their fits
+    share, and opening on rare ones (``capsules``, ``cbga``) searched a few people the
+    marks already named. Those words still reach the walk as children of the ICP's nodes.
+
     There is no root. The empty query is never fired — it matches everyone, so its one
     10k window is the provider's famous-company head and tells us nothing — and the level
-    a root would have supplied comes from ``LabelStore.base_rate`` instead.
+    a root would have supplied comes from ``HarvestScores.root`` instead.
 
     ``seed`` carries what the ICP said about the *shape* of every query rather than its
     words — the size band and the country — and each opened node keeps its own copy, so a
@@ -431,7 +518,7 @@ def _opening_nodes(keywords, place: str = "") -> list[list[tuple[str, str]]]:
     return nodes
 
 
-def _upsert(pairs, parent, store: LabelStore | None = None, cache: dict | None = None,
+def _upsert(pairs, parent, scores: HarvestScores | None = None, cache: dict | None = None,
             seed=None):
     """Create a node, or re-point an existing one at a better parent. ``None`` if pruned.
 
@@ -449,8 +536,8 @@ def _upsert(pairs, parent, store: LabelStore | None = None, cache: dict | None =
     node = QueryNode.objects.filter(token_key=key).first()
     if node is not None:
         if (parent is not None and node.parent_id != parent.pk
-                and node.state == QueryNode.State.FRONTIER and store is not None):
-            if estimate(parent, store, cache) > estimate(node.parent, store, cache):
+                and node.state == QueryNode.State.FRONTIER and scores is not None):
+            if estimate(parent, scores, cache) > estimate(node.parent, scores, cache):
                 node.parent = parent
                 node.save(update_fields=["parent"])
         return None
@@ -482,13 +569,15 @@ def _query_shape(parent, seed) -> dict:
     }
 
 
-def expand(node, store: LabelStore, candidates) -> int:
+def expand(node, store: LabelStore, candidates, scores: HarvestScores | None = None) -> int:
     """Grow the frontier with this node's children. Returns how many were created.
 
     A child is this node plus one token that has shared a qualified profile with it
     (``LabelStore.cooccurring``), that no dead node is a subset of, that does not push
     any one field past what ``SEARCH_FIELDS`` allows it, and that can be fired
     (``discovery.is_fireable`` — a company word joins a node only if it holds a title).
+    Which children exist is the label store's word; which parent a child reached two
+    ways keeps is ``scores``'.
     """
     pairs = node.pairs
     dead = _dead_sets()
@@ -506,7 +595,7 @@ def expand(node, store: LabelStore, candidates) -> int:
         if any(empty <= child_set for empty in dead):
             pruned += 1
             continue
-        if _upsert(child_pairs, parent=node, store=store, cache=cache) is not None:
+        if _upsert(child_pairs, parent=node, scores=scores, cache=cache) is not None:
             created += 1
 
     if logger.isEnabledFor(logging.DEBUG):

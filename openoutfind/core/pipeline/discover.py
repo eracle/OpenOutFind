@@ -22,11 +22,12 @@ anything, and an empty page with a zero count is believed on the spot.
 
 There is no pre-screen, no clause minting, no LLM in the loop at all past the cold-start
 seed: the vocabulary is counted from qualified profiles (``vocabulary.refresh``) and the
-frontier is ranked by counting (``select``).
+frontier is ranked by what each fired node's people look like to the GP (``select``).
 """
 from __future__ import annotations
 
 import logging
+import time
 
 from termcolor import colored
 
@@ -75,12 +76,13 @@ def _harvest(node, rows: list[dict]) -> int:
     return created
 
 
-def _ensure_frontier(site_config, store) -> list[tuple[str, str]]:
+def _ensure_frontier(site_config, store, scores) -> list[tuple[str, str]]:
     """Make sure there is a vocabulary and something to fire. Returns the vocabulary.
 
-    Cold start seeds from the ICP; every pass folds in the words of whatever has qualified
-    since. Both are cheap and idempotent — counting, not generation — so there is no
-    cadence to trigger and no high-water mark to store.
+    Cold start opens on the ICP's own words; every pass folds in the words of whatever has
+    qualified since, which join the walk as children. Both are cheap and idempotent —
+    counting, not generation — so there is no cadence to trigger and no high-water mark
+    to store.
     """
     from openoutfind.core.models import QueryNode
     from openoutfind.core.pipeline import select, vocabulary
@@ -96,8 +98,9 @@ def _ensure_frontier(site_config, store) -> list[tuple[str, str]]:
         return keywords
 
     if not existing:
-        opened = select.seed_frontier(keywords, seed)
-        logger.debug("frontier opened with %d keyword(s)", opened)
+        # The ICP's words open the walk; an empty ICP leaves only the vocabulary to open on.
+        opened = select.seed_frontier(seed.keywords or keywords, seed)
+        logger.debug("frontier opened with %d node(s)", opened)
         return keywords
 
     # The vocabulary grew since the last pass — a new token is only ever a *child* of an
@@ -105,7 +108,7 @@ def _ensure_frontier(site_config, store) -> list[tuple[str, str]]:
     for node in QueryNode.objects.filter(
         state=QueryNode.State.FIRED,
     ).prefetch_related("keywords"):
-        select.expand(node, store, keywords)
+        select.expand(node, store, keywords, scores)
     return keywords
 
 
@@ -123,13 +126,19 @@ def _fetch(node, offset: int):
     error's own name. Only ``provider_unavailable`` — genuinely could not be reached —
     keeps its place on the frontier and returns ``None``.
     """
+    from openoutfind.core import meter
     from openoutfind.core.errors import ErrorType
     from openoutfind.core.pipeline.select import DISCOVERY_PAGE_SIZE
     from openoutfind.discovery import search, step_line
     from openoutfind.enrichment import bettercontact
 
+    started = time.monotonic()
     try:
-        return search(node.to_filters(), limit=DISCOVERY_PAGE_SIZE, offset=offset)
+        page = search(node.to_filters(), limit=DISCOVERY_PAGE_SIZE, offset=offset)
+        # Timed only when a page came back: an empty one is still a search paid for, an
+        # outage is not one.
+        meter.record(meter.SEARCH_SECONDS, time.monotonic() - started)
+        return page
     except bettercontact.BetterContactUnavailable as exc:
         if exc.error_type != ErrorType.PROVIDER_UNAVAILABLE:
             raise
@@ -137,6 +146,15 @@ def _fetch(node, offset: int):
             "fetch", f"provider unavailable ({exc}) — leaving the node on the frontier",
             glyph="⚠", color="red"))
         return None
+
+
+def _holds_everyone(offset: int, page) -> bool:
+    """Whether the first page carried every person the query matches.
+
+    Only offset 0's count is trusted (the transport artifact of §4 reports counts that
+    are not answers), and only a positive one: a page whose count is missing says nothing.
+    """
+    return offset == 0 and bool(page.leads_found) and page.leads_found <= len(page.leads)
 
 
 def _handle_empty(node, offset: int, page) -> str | None:
@@ -185,15 +203,15 @@ def discover(site_config, qualifier=None) -> bool:
     or a fetch was unavailable — both best-effort, since a provider outage must not fail
     the enclosing task. A provider *refusal* is the exception and propagates
     (``_fetch``): a rejected key must never be read as a query that matches nobody.
-    ``qualifier`` is accepted and ignored: the GP no longer selects
-    queries (§13), and the parameter stays only so the call sites in ``pools`` read the
-    same for one release.
+    ``qualifier`` scores the people each fired node found (``select.HarvestScores``), which
+    is what the frontier is ranked by; without one, only judged leads count.
 
     Two gates: no finder key means the index can't be reached, and no product or target
     means there is nothing to build a query from. (A third stood here — the freemium
     promo campaign never searched, because it fed on leads other campaigns had already
     found. It is gone with that campaign.)
     """
+    from openoutfind.core import meter
     from openoutfind.core.pipeline import select
     from openoutfind.discovery import step_line
     from openoutfind.enrichment import bettercontact
@@ -206,11 +224,12 @@ def discover(site_config, qualifier=None) -> bool:
     logger.info(colored("▶ discover", "blue", attrs=["bold"]))
 
     store = select.LabelStore.load()
-    keywords = _ensure_frontier(site_config, store)
+    scores = select.HarvestScores.load(qualifier, store.base_rate)
+    keywords = _ensure_frontier(site_config, store, scores)
 
     retired = 0
     while True:
-        node = select.next_node(store)
+        node = select.next_node(scores)
         if node is None:
             logger.info(colored(
                 "■ no more people left to find — every search this install "
@@ -230,11 +249,24 @@ def discover(site_config, qualifier=None) -> bool:
             continue
 
         created = _harvest(node, page.leads)
+        if created:
+            # New leads make a new pool, so how often its verdicts fit starts over
+            # (``judge_or_search``).
+            meter.reset(meter.POOL_FIT)
         select.advance(node, leads_found=page.leads_found)
-        grown = select.expand(node, store, keywords)
         logger.info("%s", step_line(
             "fetch", f"{created} new lead(s) from {len(page.leads)} row(s)",
             glyph="✓", color="green"))
+        if _holds_everyone(offset, page):
+            # Every person the query matches came back on this page, and a child matches
+            # a subset of them — so the node and anything below it can only return people
+            # this store already has. On batch 5 that was 21 of 27 searches.
+            select.retire(node, at_offset=node.next_offset)
+            logger.debug("%s", step_line(
+                "fetch", f"all {page.leads_found} match(es) in hand — node drained, "
+                         f"subtree pruned", glyph="✗", color="yellow"))
+            return True
+        grown = select.expand(node, store, keywords, scores)
         logger.debug("%s", step_line(
             "frontier", f"+{grown} node(s) from this page", glyph="+", color="cyan"))
         return True
