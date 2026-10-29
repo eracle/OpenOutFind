@@ -182,8 +182,9 @@ outfind find 10 --agent-qualify --icp '{"seed": {"role_keywords": ["founder", "o
   "company_keywords": "dental clinic, dentistry, orthodontics"}, ...]}'
 ```
 
-Keywords are **single lowercase words**, never phrases — the search ANDs every word in one title, so
-`"head of growth"` finds nobody. **`role_keywords` search the person's job title; `domain_keywords`
+Keywords are **single lowercase words**, never phrases — each one opens a search of its own and the
+walk joins them, so a phrase would be split anyway. Nothing is stemmed: write the form profiles carry
+(`founder`, not `founders`; a company tags itself `vapes` or `vape`, and the two find different people). **`role_keywords` search the person's job title; `domain_keywords`
 search the company's LinkedIn tags**, never the title, and a domain word is always fired with a role
 word. So a domain word is what the buyer's *company* would tag itself with (`cannabis`, `dental`),
 and a word that is just as common in unrelated industries (`oil`, `brand`) belongs in neither list.

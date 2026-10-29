@@ -73,6 +73,53 @@ LEAD_SENIORITIES = get_args(Seniority)
 # Two words inside it behave as a phrase, not an AND, so it carries **one word per
 # node**. And a company word is never fired alone (``REQUIRES``).
 #
+# **No field takes Elasticsearch's query-string syntax.** ``AND``, ``OR``, ``+``,
+# ``&&``, ``*`` and quotes are never operators: each field is one of four fixed match
+# types, measured against US rows at 1–50 staff:
+#
+#     lead_job_title — match, every word required, any order, ``and``/``or`` dropped
+#         "production manager" = "manager production"
+#           = "production AND manager" = "production OR manager"        15,851
+#         "production"  49,004 · "producti*" 0 · "producti" 0
+#     company_keywords (= company_description) — match_phrase inside one tag:
+#     adjacent, in order, case-insensitive, punctuation stripped, stopwords kept
+#         "cannabis" 24,420 · "vapes" 1,505
+#         "cannabis vapes" = "\"cannabis vapes\"" = "+cannabis +vapes"
+#           = "cannabis, vapes" = "cannabis && vapes"                       76
+#         "vapes cannabis" · "cannabis and vapes" · "cannabis AND vapes"
+#           · "cannabis OR vapes" · "cannab*"                                0
+#     lead_location — "state, country", parsed, case-insensitive, country required
+#         "New Jersey, United States" = "new jersey, united states"    170,688
+#         "New Jersey" 0 · "United States, New Jersey" 0
+#     lead_seniority, company_industry — a whole value from a closed list
+#         seniority "director" = "Director" 681,108 · "direct" 0
+#         industry "Alternative Medicine" 7,484 · "alternative medicine" 0
+#           · "Alternative" 0 · any value with exact_match off 0
+#
+# **Nothing is stemmed, and the two free-text fields analyse differently.** Every word
+# form is its own term, so the form a profile carries is the one to search:
+#
+#     title "manager" 1,140,870 · "managers" 231 · "management" 57,430 · "manag" 14
+#     title "founder" 474,609 · "founders" 281 · "founding" 28,809
+#     tag   "vape" 2,282 · "vapes" 1,505 · "vaping" 1,112
+#     tag   "extraction" 13,406 · "extract" 5,683 · "extracts" 4,218
+#
+# A title drops stopwords; a tag keeps them as words of its phrase. A hyphen splits a
+# title word and also matches the joined form; in a tag it only splits:
+#
+#     title "head of procurement" = "head the procurement" = "procurement head"    89
+#     title "of" · "the" · "and" alone                                              0
+#     title "co-founder" = "co founder" = "cofounder"                         161,369
+#     tag   "food and beverage" 187,794 · "food beverage" = "food & beverage" 162,754
+#     tag   "and" alone 7,443,912 · "of" alone 5,792,763
+#     tag   "e-commerce" = "e commerce" 215,694 · "ecommerce" 104,267
+#
+# Two entries in one include list OR on every field (seniority ["director", "founder"]
+# 1,142,493; tags ["cannabis", "vapes"] 24,760), and so does naming one field under
+# both of its keys (``company_keywords`` "cannabis" + ``company_description`` "vapes"
+# 24,760). So two company tags cannot be ANDed by any query: the provider can be asked
+# for one tag word, or one phrase a company's tag list actually holds.
+#
 # The field names are the contract; the tokens are search terms. An unknown *key*
 # is dropped without a word and hands back the unfiltered page **with rows**, which
 # reads as success — so keys are constrained here and in the pydantic schemas. An
@@ -505,6 +552,12 @@ def search(filters: dict, limit: int = 100, offset: int = 0) -> Page:
     burst of calls can answer a 71-million-lead query with an empty page in 0.0s
     (§4), and writing that down as "matches nobody" is how the old walk blacklisted
     good queries permanently.
+
+    **A count costs what a page costs.** ``limit=1`` and ``limit=100`` take the same
+    wall time (the poll interval, ``bettercontact._POLL_INTERVAL_S``), so a query worth
+    sizing is worth paging. The API takes ``limit`` up to 200 (250 is refused with a
+    422). Never ``max_leads`` instead: it returns rows but reports ``leads_found`` as the
+    number of rows returned, not the query's size.
     """
     from openoutfind.core.config import SiteConfig
 

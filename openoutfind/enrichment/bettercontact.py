@@ -51,6 +51,13 @@ also makes the destination swappable in one line without shipping a release.
 
 _ENRICH_URL = "https://app.bettercontact.rocks/api/v2/async"
 _ACCOUNT_URL = "https://app.bettercontact.rocks/api/v2/account"
+
+# **The poll interval is most of a Lead Finder search's time.** A search is ready
+# 1–2.5s after the submit, measured at 0.25s polls — at 5s every search takes ~5.5s,
+# count-only (`limit: 1`) or a full page alike. The budget the interval spends is the
+# rate limit, which counts **every request, polls included, per API key across all
+# endpoints**: 100/min on Starter and free accounts, 200/min from 1,000 monthly credits
+# (`GET /account` exempt). Their docs ask for "a few seconds" between polls.
 _POLL_INTERVAL_S = 5
 _POLL_TIMEOUT_S = 300
 _HTTP_TIMEOUT_S = 30
