@@ -20,7 +20,7 @@ The authoritative state machine (with every transition and edge case) is in **[`
 
 **Where:** `core/pipeline/icp.py` → `core/pipeline/walk.py` → `core/pipeline/discover.py` → `discovery.py`
 
-Discovery is a genetic algorithm over **searches**, not a single stored filter. One LLM pass (`icp.write_initial_population`) turns the campaign's `product_docs` + `campaign_target` into 15 whole searches — title words, a company tag phrase, a place, a seniority — plus the market and a headcount band. Each generation (`walk.run_generation`) breeds 15 children from the population with the moves, fires them at once against BetterContact **Lead Finder** — free, no emails — and persists each row as a `Lead` keyed on `profile_url` (stored, never fetched), recording every person each page returned. Pages are ranked on their own people as the GP sees them, and the top 15 of parents and children survive. A search whose first page comes back empty is dead.
+Discovery is a genetic algorithm over **searches**, not a single stored filter. One LLM pass (`icp.write_initial_population`) turns the campaign's `product_docs` + `campaign_target` into 10 whole searches — title words, a company tag phrase, a place, a seniority — plus the market and a headcount band. Each generation (`walk.run_generation`) breeds 10 children from the population with the moves, fires them at once against BetterContact **Lead Finder** — free, no emails — and persists each row as a `Lead` keyed on `profile_url` (stored, never fetched), recording every person each page returned. Pages are ranked on their own people as the GP sees them, and the top 10 of parents and children survive. A search whose first page comes back empty is dead.
 
 ## 2. Embedding (at discovery time)
 

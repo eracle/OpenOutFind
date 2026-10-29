@@ -13,8 +13,11 @@ import numpy as np
 import pytest
 
 from openoutfind.core import agent_qualify
+from openoutfind.core.conf import WALK_CONFIG
 from openoutfind.core.ml.qualifier import BayesianQualifier
 from openoutfind.core.pipeline.qualify import QualifyPending, run_qualification
+
+POPULATION = WALK_CONFIG["population"]
 
 
 def _make_lead(profile_url="https://www.linkedin.com/in/alice/", profile_text="engineer at acme"):
@@ -36,7 +39,7 @@ def _reset_agent_qualify():
     agent_qualify._population.set(None)
 
 
-def _searches(n=15):
+def _searches(n=POPULATION):
     return [{"title": f"founder baker {i}" if i else "head of purchasing", "tag": "bakery",
              "state": "California" if i % 2 else "", "seniority": None} for i in range(n)]
 
@@ -71,7 +74,7 @@ class TestWritingThePopulation:
         assert raised.value.error_type == "population_pending"
         payload = raised.value.payload
         assert payload["product_docs"] == site_config.product_docs
-        assert payload["population_size"] == 15
+        assert payload["population_size"] == POPULATION
         assert set(payload["fields"]) == {"title", "tag", "state", "seniority"}
         assert "searches" in payload["schema"]["properties"]
 
@@ -81,14 +84,15 @@ class TestWritingThePopulation:
 
         agent_qualify.enable(None, _population_answer())
 
-        assert write_initial_population(site_config) == 15
+        assert write_initial_population(site_config) == POPULATION
 
         first = Search.objects.get(terms__title=["head", "purchasing"])
         assert first.origin == Search.Origin.WRITTEN
         assert first.query.tag == ("bakery",)
         assert first.query.place == "United States"
         assert (first.headcount, first.country_code) == ((1, 50), "us")
-        assert Search.objects.filter(terms__place="California, United States").count() == 7
+        assert Search.objects.filter(
+            terms__place="California, United States").count() == POPULATION // 2
 
     def test_the_answer_becomes_the_anchors(self, site_config):
         from openoutfind.core.pipeline.icp import generate_anchors
@@ -134,7 +138,7 @@ class TestWritingThePopulation:
             write_initial_population(site_config)
 
         llm.assert_called_once()
-        assert Search.objects.count() == 15
+        assert Search.objects.count() == POPULATION
 
     def test_an_illegal_written_search_is_dropped(self, site_config):
         """A tag with no title words left once stopwords go cannot be fired."""
@@ -146,7 +150,7 @@ class TestWritingThePopulation:
         population = InitialPopulation(searches=searches, country="United States")
         with patch("openoutfind.core.pipeline.icp._population_from_llm",
                    return_value=population):
-            assert write_initial_population(site_config) == 14
+            assert write_initial_population(site_config) == POPULATION - 1
         assert not Search.objects.filter(terms__title=[]).exists()
 
 

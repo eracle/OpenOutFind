@@ -164,7 +164,7 @@ class TestDiscovery:
         rows = [_row("https://linkedin.com/in/acme-third"),
                 _row("https://linkedin.com/in/elsewhere", "Other", "other.com")]
 
-        harvest(page, rows, "us")
+        harvest([(page, rows)], "us")
 
         urls = set(Lead.objects.values_list("profile_url", flat=True))
         assert "https://linkedin.com/in/elsewhere" in urls
@@ -178,7 +178,7 @@ class TestDiscovery:
         _fit("https://x/1", acme)
         _fit("https://x/2", acme)
 
-        harvest(_page(), [_row("https://linkedin.com/in/acme-third")], "us")
+        harvest([(_page(), [_row("https://linkedin.com/in/acme-third")])], "us")
 
         assert Lead.objects.filter(profile_url="https://linkedin.com/in/acme-third").exists()
 

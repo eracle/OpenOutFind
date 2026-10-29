@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pytest
 
 from openoutfind.core import meter
+from openoutfind.core.conf import WALK_CONFIG
 from openoutfind.core.config import SiteConfig
 from openoutfind.core.errors import ErrorType
 from openoutfind.core.models import PAGE_SIZE, Page, PageLead, Search
@@ -23,9 +24,11 @@ from openoutfind.crm.models import Deal, DealState, Lead, Outcome
 from openoutfind.discovery import Fetched, Page as LeadFinderPage
 from openoutfind.enrichment.bettercontact import BetterContactUnavailable
 
+POPULATION = WALK_CONFIG["population"]
+IDENTITY = WALK_CONFIG["moves"]["identity"]
 TITLES = ["founder", "purchasing", "procurement", "production", "operations", "buyer",
           "extraction", "cultivation", "compliance", "quality", "sourcing", "supply",
-          "logistics", "packaging", "formulation"]
+          "logistics", "packaging", "formulation"][:POPULATION]
 
 
 def _population():
@@ -94,10 +97,10 @@ class TestTheFirstGeneration:
 
         generation = _run(site, finder)
 
-        assert generation.number == 0 and generation.fired == 15
+        assert generation.number == 0 and generation.fired == POPULATION
         assert sorted(title for title, _ in finder.calls) == sorted(TITLES)
         assert {offset for _, offset in finder.calls} == {0}
-        assert Page.objects.filter(in_population=True).count() == 15
+        assert Page.objects.filter(in_population=True).count() == POPULATION
 
     def test_every_search_rides_the_customers_shape(self, site):
         _run(site, FakeLeadFinder())
@@ -109,8 +112,8 @@ class TestTheFirstGeneration:
         _run(site, FakeLeadFinder())
 
         assert meter.totals(meter.GENERATION_SECONDS)[1] == 1
-        assert meter.totals(meter.GENERATION_LEADS) == (45.0, 1)
-        assert meter.totals(meter.SEARCH_READY_SECONDS) == (30.0, 15)
+        assert meter.totals(meter.GENERATION_LEADS) == (3.0 * POPULATION, 1)
+        assert meter.totals(meter.SEARCH_READY_SECONDS) == (2.0 * POPULATION, POPULATION)
 
 
 class TestTakingPagesIn:
@@ -124,6 +127,28 @@ class TestTakingPagesIn:
         page = Page.objects.get(search__terms__title=["founder"])
         assert page.leads.count() == 3
         assert known in page.leads.all()
+
+    def test_a_generation_is_embedded_in_one_call(self, site):
+        """Embedding is most of a generation's time; one pass sorts every page's people."""
+        from openoutfind.core.ml import embeddings
+
+        _run(site, FakeLeadFinder())
+
+        assert embeddings.embed_texts.call_count == 1
+        assert len(embeddings.embed_texts.call_args.args[0]) == 3 * POPULATION
+
+    def test_a_person_on_two_pages_is_stored_once_and_on_both(self, site):
+        finder = FakeLeadFinder()
+        shared = _row("https://linkedin.com/in/shared", "founder")
+
+        def both(api_key, filters, limit, offset, first_poll_s):
+            page, ready = finder(api_key, filters, limit, offset, first_poll_s)
+            return Fetched(LeadFinderPage(page.leads + [shared], page.leads_found), ready)
+
+        _run(site, both)
+
+        lead = Lead.objects.get(profile_url="https://linkedin.com/in/shared")
+        assert PageLead.objects.filter(lead=lead).count() == POPULATION
 
     def test_a_marked_lead_is_on_no_page(self, site):
         Lead.objects.create(profile_url="https://linkedin.com/in/founder-0-0", marked=True)
@@ -160,15 +185,15 @@ class TestTakingPagesIn:
 
 
 class TestBreeding:
-    def test_the_next_generation_breeds_fifteen_and_keeps_fifteen(self, site):
+    def test_the_next_generation_breeds_a_population_and_keeps_one(self, site):
         _run(site, FakeLeadFinder())
         finder = FakeLeadFinder()
 
         generation = _run(site, finder, seed=1)
 
         assert generation.number == 1
-        assert len(finder.calls) == 15
-        assert Page.objects.filter(in_population=True).count() == 15
+        assert len(finder.calls) == POPULATION
+        assert Page.objects.filter(in_population=True).count() == POPULATION
 
     def test_identity_pages_the_fittest_survivors_one_page_deeper(self, site):
         _run(site, FakeLeadFinder())
@@ -177,7 +202,7 @@ class TestBreeding:
         _run(site, finder, seed=1)
 
         deeper = [title for title, offset in finder.calls if offset == PAGE_SIZE]
-        assert len(deeper) == 5
+        assert len(deeper) == IDENTITY
 
     def test_a_search_at_the_bottom_is_not_paged_again(self, site):
         """Its first page held everyone the provider counts."""
@@ -240,7 +265,7 @@ class TestLastChildrenFitness:
         for lead in Lead.objects.filter(source_fields__contact_job_title="founder"):
             Deal.objects.create(lead=lead, state=DealState.QUALIFIED)
 
-        assert walk.last_children_fitness(None) == pytest.approx(1 / 15)
+        assert walk.last_children_fitness(None) == pytest.approx(1 / POPULATION)
 
 
 class TestDiscover:

@@ -104,9 +104,9 @@ CAMPAIGN_CONFIG = {
     # running mean (`core/meter.py`: every generation fired, every verdict given), and a
     # setting stands in only until its first measurement.
     #
-    # A generation is 15 Lead Finder pages fired at once, each ready in 1.1–3.6 s, then
-    # up to 3,000 rows embedded and stored — about a minute — and free: Lead Finder bills
-    # nothing.
+    # A generation is 10 Lead Finder pages fired at once, each ready in 1.1–3.6 s, then
+    # up to 2,000 rows embedded in one pass and stored — 2m42s for 1,169 new people on a
+    # fresh store — and free: Lead Finder bills nothing.
     #
     # A verdict is one candidate judged: a few seconds and an LLM call for a model, and
     # ~40 s for a calling agent under --agent-qualify (178 verdicts in 1h49m on the same
@@ -130,7 +130,7 @@ CAMPAIGN_CONFIG = {
     # 824 MB resident, so 1 GiB is too tight once an OS sits underneath and 2 GiB is not. At
     # this price time is nearly free next to an LLM's bill, so the bill decides the bar.
     "run_hour_dollars": 0.01786,
-    "generation_seconds": 60,
+    "generation_seconds": 160,
     "verdict_seconds_model": 5,
     "verdict_seconds_agent": 40,
     # An agent's verdict longer than this is not measured: the candidate waited on a
@@ -149,18 +149,19 @@ CAMPAIGN_CONFIG = {
 }
 
 # The walk (core/pipeline/walk.py): a genetic algorithm over searches, ranked on how good
-# the people on each one's latest page are. 15 is the initial population the LLM writes,
+# the people on each one's latest page are. 10 is the initial population the LLM writes,
 # the population kept, and the children bred each generation; selection is one ranking,
-# the top 15 of parents and children (μ + λ).
+# the top 10 of parents and children (μ + λ). A generation is embedded before it is
+# ranked, so its size is the run's wait: 15 pages of new people took 14½ minutes.
 #
-# The 15 children split across the moves (core/pipeline/moves.py): identity pages the 5
+# The 10 children split across the moves (core/pipeline/moves.py): identity pages the 3
 # fittest survivors not at the bottom one page deeper, and the rest breed new searches. A
 # move with no legal child gives its slot to the next one in this order; slots left after
 # crossover are not fired. If the survivors collapse onto one search's neighbours, this
 # split is where diversity comes back.
 WALK_CONFIG = {
-    "population": 15,
-    "moves": {"identity": 5, "stricter": 3, "wider": 2, "swap": 3, "crossover": 2},
+    "population": 10,
+    "moves": {"identity": 3, "stricter": 2, "wider": 2, "swap": 2, "crossover": 1},
     # Tries per slot before a move gives it up: a draw can repeat a fired or dead search.
     "tries_per_slot": 10,
 }

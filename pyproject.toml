@@ -59,7 +59,8 @@ dependencies = [
     "fastembed>=0.4,<1",
     "scikit-learn>=1.4,<2",
     "huggingface_hub>=0.23,<1",
-    "openoutlearn>=0.1.5,<1",
+    # 0.1.7: embed_texts sorts by length, so a generation embeds in a third of the time.
+    "openoutlearn>=0.1.7,<1",
     # The walk's generation loop (`core/pipeline/walk.py`): the individual, the
     # operators as a toolbox, `selBest` over parents and children, the logbook.
     "deap>=1.4.4,<2",

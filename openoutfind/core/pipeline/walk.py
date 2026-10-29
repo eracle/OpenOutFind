@@ -6,13 +6,15 @@ people on that page are (``fitness``). The initial population is written whole b
 (``icp.write_initial_population``) instead of drawn at random. Each generation is one
 blocking step of the run:
 
-1. **Breed 15 children** from the population with the moves (``moves``): identity pages
+1. **Breed 10 children** from the population with the moves (``moves``): identity pages
    the fittest survivors one page deeper, the other moves write new searches.
-2. **Fire all 15 at once** — page 1 for a new search, the next page for an identity
+2. **Fire all 10 at once** — page 1 for a new search, the next page for an identity
    child. The worker threads only make the API calls.
-3. **Wait for all of them**, then, in the main thread, take their people into the store
-   and score each child on its own page.
-4. **Rank** parents and children together by fitness and **keep the top 15** as the
+3. **Wait for all of them**, then, in the main thread, record each page and take every
+   page's people into the store together (``discover.harvest``): one embedding pass over
+   the whole generation, shortest profile first, since embedding is most of its time.
+   Then score each child on its own page.
+4. **Rank** parents and children together by fitness and **keep the top 10** as the
    population (μ + λ, ``tools.selBest``).
 5. Hand back to the run, which goes on judging until it asks for the next generation
    (``judge_or_search``).
@@ -268,8 +270,9 @@ def _fire_all(children, toolbox, api_key: str) -> list:
     return list(toolbox.map(fire, children))
 
 
-def _take_in(child: Individual, result, generation: int) -> bool:
-    """Record one fired child and take its people in. Returns whether it has a page to rank.
+def _take_in(child: Individual, result, generation: int) -> list[dict]:
+    """Record one fired child and its page. Returns the page's rows, empty when it has no
+    page to rank; ``harvest`` takes the whole generation's rows in at once.
 
     A provider refusal (bad key, no credits, rate-limited through the backoff) is
     re-raised: every later search would repeat it. An outage is not evidence about the
@@ -280,7 +283,6 @@ def _take_in(child: Individual, result, generation: int) -> bool:
     from openoutfind.core import meter
     from openoutfind.core.errors import ErrorType
     from openoutfind.core.models import PAGE_SIZE, Page, Search
-    from openoutfind.core.pipeline.discover import harvest
     from openoutfind.discovery import query_header, step_line
     from openoutfind.enrichment.bettercontact import BetterContactUnavailable
 
@@ -289,7 +291,7 @@ def _take_in(child: Individual, result, generation: int) -> bool:
             raise result
         logger.warning("%s", step_line("fetch", f"provider unavailable ({result}) — "
                                                 f"{child} not fired", glyph="⚠", color="red"))
-        return False
+        return []
 
     page, ready = result
     meter.record(meter.SEARCH_READY_SECONDS, ready)
@@ -307,13 +309,13 @@ def _take_in(child: Individual, result, generation: int) -> bool:
             logger.warning("%s", step_line("fetch", f"empty page but {page.leads_found:,} "
                                                     f"in the index — transport artifact",
                                            glyph="⚠", color="yellow"))
-            return False
+            return []
         child.search.dead = True
         child.search.save(update_fields=["dead"])
         logger.debug("%s", step_line("fetch", "nobody matches — the search is dead, and so "
                                               "is any holding all its terms",
                                      glyph="✗", color="yellow"))
-        return False
+        return []
 
     if child.number == 1:
         child.search.leads_found = page.leads_found
@@ -321,10 +323,7 @@ def _take_in(child: Individual, result, generation: int) -> bool:
 
     child.page = Page.objects.create(search=child.search, number=child.number,
                                      generation=generation, rows=len(page.leads))
-    if not page.leads:
-        return False  # paged past the end: the search is at the bottom
-    harvest(child.page, page.leads, child.search.country_code)
-    return True
+    return page.leads  # empty past the end: the search is at the bottom
 
 
 # ── one generation ───────────────────────────────────────────────────
@@ -340,6 +339,7 @@ def run_generation(site_config, qualifier, rng: random.Random | None = None) -> 
 
     from openoutfind.core import meter
     from openoutfind.core.models import Page, Search
+    from openoutfind.core.pipeline.discover import harvest
     from openoutfind.core.pipeline.icp import write_initial_population
     from openoutfind.crm.models import Lead
 
@@ -364,9 +364,11 @@ def run_generation(site_config, qualifier, rng: random.Random | None = None) -> 
             return None
         results = _fire_all(children, toolbox, site_config.bettercontact_api_key)
 
-    fired = [child for child, result in zip(children, results)
-             if _take_in(child, result, number)]
+    pages = [(child, rows) for child, result in zip(children, results)
+             if (rows := _take_in(child, result, number))]
+    fired = [child for child, _ in pages]
     if fired:
+        harvest([(child.page, rows) for child, rows in pages], fired[0].search.country_code)
         evaluate(fired, qualifier)
     survivors = toolbox.select(parents + fired, WALK_CONFIG["population"])
     Page.objects.filter(in_population=True).update(in_population=False)

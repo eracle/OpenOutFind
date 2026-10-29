@@ -169,9 +169,9 @@ driven this way never needs a model key at all. The `qualify_pending` payload ca
 brief as `rules` (`""` when none was given — pass `--brief` first and judge by it).
 
 **A fresh store asks you for its initial population first.** The cold start has two more model
-calls — the walk's first 15 searches and a few invented ideal profiles — so the first
+calls — the walk's first 10 searches and a few invented ideal profiles — so the first
 `--agent-qualify` run on an empty store stops with `population_pending` instead. Its error object
-carries `product_docs`, `campaign_target`, the brief as `rules`, `population_size` (15), the
+carries `product_docs`, `campaign_target`, the brief as `rules`, `population_size` (10), the
 `fields` and how the provider matches each, the allowed `seniorities`, `anchor_count` and the JSON
 `schema` of the answer. Write both parts in one object and re-run the same command with it:
 
@@ -185,7 +185,7 @@ outfind find 10 --agent-qualify --population '{"searches": [
   "company_keywords": "dental clinic, dentistry, orthodontics"}, ...]}'
 ```
 
-**Write 15 whole searches, each a person you would want to find** — "a head of procurement at a
+**Write 10 whole searches, each a person you would want to find** — "a head of procurement at a
 dental clinic in California" is `{"title": "head procurement", "tag": "dental clinic", "state":
 "California"}`. The model knows which titles go with which companies; the walk then breeds new
 searches from the ones whose people turn out best. Spread them: different titles, different kinds
@@ -300,7 +300,7 @@ is a stable string worth branching on:
 | `provider_unavailable` | Provider unreachable at all. | Transient; retry later. |
 | `bad_config` | A value is set but unusable (e.g. a negative count). | Read the message; it names the field. |
 | `qualify_pending` | `--agent-qualify` stopped one candidate short of the `AI_MODEL` call it opted out of. | Judge the candidate carried on the error object, then re-run with `--verdict`/`--reason` — see *Answering qualify yourself*. |
-| `population_pending` | `--agent-qualify` on a fresh store: the walk's 15 initial searches and the ideal profiles are needed first. | Write them from the error's `product_docs`/`campaign_target`/`rules` in its `schema`, then re-run with `--population '<json>'`. |
+| `population_pending` | `--agent-qualify` on a fresh store: the walk's 10 initial searches and the ideal profiles are needed first. | Write them from the error's `product_docs`/`campaign_target`/`rules` in its `schema`, then re-run with `--population '<json>'`. |
 
 Treat a non-zero exit as *partial success with a stated reason*, not as "nothing happened" — the
 rows are already on stdout. And never report a failed run to the user as "no leads matched": a

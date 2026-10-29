@@ -59,7 +59,7 @@ class ErrorType:
 
     POPULATION_PENDING = "population_pending"
     """``find --agent-qualify`` on a store with no cold start yet: the walk's initial
-    population (15 whole searches) and the synthetic ideal profiles are both written by
+    population (10 whole searches) and the synthetic ideal profiles are both written by
     ``AI_MODEL`` otherwise. The error object carries the product and target text, the
     brief, the field types and the JSON schema of the answer; resume with the same
     command plus ``--population '<json>'``.

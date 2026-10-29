@@ -17,7 +17,7 @@ crown jewel and it is ported verbatim:
 
 - **cold phase** (``is_cold`` — invented anchor positives still padding the positive
   class) — judge the strongest lead every pass, and fire a generation of the walk only
-  when the pool is empty. A generation is 15 pages, up to 3,000 people, so the first one
+  when the pool is empty. A generation is 10 pages, up to 2,000 people, so the first one
   fills the pool for many verdicts; ranking still leans on the anchors' *guess* at the
   ICP, so nothing observed says a second generation beats judging what the first
   brought. Only an empty pool after a generation stalls.
