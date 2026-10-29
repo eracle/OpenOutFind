@@ -7,20 +7,17 @@ judged). The readiness check that refuses a malformed value is here too.
 """
 from __future__ import annotations
 
-from unittest.mock import patch
-
 import numpy as np
 import pytest
 
 from openoutfind.core import company_cap
 from openoutfind.core.errors import ErrorType, OpenOutFindError
-from openoutfind.core.models import Keyword, QueryNode
-from openoutfind.core.pipeline import discover as discover_mod
-from openoutfind.core.pipeline import select
-from openoutfind.core.pipeline.discover import discover
+from openoutfind.core.models import Page, Search
+from openoutfind.core.pipeline.discover import harvest
 from openoutfind.core.pipeline.qualify import fetch_qualification_candidates
+from openoutfind.core.pipeline.query import Terms
 from openoutfind.crm.models import Company, Deal, DealState, Lead, Outcome
-from openoutfind.discovery import Page, company_key_for
+from openoutfind.discovery import company_key_for
 
 ACME = "acme.com"
 
@@ -151,44 +148,37 @@ class TestQualificationScan:
 # ── discovery ────────────────────────────────────────────────────
 
 
-def _node(pairs):
-    node = QueryNode.objects.create(token_key=select.token_key(pairs))
-    node.keywords.set(Keyword.rows_for(pairs))
-    return node
+def _page():
+    terms = Terms.written(title="quality")
+    search = Search.objects.create(terms=terms.as_json(), key=terms.key)
+    return Page.objects.create(search=search, number=1, generation=0, rows=2)
 
 
 class TestDiscovery:
-    def test_a_full_companys_rows_are_not_accepted_and_the_node_still_advances(
-        self, db, configure,
-    ):
-        configure(bettercontact_api_key="k", product_docs="p", campaign_target="t",
-                  max_per_company="2")
+    def test_a_full_companys_rows_are_neither_stored_nor_on_the_page(self, db, configure):
+        configure(max_per_company="2")
         acme = _company()
         _fit("https://x/1", acme)
         _fit("https://x/2", acme)
-        node = _node([("lead_job_title", "quality")])
+        page = _page()
         rows = [_row("https://linkedin.com/in/acme-third"),
                 _row("https://linkedin.com/in/elsewhere", "Other", "other.com")]
 
-        with patch.object(discover_mod, "_fetch", return_value=Page(rows, 200)):
-            assert discover(company_cap.SiteConfig.load()) is True
+        harvest(page, rows, "us")
 
         urls = set(Lead.objects.values_list("profile_url", flat=True))
         assert "https://linkedin.com/in/elsewhere" in urls
         assert "https://linkedin.com/in/acme-third" not in urls
-        node.refresh_from_db()
-        assert node.next_offset == select.DISCOVERY_PAGE_SIZE
+        assert list(page.leads.values_list("profile_url", flat=True)) == [
+            "https://linkedin.com/in/elsewhere"]
 
     def test_without_a_cap_every_live_row_is_accepted(self, db, configure):
-        configure(bettercontact_api_key="k", product_docs="p", campaign_target="t")
+        configure()
         acme = _company()
         _fit("https://x/1", acme)
         _fit("https://x/2", acme)
-        _node([("lead_job_title", "quality")])
 
-        with patch.object(discover_mod, "_fetch",
-                          return_value=Page([_row("https://linkedin.com/in/acme-third")], 9)):
-            discover(company_cap.SiteConfig.load())
+        harvest(_page(), [_row("https://linkedin.com/in/acme-third")], "us")
 
         assert Lead.objects.filter(profile_url="https://linkedin.com/in/acme-third").exists()
 

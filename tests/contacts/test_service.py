@@ -306,13 +306,13 @@ class TestShareProfiles:
 
     def test_the_sent_fields_rebuild_the_qualifiers_text(self):
         """The lake can re-derive ``profile_text`` without paging Lead Finder."""
-        from openoutfind.core.db.leads import create_lead
+        from openoutfind.core.db.leads import store_rows
         from openoutfind.crm.models import Lead
         from openoutfind.discovery import profile_text_for
 
         _config(token="tok")
         row = _lead_finder_row()
-        create_lead(row, country_code="us")
+        store_rows([row], country_code="us")
         sent = self._share([row]).call_args.kwargs["json"]["profiles"][0]["fields"]
         assert profile_text_for(sent) == Lead.objects.get().profile_text
 

@@ -60,6 +60,9 @@ dependencies = [
     "scikit-learn>=1.4,<2",
     "huggingface_hub>=0.23,<1",
     "openoutlearn>=0.1.5,<1",
+    # The walk's generation loop (`core/pipeline/walk.py`): the individual, the
+    # operators as a toolbox, `selBest` over parents and children, the logbook.
+    "deap>=1.4.4,<2",
     "pytz>=2024.1",
     "imapclient>=3,<4",
     "tenacity>=8,<10",

@@ -16,11 +16,11 @@ caller decides whether to come back.
 crown jewel and it is ported verbatim:
 
 - **cold phase** (``is_cold`` — invented anchor positives still padding the positive
-  class) — do **both** moves every pass: one query in, one label out. Ranking still
-  leans on the anchors' *guess* at the ICP, so no observed signal says a label is
-  worth more than a page, and a rule that picked one would be a preference dressed
-  as a policy. Discovery's return is ignored, so a saturated pool or a provider
-  outage still leaves a lead to label; only an empty pool stalls.
+  class) — judge the strongest lead every pass, and fire a generation of the walk only
+  when the pool is empty. A generation is 15 pages, up to 3,000 people, so the first one
+  fills the pool for many verdicts; ranking still leans on the anchors' *guess* at the
+  ICP, so nothing observed says a second generation beats judging what the first
+  brought. Only an empty pool after a generation stalls.
 - **explore** (``neg ≤ pos``) — label the most *informative* lead (max BALD), with no
   confidence gate: a low-confidence lead is exactly the label that teaches the GP
   most, so filtering by confidence would throw away the point of exploring.
@@ -32,9 +32,9 @@ crown jewel and it is ported verbatim:
   measured), the one whose qualification will buy an email rather than
   park at QUALIFIED. When none clears it, **judge or search, whichever is cheaper per
   fit** on this run's measured costs (``judge_or_search``): judging takes the best lead
-  by P from the whole pool, searching fires the walk's next page. The bar itself never
-  moves here — a pass that discovers leaves the class balance untouched and the frontier
-  one node further on, and when the frontier is drained the pool is judged to its end.
+  by P from the whole pool, searching runs the walk's next generation. The bar itself
+  never moves here — a pass that discovers leaves the class balance untouched, and when
+  the walk has nothing left to fire the pool is judged to its end.
 
 There used to be a second path here: the freemium promo campaign ran none of the
 above, because its leads were already in the account and a downloaded kit model
@@ -49,7 +49,6 @@ from termcolor import colored
 
 from openoutfind.core.ml import calibration
 from openoutfind.core.ml.qualifier import BayesianQualifier
-from openoutfind.core.pipeline import vocabulary
 from openoutfind.core.pipeline.discover import discover
 from openoutfind.core.pipeline.icp import ANCHOR_COUNT
 from openoutfind.core.pipeline.judge_or_search import judging_pays
@@ -68,18 +67,14 @@ def top_up(site_config, qualifier: BayesianQualifier) -> bool:
     already have fitted the model in the same action, and the fit is the expensive
     part. See ``cycle._one_model_per_action``.
     """
-    # Whatever last pass accepted reaches the frontier here. Discovery refreshes too, but
-    # a run that only ever labels would otherwise never fold its own acceptances in — and
-    # the walk's ranking is counted from exactly those profiles. Guarded by an accepted
-    # count, so a pass that changed nothing costs one `COUNT`.
-    vocabulary.refresh()
-
     if qualifier.is_cold:
         logger.info("  %s cold phase — %d/%d real positive(s), exploiting the anchors' guess",
                    colored("·", "cyan", attrs=["bold"]),
                    qualifier.n_real_positives, ANCHOR_COUNT)
-        discover(site_config, qualifier)
         candidates = fetch_qualification_candidates()
+        if not candidates:
+            discover(site_config, qualifier)
+            candidates = fetch_qualification_candidates()
         if not candidates:
             return False
         return run_qualification(site_config, qualifier, candidates=candidates) is not None
@@ -118,12 +113,12 @@ def top_up(site_config, qualifier: BayesianQualifier) -> bool:
         # Falling straight to discovery here cost a live install 14h33m with 3 real
         # positives and a pool that topped out at P=0.37, so the rule judges a fresh
         # pool before its first verdict is in.
-        if candidates and judging_pays(qualifier):
+        if candidates and judging_pays(qualifier, candidates):
             return run_qualification(site_config, qualifier, candidates=candidates) is not None
-        # A fired page is the work, however much of it we had already seen. Reading
-        # *new leads* here is what stopped a live run with 100 rows in hand: the page
+        # A fired generation is the work, however much of it we had already seen. Reading
+        # *new leads* here is what once stopped a live run with 100 rows in hand: the page
         # was all familiar profiles, so discovery reported nothing and the whole job
-        # ended `goal_unreached` with the frontier untouched below it.
+        # ended `goal_unreached` with the walk untouched.
         if discover(site_config, qualifier):
             return True
         # Nothing left to search, so the pool is all there is.

@@ -168,26 +168,39 @@ which is the right default for a run nobody is driving turn-by-turn. **`--agent-
 driven this way never needs a model key at all. The `qualify_pending` payload carries the store's
 brief as `rules` (`""` when none was given — pass `--brief` first and judge by it).
 
-**A fresh store asks you for its ICP first.** The cold start has two more model calls — the opening
-search keywords and a few invented ideal profiles — so the first `--agent-qualify` run on an empty
-store stops with `icp_pending` instead. Its error object carries `product_docs`, `campaign_target`,
-the allowed `seniorities`, `anchor_count` and the JSON `schema` of the answer. Write both parts in
-one object and re-run the same command with it:
+**A fresh store asks you for its initial population first.** The cold start has two more model
+calls — the walk's first 15 searches and a few invented ideal profiles — so the first
+`--agent-qualify` run on an empty store stops with `population_pending` instead. Its error object
+carries `product_docs`, `campaign_target`, the brief as `rules`, `population_size` (15), the
+`fields` and how the provider matches each, the allowed `seniorities`, `anchor_count` and the JSON
+`schema` of the answer. Write both parts in one object and re-run the same command with it:
 
 ```bash
-outfind find 10 --agent-qualify --icp '{"seed": {"role_keywords": ["founder", "owner"],
-  "domain_keywords": ["clinic", "agency"], "seniority": "founder", "headcount_min": 1,
-  "headcount_max": 50}, "anchors": [{"profile": "founder of a dental clinic group ...",
-  "job_title": "founder", "location_country": "united states",
+outfind find 10 --agent-qualify --population '{"searches": [
+  {"title": "head procurement", "tag": "dental clinic", "state": "California", "seniority": null},
+  {"title": "founder", "tag": "orthodontics", "state": "", "seniority": "founder"}, ...],
+  "country": "United States", "country_code": "us", "headcount_min": 1, "headcount_max": 50,
+  "anchors": [{"profile": "founder of a dental clinic group ...", "job_title": "founder",
+  "location_country": "united states",
   "company_keywords": "dental clinic, dentistry, orthodontics"}, ...]}'
 ```
 
-Keywords are **single lowercase words**, never phrases — each one opens a search of its own and the
-walk joins them, so a phrase would be split anyway. Nothing is stemmed: write the form profiles carry
-(`founder`, not `founders`; a company tags itself `vapes` or `vape`, and the two find different people). **`role_keywords` search the person's job title; `domain_keywords`
-search the company's LinkedIn tags**, never the title, and a domain word is always fired with a role
-word. So a domain word is what the buyer's *company* would tag itself with (`cannabis`, `dental`),
-and a word that is just as common in unrelated industries (`oil`, `brand`) belongs in neither list.
+**Write 15 whole searches, each a person you would want to find** — "a head of procurement at a
+dental clinic in California" is `{"title": "head procurement", "tag": "dental clinic", "state":
+"California"}`. The model knows which titles go with which companies; the walk then breeds new
+searches from the ones whose people turn out best. Spread them: different titles, different kinds
+of company, some broad and some narrow.
+
+- **`title`** — the job title's words. Every word is required, in any order, and small words
+  (`of`, `the`) are ignored. **Nothing is stemmed**: write the form titles carry (`founder`, not
+  `founders`).
+- **`tag`** — at most one phrase one of the company's own LinkedIn tags holds, its words adjacent
+  and in order (`thc vape`, not `vape thc`), or empty for any company. Not stemmed either: a company
+  tags itself `vapes` or `vape`, and the two find different companies. A tag is never searched
+  without a title, and a word just as common in unrelated industries (`oil`, `brand`) is no tag.
+- **`state`** — a state inside the market `country`, or empty for the whole country.
+- **`seniority`** — one of the allowed values, or `null`.
+
 An anchor's `profile` is one lowercase line shaped like a lead row (headline, industry, title,
 company, seniority, state, country), and its `company_keywords` are the invented company's tags,
 comma separated. It is asked once per store; later runs never see it again.
@@ -287,7 +300,7 @@ is a stable string worth branching on:
 | `provider_unavailable` | Provider unreachable at all. | Transient; retry later. |
 | `bad_config` | A value is set but unusable (e.g. a negative count). | Read the message; it names the field. |
 | `qualify_pending` | `--agent-qualify` stopped one candidate short of the `AI_MODEL` call it opted out of. | Judge the candidate carried on the error object, then re-run with `--verdict`/`--reason` — see *Answering qualify yourself*. |
-| `icp_pending` | `--agent-qualify` on a fresh store: the opening keywords and ideal profiles are needed first. | Write them from the error's `product_docs`/`campaign_target` in its `schema`, then re-run with `--icp '<json>'`. |
+| `population_pending` | `--agent-qualify` on a fresh store: the walk's 15 initial searches and the ideal profiles are needed first. | Write them from the error's `product_docs`/`campaign_target`/`rules` in its `schema`, then re-run with `--population '<json>'`. |
 
 Treat a non-zero exit as *partial success with a stated reason*, not as "nothing happened" — the
 rows are already on stdout. And never report a failed run to the user as "no leads matched": a

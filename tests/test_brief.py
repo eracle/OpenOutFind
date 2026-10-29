@@ -94,9 +94,11 @@ class TestPrompts:
         env = jinja2.Environment(loader=jinja2.FileSystemLoader(str(PROMPTS_DIR)))
         values.setdefault("person", {"profile_text": "baker"})
         return env.get_template(name).render(product_docs="ovens", campaign_target="bakeries",
-                                             seniorities=[], count=3, existing=[], **values)
+                                             seniorities=[], count=3, existing=[], size=15,
+                                             **values)
 
-    @pytest.mark.parametrize("name", ["qualify_lead.j2", "icp_filters.j2", "anchor_profiles.j2"])
+    @pytest.mark.parametrize("name", ["qualify_lead.j2", "initial_population.j2",
+                                      "anchor_profiles.j2"])
     def test_every_prompt_carries_the_rules(self, name):
         assert "Not a fit: florists." in self._render(name, rules="Not a fit: florists.")
 

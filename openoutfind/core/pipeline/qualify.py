@@ -32,14 +32,14 @@ class QualifyPending(Exception):
         super().__init__(message)
 
 
-class IcpPending(QualifyPending):
-    """``find --agent-qualify`` reached the cold start with no ``--icp`` answer.
+class PopulationPending(QualifyPending):
+    """``find --agent-qualify`` reached the cold start with no ``--population`` answer.
 
     A subclass so every layer that already lets a pending verdict through to the job
     lets this through too; only the type and the payload differ.
     """
 
-    error_type = ErrorType.ICP_PENDING
+    error_type = ErrorType.POPULATION_PENDING
 
 
 def fetch_qualification_candidates():

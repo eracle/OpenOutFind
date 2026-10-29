@@ -153,8 +153,8 @@ class Command(OpenOutFindCommand):
                  "for a verdict and never printed. Compared with the host lowercased and "
                  "the query, fragment and trailing slash dropped.")
         parser.add_argument(
-            "--icp", dest="icp", metavar="JSON",
-            help="Answer an icp_pending stop: the cold start's opening keywords and "
+            "--population", dest="population", metavar="JSON",
+            help="Answer a population_pending stop: the walk's initial searches and the "
                  "ideal profiles as one JSON object, in the schema the error carried.")
         parser.add_argument(
             "--brief", dest="brief", metavar="PATH",
@@ -178,10 +178,12 @@ class Command(OpenOutFindCommand):
         if options["verdict"] and not options["reason"]:
             raise OpenOutFindError(ErrorType.BAD_CONFIG,
                                     "--verdict needs --reason")
-        if options["icp"] and not options["agent_qualify"]:
-            raise OpenOutFindError(ErrorType.BAD_CONFIG, "--icp needs --agent-qualify")
+        if options["population"] and not options["agent_qualify"]:
+            raise OpenOutFindError(ErrorType.BAD_CONFIG,
+                                    "--population needs --agent-qualify")
         if options["agent_qualify"]:
-            _enable_agent_qualify(options["verdict"], options["reason"], options["icp"])
+            _enable_agent_qualify(options["verdict"], options["reason"],
+                                  options["population"])
         if options["exclude"]:
             _enable_exclude(options["exclude"])
         brief = _read_brief(options["brief"]) if options["brief"] else None
@@ -433,8 +435,9 @@ def _narrate_pending_candidate(result: JobResult) -> None:
     a verdict would need ``--json`` just to read the profile it is a verdict on. Under
     ``--json`` the same fields already ride the error object's payload.
     """
-    if result.stopped_because == ErrorType.ICP_PENDING:
-        logger.info("Answer with the same command plus --icp '<json>', in this schema:")
+    if result.stopped_because == ErrorType.POPULATION_PENDING:
+        logger.info("Answer with the same command plus --population '<json>', "
+                    "in this schema:")
         logger.info("    %s", json.dumps(result.payload.get("schema")))
         return
     if result.stopped_because != ErrorType.QUALIFY_PENDING:
@@ -486,22 +489,24 @@ def _read_labels(path: str) -> list[dict]:
         raise OpenOutFindError(ErrorType.BAD_CONFIG, f"--labels cannot read {path}: {exc}")
 
 
-def _enable_agent_qualify(verdict: str | None, reason: str | None, icp: str | None) -> None:
+def _enable_agent_qualify(verdict: str | None, reason: str | None,
+                          population: str | None) -> None:
     """Turn ``--agent-qualify`` on for this process, with optional resume answers.
 
-    An ``--icp`` that does not parse is refused here, before any work — a malformed answer
-    discovered mid-run would leave the caller unsure which half had been written.
+    A ``--population`` that does not parse is refused here, before any work — a malformed
+    answer discovered mid-run would leave the caller unsure which half had been written.
     """
     from pydantic import ValidationError
 
     from openoutfind.core.agent_qualify import Verdict, enable
-    from openoutfind.core.pipeline.icp import IcpAnswer
+    from openoutfind.core.pipeline.icp import PopulationAnswer
 
     answer = Verdict(fit=verdict == "fit", reason=reason) if verdict else None
-    icp_answer = None
-    if icp:
+    population_answer = None
+    if population:
         try:
-            icp_answer = IcpAnswer.model_validate_json(icp)
+            population_answer = PopulationAnswer.model_validate_json(population)
         except ValidationError as exc:
-            raise OpenOutFindError(ErrorType.BAD_CONFIG, f"--icp does not fit the schema: {exc}")
-    enable(answer, icp_answer)
+            raise OpenOutFindError(ErrorType.BAD_CONFIG,
+                                    f"--population does not fit the schema: {exc}")
+    enable(answer, population_answer)

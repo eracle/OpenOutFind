@@ -1,50 +1,47 @@
 # openoutfind/core/admin.py
 from django.contrib import admin
 
-from openoutfind.core.models import Keyword, QueryNode
+from openoutfind.core.models import Page, Search
 from openoutfind.discovery import describe_filters
 
 
-@admin.register(QueryNode)
-class QueryNodeAdmin(admin.ModelAdmin):
-    """The discovery walk, node by node — what was searched, how deep, and what it found.
+@admin.register(Search)
+class SearchAdmin(admin.ModelAdmin):
+    """The walk's searches — what each one asks the provider, and how far it paged.
 
-    There is no value column to display: a node's estimate is counted from the label
-    store every time it is needed (``select.estimate``), so showing a stored number here
-    would only show one that had gone stale.
+    There is no fitness column: a page's fitness is recomputed from its people on the GP
+    as it stands (``fitness.page_fitness``), so a stored number would only show a stale one.
     """
 
-    list_display = (
-        "id", "query", "state", "next_offset", "leads_found",
-        "lead_yield", "updated_at",
-    )
-    list_filter = ("state",)
-    readonly_fields = (
-        "query", "token_key", "parent", "next_offset", "state",
-        "leads_found", "lead_yield", "created_at", "updated_at",
-    )
+    list_display = ("id", "query_filters", "origin", "move", "leads_found", "dead",
+                    "page_count", "created_at")
+    list_filter = ("origin", "move", "dead")
+    readonly_fields = ("query_filters", "key", "terms", "origin", "move", "leads_found",
+                       "dead", "headcount_min", "headcount_max", "country_code",
+                       "created_at")
     date_hierarchy = "created_at"
 
     @admin.display(description="query")
-    def query(self, obj):
-        """The node's keyword set, rendered as the region it searches."""
+    def query_filters(self, obj):
+        """The search rendered as the filters the provider sees."""
         return describe_filters(obj.to_filters())
 
-    @admin.display(description="leads")
-    def lead_yield(self, obj):
-        """First-touch leads this node surfaced."""
+    @admin.display(description="pages")
+    def page_count(self, obj):
+        return obj.pages.count()
+
+
+@admin.register(Page)
+class PageAdmin(admin.ModelAdmin):
+    """Every fired page — the walk's individuals — and which the population holds."""
+
+    list_display = ("__str__", "generation", "rows", "people", "in_population",
+                    "created_at")
+    list_filter = ("in_population", "generation")
+    readonly_fields = ("search", "number", "generation", "rows", "in_population",
+                       "created_at")
+
+    @admin.display(description="people")
+    def people(self, obj):
+        """People on the page–lead table for this page."""
         return obj.leads.count()
-
-
-@admin.register(Keyword)
-class KeywordAdmin(admin.ModelAdmin):
-    """The vocabulary — every ``(field, token)`` a query node can be built from."""
-
-    list_display = ("__str__", "field", "token", "node_count", "created_at")
-    list_filter = ("field",)
-    search_fields = ("token",)
-
-    @admin.display(description="nodes")
-    def node_count(self, obj):
-        """How many query nodes carry this keyword."""
-        return obj.nodes.count()

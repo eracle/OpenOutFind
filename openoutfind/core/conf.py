@@ -97,15 +97,16 @@ CAMPAIGN_CONFIG = {
     #
     # The two costs the rule weighs, in dollars: run time priced at `run_hour_dollars`,
     # plus what the step itself is billed. The same two costs drive `judge_or_search`,
-    # which decides below the bar. How many new leads a search adds is not a setting — it
-    # is counted from the store.
+    # which decides below the bar. A search is one **generation** of the walk, and how many
+    # new leads one adds is not a setting — it is measured from the store.
     #
     # **The times below are starting values only.** Each store measures its own as a
-    # running mean (`core/meter.py`: every page fetched, every verdict given), and a
+    # running mean (`core/meter.py`: every generation fired, every verdict given), and a
     # setting stands in only until its first measurement.
     #
-    # A search is one Lead Finder page: ~70 s on the held order's VM run (878 searches in
-    # 17h24m, polling included), and free — Lead Finder bills nothing.
+    # A generation is 15 Lead Finder pages fired at once, each ready in 1.1–3.6 s, then
+    # up to 3,000 rows embedded and stored — about a minute — and free: Lead Finder bills
+    # nothing.
     #
     # A verdict is one candidate judged: a few seconds and an LLM call for a model, and
     # ~40 s for a calling agent under --agent-qualify (178 verdicts in 1h49m on the same
@@ -129,7 +130,7 @@ CAMPAIGN_CONFIG = {
     # 824 MB resident, so 1 GiB is too tight once an OS sits underneath and 2 GiB is not. At
     # this price time is nearly free next to an LLM's bill, so the bill decides the bar.
     "run_hour_dollars": 0.01786,
-    "search_seconds": 70,
+    "generation_seconds": 60,
     "verdict_seconds_model": 5,
     "verdict_seconds_agent": 40,
     # An agent's verdict longer than this is not measured: the candidate waited on a
@@ -144,14 +145,24 @@ CAMPAIGN_CONFIG = {
     # also switches the arm on: √N must reach bands × this (N ≥ 1,600 at 8 bands × 5), so
     # a small order's pool never spends verdicts on a sample it cannot fill.
     "calibration_min_band_verdicts": 5,
-    # There is no discovery cadence knob. Growing the vocabulary used to be an LLM call
-    # worth rationing ("mint_every_n_qualified"); it is now a tokenize-and-count over a
-    # few hundred profiles (pipeline/vocabulary.py), so it simply runs every pass. The
-    # walk's other constants are the df≥2 admission floor and the ten-person prior on a
-    # node's score (`select.PRIOR_WEIGHT`), each beside the code that measured it.
-    # Discovery steering ranks each fired node by the GP's view of the people it found —
-    # no threshold and no confidence gate. See pipeline/select.py.
     "embedding_model": "BAAI/bge-small-en-v1.5",
+}
+
+# The walk (core/pipeline/walk.py): a genetic algorithm over searches, ranked on how good
+# the people on each one's latest page are. 15 is the initial population the LLM writes,
+# the population kept, and the children bred each generation; selection is one ranking,
+# the top 15 of parents and children (μ + λ).
+#
+# The 15 children split across the moves (core/pipeline/moves.py): identity pages the 5
+# fittest survivors not at the bottom one page deeper, and the rest breed new searches. A
+# move with no legal child gives its slot to the next one in this order; slots left after
+# crossover are not fired. If the survivors collapse onto one search's neighbours, this
+# split is where diversity comes back.
+WALK_CONFIG = {
+    "population": 15,
+    "moves": {"identity": 5, "stricter": 3, "wider": 2, "swap": 3, "crossover": 2},
+    # Tries per slot before a move gives it up: a draw can repeat a fired or dead search.
+    "tries_per_slot": 10,
 }
 
 # What a verdict's model is billed, in dollars per million tokens (input, output), keyed by

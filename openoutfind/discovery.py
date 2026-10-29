@@ -2,9 +2,9 @@
 """Lead discovery via BetterContact Lead Finder: search by ICP, embed the rows.
 
 Discovery is free and returns no email — paid enrichment lives in
-emails/bettercontact.py. Discovery blocks on the shared ``submit_and_poll``
-transport; enrichment instead uses the non-blocking ``submit``/``poll_once``
-split so the daemon never waits on a lookup.
+``enrichment/bettercontact.py``. A search blocks on ``search_and_poll``, which polls at
+the measured ready time; enrichment instead uses the non-blocking ``submit``/``poll_once``
+split so a run never waits on a lookup.
 """
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ import numpy as np
 from termcolor import colored
 
 from openoutfind.core.logblock import step_line  # noqa: F401 (re-exported for callers)
-from openoutfind.enrichment.bettercontact import submit_and_poll
 
 logger = logging.getLogger(__name__)
 
@@ -70,8 +69,9 @@ LEAD_SENIORITIES = get_args(Seniority)
 #     company_keywords ["cannabis vape"]                      269
 #     company_keywords ["vape cannabis"]                        2   ← order matters
 #
-# Two words inside it behave as a phrase, not an AND, so it carries **one word per
-# node**. And a company word is never fired alone (``REQUIRES``).
+# Two words inside it behave as a phrase, not an AND. And a company tag is never fired
+# without a title (``query.Terms.is_legal``): alone, the provider pages one company's
+# whole staff at a time; with a title, a page spreads over 59–77 companies.
 #
 # **No field takes Elasticsearch's query-string syntax.** ``AND``, ``OR``, ``+``,
 # ``&&``, ``*`` and quotes are never operators: each field is one of four fixed match
@@ -120,16 +120,12 @@ LEAD_SENIORITIES = get_args(Seniority)
 # 24,760). So two company tags cannot be ANDed by any query: the provider can be asked
 # for one tag word, or one phrase a company's tag list actually holds.
 #
-# The field names are the contract; the tokens are search terms. An unknown *key*
+# The field names are the contract; the terms are search values. An unknown *key*
 # is dropped without a word and hands back the unfiltered page **with rows**, which
-# reads as success — so keys are constrained here and in the pydantic schemas. An
-# unknown *value* is benign: an empty page, one move spent.
+# reads as success — so the keys are only ever written by ``query.Terms.to_filters``. An
+# unknown *value* is benign: an empty page, one search spent.
 #
-# **The number is how many values one node may carry on that axis, and only one axis
-# conjoins.** ``lead_job_title`` is free text matched with ``exact_match`` off, so the
-# words inside one string AND and two of them is the measured sweet spot. The other two
-# axes match a *whole value*, and a space-joined pair is not one — measured against the
-# live index:
+# A place and a seniority are whole values, and a space-joined pair is not one:
 #
 #     lead_seniority ["director"]           5,051,296
 #     lead_seniority ["director founder"]           0
@@ -138,73 +134,9 @@ LEAD_SENIORITIES = get_args(Seniority)
 #     lead_location  ["California, United States"]  2,714,366
 #
 # So those two narrow by *being* narrower — "California, United States" rather than
-# "United States" — while a job title narrows by conjunction ("founder cto"). A node
-# holding two of either would query a value nobody has, come back empty at offset 0, and
-# be written off as dead along with its whole subtree: an empty query poisoning the
-# lattice with a fact about our syntax.
-SEARCH_FIELDS = {
-    "lead_job_title": 2,
-    "lead_seniority": 1,
-    "lead_location": 1,
-    "company_keywords": 1,
-}
-
-# Free-text axes, sent with ``exact_match`` off so a word matches inside a longer value.
-_FREE_TEXT_FIELDS = ("lead_job_title", "company_keywords")
-
-# An axis that may only be fired alongside another. The provider returns a company-word
-# query grouped by employer, so each 100-row page is one company's whole staff — Accela
-# at offset 0, Weedmaps' engineers at 500, an insurer carrying a ``cannabis`` tag at
-# 5,000. Conjoined with a title word the same word spreads over 59–77 companies per page.
-REQUIRES = {"company_keywords": "lead_job_title"}
-
-
-def is_fireable(keywords) -> bool:
-    """Whether a keyword set may be sent as a query: every ``REQUIRES`` partner is present."""
-    fields = {field for field, _ in keywords}
-    return bool(fields) and all(REQUIRES[f] in fields for f in fields if f in REQUIRES)
-
-
-def filters_for(keywords, headcount: tuple[int, int] | None = None) -> dict:
-    """``(field, token)`` keywords → one Lead Finder filter dict.
-
-    The one place a node becomes provider JSON, and the only place the index's three
-    operators are chosen between (§1, §6 of the card):
-
-    - **words inside one string AND — on ``lead_job_title`` only.** Its tokens are joined
-      with a space, so ``{("lead_job_title", "founder"), ("lead_job_title", "cto")}``
-      queries ``"founder cto"`` — every word must be present. This is the walk's
-      narrowing move, and it is the *generator* of the best queries measured
-      (``"founder cto"`` counts 9,027 at near-perfect precision, §10). It is also the
-      only axis it works on: the closed axes match whole values, where the same join
-      asks for a value nobody has, and ``company_keywords`` reads two words as a phrase
-      (see ``SEARCH_FIELDS``) — it is sent free-text like a title, one word at a time.
-    - **field vs field ANDs.** Separate keys, as before.
-    - **strings inside one list OR.** Real (``["Spain", "France"]`` counts more than
-      either alone) and unreachable today: ``SEARCH_FIELDS`` allows one value per node on
-      the two axes that would use it, because a union reaches one ~10k window where the
-      same values as separate queries reach one each — strictly dominated for harvesting
-      (§7). The list is how the closed axes are written, not a union being asked for.
-
-    ``headcount`` is the campaign's fixed ICP size band, riding every query
-    unchanged — it is never a search axis, because loosening a size bound queries
-    off-ICP rather than widening usefully.
-    """
-    grouped: dict[str, list[str]] = {}
-    for field, token in sorted(keywords):
-        grouped.setdefault(field, []).append(token)
-
-    filters: dict = {}
-    if headcount is not None:
-        filters["company_headcount_min"] = int(headcount[0])
-        filters["company_headcount_max"] = int(headcount[1])
-
-    for field, tokens in grouped.items():
-        if field in _FREE_TEXT_FIELDS:
-            filters[field] = {"include": [" ".join(tokens)], "exact_match": False}
-        else:
-            filters[field] = {"include": list(tokens)}
-    return filters
+# "United States" — while a job title narrows by adding a word and a tag by lengthening
+# its phrase. Each field's type and what a search holds in it: ``core/pipeline/query.py``.
+SEARCH_FIELDS = ("lead_job_title", "company_keywords", "lead_location", "lead_seniority")
 
 # Lead-row fields we embed, folded in only when the row carries them.
 #
@@ -234,32 +166,20 @@ TEXT_FIELDS = [
 ]
 
 
-# Which lead-row fields supply the vocabulary for each search axis. The token a
-# profile contributes has to land in a field the provider will actually match it in:
-# ``cto`` is alive in ``lead_job_title`` and dead in every other, ``belgium`` the
-# reverse. Reading each axis from the row fields that *are* that axis keeps the two
-# vocabularies nearly disjoint for free, so the walk rarely has to discover by
-# fetching that a token is in the wrong place.
+# The lead-row fields each search field is matched against — what a person's
+# ``source_fields`` keeps, so a search's terms can be checked locally, each in its own
+# field (``query.Terms.matches``), and the moves can draw terms from the store's people.
 #
-# ``lead_seniority`` is not sourced from rows at all — it is a closed 12-value
-# vocabulary the provider publishes (``Seniority``), so it is seeded whole and never
-# grown. There is no ``lead_department`` source because no lead row carries one.
-#
-# ``contact_headline`` used to feed ``lead_job_title`` and does not any more. A headline
-# is marketing prose — "Building AI-powered agents for users" — and its words repeat
-# across people, so they cleared the df≥2 floor and were filed as job titles: a live
-# campaign grew ``user``, ``agents``, ``agile``, ``shipping`` and ``ai-powered`` as title
-# tokens. Conjoined, they ask for a title nobody holds. Only ``contact_job_title`` says
-# what the provider will match in that field.
-#
-# ``company_keywords`` reads the row's own ``company_keywords`` — the tag list the filter
-# matches. It is the one axis whose source is **not** in ``profile_text`` (see
-# ``TEXT_FIELDS``), so the walk counts it against the stored tags instead
-# (``vocabulary.label_tokens``).
-KEYWORD_SOURCE_FIELDS = {
+# ``lead_job_title`` reads ``contact_job_title`` only, never the headline: a headline is
+# marketing prose ("Building AI-powered agents for users"), and its words are not what
+# the provider matches in that field. ``company_keywords`` is the employer's tag list,
+# the one field not in ``profile_text`` (see ``TEXT_FIELDS``). There is no
+# ``lead_department`` source because no lead row carries one.
+SOURCE_FIELDS = {
     "lead_job_title": ("contact_job_title",),
-    "lead_location": ("contact_location_state", "contact_location_country"),
     "company_keywords": ("company_keywords",),
+    "lead_location": ("contact_location_state", "contact_location_country"),
+    "lead_seniority": ("contact_seniority",),
 }
 
 
@@ -285,14 +205,14 @@ def is_live_profile(row: dict) -> bool:
 
 
 def source_fields_for(row: dict) -> dict:
-    """The row's queryable text, kept per field for the vocabulary.
+    """The row's searchable text, kept per field for matching and for the moves.
 
-    Only the fields ``KEYWORD_SOURCE_FIELDS`` reads — a lead row carries far more, and
-    storing the rest would be a second copy of ``profile_text`` under another name.
-    A list (``company_keywords``) is stored as its items joined with ``", "``, so the
-    stored text is the tags and not a Python repr of them.
+    Only the fields ``SOURCE_FIELDS`` reads — a lead row carries far more, and storing
+    the rest would be a second copy of ``profile_text`` under another name. A list
+    (``company_keywords``) is stored as its items joined with ``", "``, so the stored
+    text is the tags and not a Python repr of them.
     """
-    wanted = {key for keys in KEYWORD_SOURCE_FIELDS.values() for key in keys}
+    wanted = {key for keys in SOURCE_FIELDS.values() for key in keys}
     return {key: _as_text(row[key]) for key in wanted if row.get(key)}
 
 
@@ -465,21 +385,6 @@ def _count(value) -> int | None:
         return None
 
 
-def describe_node(keywords) -> str:
-    """``(field, token)`` keywords → ``"2 keyword(s): title founder cto"``.
-
-    What a discovery move actually decided, in one line: how many tokens the query
-    ANDs and which. Depth is the number worth seeing — one token matches millions and
-    shows you only the provider's famous-company head, while three reach the niche, so
-    "how deep did we go" is the question a run log has to answer. The band is omitted:
-    it rides every node identically and says nothing about the move.
-    """
-    keywords = sorted(keywords)
-    if not keywords:
-        return "0 keywords (everyone)"
-    return f"{len(keywords)} keyword(s): {describe_filters(filters_for(keywords))}"
-
-
 def describe_filters(filters: dict) -> str:
     """One-line human rendering of a Lead Finder filter set, for logs.
 
@@ -539,45 +444,38 @@ class Page(NamedTuple):
     leads_found: int | None
 
 
-def search(filters: dict, limit: int = 100, offset: int = 0) -> Page:
-    """Search Lead Finder by ICP filters; return the matching rows and the corpus count.
+class Fetched(NamedTuple):
+    """A page and how long the provider took to have it ready after the submit."""
 
-    Logs the outgoing query before the call: an unknown filter key or value is
-    answered with an empty page rather than an error, so the query itself is the
-    only evidence of why a line came back dry — and the call blocks, so logging
-    it after would lose it to a timeout.
+    page: Page
+    ready_seconds: float
 
-    The count lives in ``summary.leads_found`` and used to be discarded. It is the
-    one signal that separates a genuinely empty query from a transport artifact: a
-    burst of calls can answer a 71-million-lead query with an empty page in 0.0s
-    (§4), and writing that down as "matches nobody" is how the old walk blacklisted
-    good queries permanently.
 
-    **A count costs what a page costs.** ``limit=1`` and ``limit=100`` take the same
-    wall time (the poll interval, ``bettercontact._POLL_INTERVAL_S``), so a query worth
-    sizing is worth paging. The API takes ``limit`` up to 200 (250 is refused with a
-    422). Never ``max_leads`` instead: it returns rows but reports ``leads_found`` as the
-    number of rows returned, not the query's size.
+def search(api_key: str, filters: dict, limit: int, offset: int,
+           first_poll_s: float) -> Fetched:
+    """Search Lead Finder; return the rows, the corpus count and the measured ready time.
+
+    Thread-safe and quiet: the walk fires a generation's pages from worker threads, so
+    this makes the API calls and nothing else — no database, no log line. The caller
+    logs the page and records the ready time (``meter.SEARCH_READY_SECONDS``), which is
+    what ``first_poll_s`` is set from.
+
+    The count lives in ``summary.leads_found`` and is trusted **only at offset 0**: past
+    the end of any result set the API reports ``0``, and a burst once answered a
+    71-million-lead query with an empty page in 0.0s, so an empty page carrying a
+    positive count is a transport artifact, not an answer.
+
+    **A count costs what a page costs**, and a page holds up to 200 (250 is refused with
+    a 422). Never ``max_leads``: it returns rows but reports ``leads_found`` as the number
+    of rows returned, not the query's size.
     """
-    from openoutfind.core.config import SiteConfig
+    from openoutfind.enrichment.bettercontact import search_and_poll
 
-    api_key = SiteConfig.load().bettercontact_api_key
     body = {"filters": filters, "limit": limit, "offset": offset}
-    logger.info("%s", query_header(filters, offset))
-    result = submit_and_poll(api_key, LEAD_FINDER_URL, body)
-
-    leads = result.get("leads", [])
+    result, ready = search_and_poll(api_key, LEAD_FINDER_URL, body, first_poll_s)
     summary = result.get("summary") or {}
     found = summary.get("leads_found") if offset == 0 else None
-    detail = f"{len(leads)} leads" + (f" · {found:,} in the index" if found else "")
-    logger.info("%s", step_line("leadfinder", detail))
-    # A zero is the one answer worth seeing whole. §4 measured the provider handing back
-    # an empty page for a 71-million-lead query under burst, so when rows come back empty
-    # the raw summary and status are the evidence for whether that is what happened.
-    if not leads:
-        logger.debug("    raw response: status=%s summary=%s credits_left=%s",
-                     result.get("status"), summary, result.get("credits_left"))
-    return Page(leads, found)
+    return Fetched(Page(result.get("leads", []), found), ready)
 
 
 def profile_text_for(row: dict) -> str:
@@ -585,42 +483,17 @@ def profile_text_for(row: dict) -> str:
     fields that vary between leads.
 
     Absent fields are skipped rather than held as empty slots, so a sparse row
-    stays short instead of padding out to the shape of a rich one. This is the LLM's
-    input verbatim; the *embedding* adds the retrieving query's terms on top (see
-    ``keyword_terms``), which the LLM must not see or it would rubber-stamp a lead for
-    matching the very query that found it.
+    stays short instead of padding out to the shape of a rich one.
     """
     return " ".join(str(row[f]) for f in TEXT_FIELDS if row.get(f)).lower()
 
 
-def keyword_terms(keywords) -> str:
-    """A node's tokens as plain lowercase words — the query as text.
+def embed_profile(profile_text: str) -> np.ndarray:
+    """384-dim vector for a lead — its firmographic text and nothing else.
 
-    Folded into a discovered lead's **embedding only**, never into ``profile_text``,
-    so the LLM judges the person on firmographics while the vector still carries which
-    query surfaced them.
-
-    This used to be load-bearing: it put queries and profiles in one embedding space so
-    the GP could score a never-run query by its keywords. That job is gone — §13
-    measured the GP losing to plain counting as a frontier ranker, and query selection
-    is pure arithmetic now. What keeps the injection is the vector space itself: every
-    cached ``Lead.embedding`` was built this way, and dropping the terms would silently
-    move new leads into a different space from the 14k already stored.
+    No query terms ride it: a search is ranked on how its people look to the GP, and a
+    vector carrying the search's own words would score the search on itself.
     """
-    return " ".join(token for _, token in sorted(keywords)).lower()
-
-
-def embed_profile(profile_text: str, query_terms: str = "") -> np.ndarray:
-    """384-dim vector for a lead — its firmographic text plus its retrieving query's
-    terms, so the GP learns which query keywords surface good leads."""
     from openoutfind.core.ml.embeddings import embed_text
 
-    text = f"{profile_text} {query_terms}".strip()
-    return embed_text(text)
-
-
-# ``embed_query``/``embed_queries`` used to live here — 384-dim vectors for a
-# *candidate query*, so the GP could rank the frontier by keyword embedding. Both are
-# gone: §13 measured that ranking against plain counting and the counts won outright
-# (0.661 vs 0.450), with the GP adding nothing on top of them. The frontier is scored
-# by arithmetic over labels now, and nothing embeds a query.
+    return embed_text(profile_text)

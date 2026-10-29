@@ -39,7 +39,7 @@ Only what the pipeline produced or measured, which is the line: *who made this v
 
 | Where | What |
 |:------|:-----|
-| `Keyword` / `QueryNode` | the walk — which keyword sets have been fired, how far each was paged, and the size band and target country each node searches (written by `icp.generate_seed` onto the nodes it opens, inherited by their children) |
+| `Search` / `Page` / `PageLead` | the walk — every search written or bred, each page it fired and who was on it, which pages the population holds, and the size band and market every search rides (written by `icp.write_initial_population`, copied by every bred search) |
 | `Lead` with `synthetic=True` | the anchors — invented ideal leads the LLM wrote from the ICP, with the same `profile_text`, `source_fields` and embedding a real lead carries. Permanent once written, never contacted, never exported |
 | `Lead` / `Company` / `Deal` | the leads themselves and the LLM's verdict on each |
 | Django `User` | the operator — identity, written once, because a renamed variable must not rename the person a campaign belongs to |

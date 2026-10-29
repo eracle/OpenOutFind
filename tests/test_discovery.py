@@ -1,5 +1,5 @@
 # tests/test_discovery.py
-"""Discovery slice — mock the BetterContact transport (`submit_and_poll`) and
+"""Discovery slice — mock the BetterContact transport (`search_and_poll`) and
 the embedder, so no network or ONNX model is needed."""
 from unittest.mock import patch
 
@@ -8,31 +8,22 @@ import pytest
 from pydantic import ValidationError
 
 from openoutfind import discovery
-from openoutfind.core.pipeline.icp import ICPSpec
+from openoutfind.core.pipeline.icp import WrittenSearch
 from openoutfind.crm.models import Company
-
-
-def _set_key(value):
-    import os
-
-    from openoutfind.core.config import variable_for
-
-    os.environ[variable_for("bettercontact_api_key")] = value
 
 
 class TestSeniorityVocabulary:
     """`lead_seniority` is the one filter family with a closed vocabulary, and a
-    value outside it returns an empty page instead of an error — so the ICP seed
-    constrains it in the schema. A bad seed is the worst case: it starves the
-    bootstrap phase, which pages the seed until the GP can score."""
+    value outside it returns an empty page instead of an error — so a written search
+    constrains it in the schema."""
 
-    def test_seed_spec_rejects_a_level_lead_finder_does_not_know(self):
+    def test_a_written_search_rejects_a_level_lead_finder_does_not_know(self):
         with pytest.raises(ValidationError):
-            ICPSpec(seniority="other")
+            WrittenSearch(title="founder", seniority="other")
 
-    def test_seed_spec_accepts_every_real_level(self):
+    def test_a_written_search_accepts_every_real_level(self):
         for level in discovery.LEAD_SENIORITIES:
-            assert ICPSpec(seniority=level).seniority == level
+            assert WrittenSearch(title="founder", seniority=level).seniority == level
 
     def test_vocabulary_is_derived_from_the_type_so_prompt_and_schema_cannot_drift(self):
         # The prompts render this tuple; the schema validates the same Literal.
@@ -41,41 +32,41 @@ class TestSeniorityVocabulary:
         assert len(discovery.LEAD_SENIORITIES) == 12
 
 
+_TRANSPORT = "openoutfind.enrichment.bettercontact.search_and_poll"
+
+
 class TestSearch:
-    def test_returns_leads_and_sends_icp_filters(self, db):
-        _set_key("k")
+    def test_returns_leads_and_sends_the_filters(self):
         rows = [{"contact_full_name": "Alice"}]
-        with patch.object(discovery, "submit_and_poll", return_value={"leads": rows}) as call:
-            result = discovery.search({"lead_seniority": {"include": ["owner"]}}, limit=10)
+        with patch(_TRANSPORT, return_value=({"leads": rows}, 1.2)) as call:
+            fetched = discovery.search("k", {"lead_seniority": {"include": ["owner"]}},
+                                       limit=200, offset=0, first_poll_s=1.5)
 
-        assert result.leads == rows
-        api_key, url, body = call.call_args.args
-        assert api_key == "k"
-        assert url == discovery.LEAD_FINDER_URL
-        assert body == {"filters": {"lead_seniority": {"include": ["owner"]}}, "limit": 10, "offset": 0}
+        assert fetched.page.leads == rows
+        assert fetched.ready_seconds == 1.2
+        api_key, url, body, first_poll = call.call_args.args
+        assert (api_key, url, first_poll) == ("k", discovery.LEAD_FINDER_URL, 1.5)
+        assert body == {"filters": {"lead_seniority": {"include": ["owner"]}},
+                        "limit": 200, "offset": 0}
 
-    def test_no_leads_key_is_empty_list(self, db):
-        _set_key("k")
-        with patch.object(discovery, "submit_and_poll", return_value={"status": "terminated"}):
-            assert discovery.search({}).leads == []
+    def test_no_leads_key_is_empty_list(self):
+        with patch(_TRANSPORT, return_value=({"status": "terminated"}, 1.0)):
+            assert discovery.search("k", {}, 200, 0, 1.5).page.leads == []
 
-    def test_surfaces_leads_found_at_offset_zero(self, db):
+    def test_surfaces_leads_found_at_offset_zero(self):
         # The count separates a genuinely empty query from a transport artifact: a
-        # burst can answer a 71M-lead query with an empty page (card §4).
-        _set_key("k")
+        # burst can answer a 71M-lead query with an empty page.
         body = {"leads": [], "summary": {"leads_found": 71403396}}
-        with patch.object(discovery, "submit_and_poll", return_value=body):
-            page = discovery.search({}, offset=0)
+        with patch(_TRANSPORT, return_value=(body, 1.0)):
+            page = discovery.search("k", {}, 200, 0, 1.5).page
         assert page.leads == [] and page.leads_found == 71403396
 
-    def test_count_is_none_past_offset_zero(self, db):
+    def test_count_is_none_past_offset_zero(self):
         # leads_found is only trustworthy at offset 0 — past the end of ANY result set
-        # the API reports 0 (card §7), so it must never read as "empty" there.
-        _set_key("k")
+        # the API reports 0, so it must never read as "empty" there.
         body = {"leads": [], "summary": {"leads_found": 0}}
-        with patch.object(discovery, "submit_and_poll", return_value=body):
-            page = discovery.search({}, offset=500)
-        assert page.leads_found is None
+        with patch(_TRANSPORT, return_value=(body, 1.0)):
+            assert discovery.search("k", {}, 200, 400, 1.5).page.leads_found is None
 
 
 class TestSourceFieldsFor:
@@ -95,6 +86,11 @@ class TestSourceFieldsFor:
         }
         assert "users" in discovery.profile_text_for(row)
 
+    def test_seniority_is_kept_so_a_seniority_term_can_be_matched(self):
+        stored = discovery.source_fields_for({"contact_seniority": "director"})
+
+        assert stored == {"contact_seniority": "director"}
+
     def test_company_tags_are_kept_as_text_not_a_list_repr(self):
         stored = discovery.source_fields_for(
             {"company_keywords": ["cannabis", "thc vape", ""]})
@@ -102,182 +98,14 @@ class TestSourceFieldsFor:
         assert stored == {"company_keywords": "cannabis, thc vape"}
 
 
-class TestKeywordsFor:
-    """A row grows two kinds of keyword, because the index matches two ways: a job title
-    by its words, a location as one whole place."""
-
-    def test_a_place_is_one_keyword_re_cased_for_the_index(self):
-        from openoutfind.core.pipeline.vocabulary import keywords_for
-
-        keywords = keywords_for({"contact_job_title": "Head of Growth",
-                                 "contact_location_country": "United states"})
-
-        assert ("lead_location", "United States") in keywords
-        # The fragments the old word-split produced, every one of which counts 0.
-        assert ("lead_location", "united") not in keywords
-        assert ("lead_location", "states") not in keywords
-        # A title still contributes words, which is the axis that conjoins them.
-        assert ("lead_job_title", "head") in keywords
-        assert ("lead_job_title", "growth") in keywords
-
-    def test_a_state_carries_its_country(self):
-        """`California` counts 0 on its own; `California, United States` counts 2.7M."""
-        from openoutfind.core.pipeline.vocabulary import keywords_for
-
-        keywords = keywords_for({"contact_location_state": "California",
-                                 "contact_location_country": "United states"})
-
-        assert ("lead_location", "California, United States") in keywords
+class TestAsPlace:
+    def test_a_place_is_re_cased_for_the_index(self):
+        """Lead Finder reports `United states` and matches only `United States`."""
+        assert discovery.as_place("United states") == "United States"
 
     def test_a_connective_stays_lowercase(self):
         """Measured: `Bosnia and Herzegovina` counts 36,067, `Bosnia And Herzegovina` 0."""
-        from openoutfind.core.pipeline.vocabulary import keywords_for
-
-        keywords = keywords_for({"contact_location_country": "Bosnia and herzegovina"})
-
-        assert ("lead_location", "Bosnia and Herzegovina") in keywords
-
-    def test_a_row_with_no_place_grows_no_location_keyword(self):
-        from openoutfind.core.pipeline.vocabulary import keywords_for
-
-        keywords = keywords_for({"contact_job_title": "CTO"})
-
-        assert keywords == {("lead_job_title", "cto")}
-
-    def test_company_tags_grow_single_company_words(self):
-        """Tags are slugs and taxonomy paths as often as words; each word is a keyword."""
-        from openoutfind.core.pipeline.vocabulary import keywords_for
-
-        keywords = keywords_for({"company_keywords": "cannabis, thc vape, "
-                                                     "food_and_drink/restaurants"})
-
-        assert {("company_keywords", w) for w in ("cannabis", "thc", "vape")} <= keywords
-        assert ("lead_job_title", "cannabis") not in keywords
-
-    def test_category_paths_and_generic_words_are_not_learned(self):
-        """GTI and Verano both carry `finance/investing` and `health` beside `cannabis`,
-        and two companies clear the df floor — so the walk fired company "health"."""
-        from openoutfind.core.pipeline.vocabulary import keywords_for
-
-        keywords = keywords_for({"company_keywords": "cannabis, finance/investing, "
-                                                     "health, retail, live resin"})
-
-        assert {pair[1] for pair in keywords} == {"cannabis", "live", "resin"}
-
-    def test_a_seeded_generic_word_is_still_searchable(self):
-        from openoutfind.core.pipeline.icp import ICPSpec, _seed_keywords
-
-        keywords = _seed_keywords(ICPSpec(domain_keywords=["retail"]))
-
-        assert ("company_keywords", "retail") in keywords
-
-    def test_a_rank_abbreviation_is_not_a_title_word(self):
-        from openoutfind.core.pipeline.vocabulary import keywords_for
-
-        keywords = keywords_for({"contact_job_title": "Sr. Manager, Extraction"})
-
-        assert keywords == {("lead_job_title", "manager"), ("lead_job_title", "extraction")}
-
-
-class TestCompanyAxisAdmission:
-    """A company's tags count once toward the df floor, however many of its staff fit."""
-
-    def test_one_company_cannot_admit_its_own_words(self):
-        from openoutfind.core.pipeline.vocabulary import _admit
-
-        rove = {"company_keywords": "cannabis, rove melted diamond vape",
-                "contact_job_title": "VP Sales"}
-        admitted, _ = _admit([rove, dict(rove, contact_job_title="VP Operations")])
-
-        assert ("company_keywords", "rove") not in admitted
-        assert ("lead_job_title", "vp") in admitted  # titles still count per person
-
-    def test_a_word_two_companies_share_is_admitted(self):
-        from openoutfind.core.pipeline.vocabulary import _admit
-
-        admitted, _ = _admit([{"company_keywords": "cannabis, dispensary"},
-                              {"company_keywords": "cannabis, thc vape"}])
-
-        assert ("company_keywords", "cannabis") in admitted
-        assert ("company_keywords", "dispensary") not in admitted
-
-
-class TestCountedApart:
-    """A company word is counted among the company's tags, never in the profile text."""
-
-    def test_a_company_word_is_found_in_the_tags(self):
-        from openoutfind.core.pipeline.vocabulary import label_tokens, pair_words
-
-        tokens = label_tokens("head of extraction acme manufacturing",
-                              {"company_keywords": "cannabis, thc vape"})
-
-        assert pair_words("company_keywords", "cannabis") <= tokens
-
-    def test_a_title_that_says_the_word_does_not_count_for_the_company(self):
-        """The regulator with "cannabis" in their title is the coincidence the axis
-        exists to escape."""
-        from openoutfind.core.pipeline.vocabulary import label_tokens, pair_words
-
-        tokens = label_tokens("cannabis compliance officer state of ohio", {})
-
-        assert not pair_words("company_keywords", "cannabis") <= tokens
-        assert pair_words("lead_job_title", "cannabis") <= tokens
-
-
-class TestIsFireable:
-    """A company word alone pages one employer's whole staff, so it never fires alone."""
-
-    def test_a_company_word_with_a_title_fires(self):
-        assert discovery.is_fireable([("company_keywords", "cannabis"),
-                                      ("lead_job_title", "purchasing")])
-
-    def test_a_company_word_alone_does_not(self):
-        assert not discovery.is_fireable([("company_keywords", "cannabis")])
-
-    def test_a_company_word_with_only_a_place_does_not(self):
-        assert not discovery.is_fireable([("company_keywords", "cannabis"),
-                                          ("lead_location", "United States")])
-
-    def test_the_other_axes_fire_alone(self):
-        assert discovery.is_fireable([("lead_location", "United States")])
-
-
-class TestFiltersFor:
-    """The one place a node becomes provider JSON, and the two shapes it can take."""
-
-    def test_job_title_words_are_joined_because_they_and_inside_the_field(self):
-        filters = discovery.filters_for([("lead_job_title", "founder"),
-                                         ("lead_job_title", "cto")])
-
-        # Sorted, so one node is one query however it was reached.
-        assert filters == {"lead_job_title": {"include": ["cto founder"],
-                                              "exact_match": False}}
-
-    def test_a_closed_axis_is_sent_as_its_own_value(self):
-        """Never space-joined: `["director founder"]` counts 0 where `["director"]`
-        counts 5.0M, and a place is matched whole."""
-        filters = discovery.filters_for([("lead_seniority", "director"),
-                                         ("lead_location", "California, United States")])
-
-        assert filters == {
-            "lead_seniority": {"include": ["director"]},
-            "lead_location": {"include": ["California, United States"]},
-        }
-
-    def test_a_company_word_rides_with_a_title_as_two_free_text_keys(self):
-        filters = discovery.filters_for([("company_keywords", "cannabis"),
-                                         ("lead_job_title", "purchasing")])
-
-        assert filters == {
-            "company_keywords": {"include": ["cannabis"], "exact_match": False},
-            "lead_job_title": {"include": ["purchasing"], "exact_match": False},
-        }
-
-    def test_the_headcount_band_rides_along_unchanged(self):
-        filters = discovery.filters_for([("lead_seniority", "head")], headcount=(2, 500))
-
-        assert filters["company_headcount_min"] == 2
-        assert filters["company_headcount_max"] == 500
+        assert discovery.as_place("Bosnia and herzegovina") == "Bosnia and Herzegovina"
 
 
 class TestProfileTextFor:
@@ -406,26 +234,12 @@ class TestCompanyFor:
 
 
 class TestEmbedProfile:
-    def test_appends_query_terms_to_profile_text(self):
-        # The keyword injection: a lead is embedded as its firmographic text PLUS its
-        # retrieving query's terms, so the GP learns which query keywords surface good
-        # leads. Only the embedding carries the terms — profile_text (the LLM's input)
-        # does not, or the LLM would rubber-stamp a lead for matching its own query.
+    def test_the_vector_is_the_profile_alone(self):
+        """No query terms ride it: a search ranked on its people's GP scores must not be
+        scored on its own words."""
         with patch("openoutfind.core.ml.embeddings.embed_text", return_value=np.ones(384)) as embed:
-            discovery.embed_profile("head of growth acme", "title cmo · seniority owner")
-        embed.assert_called_once_with("head of growth acme title cmo · seniority owner")
-
-    def test_profile_only_when_no_query_terms(self):
-        with patch("openoutfind.core.ml.embeddings.embed_text", return_value=np.ones(384)) as embed:
-            discovery.embed_profile("hi")
-        embed.assert_called_once_with("hi")
-
-
-class TestKeywordTerms:
-    def test_renders_the_tokens_as_plain_words(self):
-        # Folded into a discovered lead's embedding only, never into profile_text.
-        keywords = [("lead_job_title", "CMO"), ("lead_seniority", "owner")]
-        assert discovery.keyword_terms(keywords) == "cmo owner"
+            discovery.embed_profile("head of growth acme")
+        embed.assert_called_once_with("head of growth acme")
 
 
 class TestDescribeFilters:
@@ -476,66 +290,31 @@ class TestDescribeFilters:
 
 class TestDescribeCompanyAxis:
     def test_the_company_axis_reads_as_company(self):
-        rendered = discovery.describe_filters(discovery.filters_for(
-            [("company_keywords", "cannabis"), ("lead_job_title", "purchasing")]))
+        from openoutfind.core.pipeline.query import Terms
+
+        rendered = discovery.describe_filters(
+            Terms.written(title="purchasing", tag="cannabis").to_filters())
 
         assert "company cannabis" in rendered
         assert "job_title purchasing" in rendered
 
 
-class TestSeedKeywords:
-    """The ICP becomes a *vocabulary*, not one precise query."""
+class TestWrittenSearchAsTerms:
+    """A written search keeps what goes together: the title's words, the tag's phrase."""
 
-    def test_domain_words_search_the_company_not_the_job_title(self):
-        # "cannabis" as a title found regulators and bankers whose title says it; as a
-        # company tag it finds cannabis companies (p1-e1-discovery-searches-the-buyers-company).
-        from openoutfind.core.pipeline.icp import ICPSpec, _seed_keywords
+    def test_the_tag_searches_the_company_and_the_title_the_person(self):
+        from openoutfind.core.pipeline.icp import WrittenSearch, as_terms
 
-        spec = ICPSpec(role_keywords=["founder", "head"],
-                       domain_keywords=["cannabis", "thc-vape"],
-                       seniority="founder", location="United States")
-        keywords = _seed_keywords(spec)
+        terms = as_terms(WrittenSearch(title="Head of Procurement", tag="Cannabis Extraction",
+                                       state="california", seniority="head"),
+                         "united states")
 
-        assert ("company_keywords", "cannabis") in keywords
-        assert ("company_keywords", "thc") in keywords
-        assert ("company_keywords", "vape") in keywords
-        assert ("lead_job_title", "cannabis") not in keywords
-        assert ("lead_job_title", "founder") in keywords
-        assert ("lead_seniority", "founder") in keywords
+        assert terms.title == {"head", "procurement"}
+        assert terms.tag == ("cannabis", "extraction")
+        assert terms.place == "California, United States"
+        assert terms.seniority == "head"
 
-    def test_phrases_are_split_and_stopwords_dropped(self):
-        # Lead Finder ANDs the words inside a value, so "head of growth" would match
-        # nobody. Split into separate one-token nodes and let the walk conjoin them.
-        from openoutfind.core.pipeline.icp import ICPSpec, _seed_keywords
+    def test_no_state_is_the_whole_market(self):
+        from openoutfind.core.pipeline.icp import WrittenSearch, as_terms
 
-        keywords = _seed_keywords(ICPSpec(role_keywords=["Head of Growth"]))
-
-        assert ("lead_job_title", "head") in keywords
-        assert ("lead_job_title", "growth") in keywords
-        assert ("lead_job_title", "of") not in keywords
-        assert ("lead_job_title", "head of growth") not in keywords
-
-    def test_an_empty_icp_seeds_nothing(self):
-        from openoutfind.core.pipeline.icp import ICPSpec, _seed_keywords
-
-        assert _seed_keywords(ICPSpec()) == []
-
-    def test_the_closed_axes_are_seeded_whole(self):
-        """Splitting these is fatal, not merely lossy: `United States` seeded `united`
-        and `states`, which count 0 apiece and die at offset 0 as *nobody matches this*,
-        and `c_suite` came apart at the underscore into `suite`."""
-        from openoutfind.core.pipeline.icp import ICPSpec, _seed_keywords
-
-        keywords = _seed_keywords(ICPSpec(seniority="c_suite", location="United States"))
-
-        assert ("lead_location", "United States") in keywords
-        assert ("lead_seniority", "c_suite") in keywords
-        assert ("lead_location", "united") not in keywords
-        assert ("lead_location", "states") not in keywords
-
-    def test_a_seeded_place_is_re_cased_for_the_index(self):
-        """The index reports `united states` and matches `United States`."""
-        from openoutfind.core.pipeline.icp import ICPSpec, _seed_keywords
-
-        assert _seed_keywords(ICPSpec(location="united kingdom")) == [
-            ("lead_location", "United Kingdom")]
+        assert as_terms(WrittenSearch(title="founder"), "united kingdom").place == "United Kingdom"

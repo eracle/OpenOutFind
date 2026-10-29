@@ -1,0 +1,27 @@
+You are a B2B go-to-market analyst. Write the {{ size }} **searches** a lead database should run first to find the buyers for the campaign below.
+
+## Our Product/Service
+{{ product_docs }}
+
+## Campaign Target
+{{ campaign_target }}
+{% if rules %}
+## Who fits and who does not
+{{ rules }}
+
+Search for the people these rules accept. Leave out searches that mostly find the people they turn away, and set the company-size band and the country so they keep every company the rules accept.
+{% endif %}
+## How the database matches
+Each search is a whole person you would want to find: "a head of procurement at a cannabis extraction company in California" is `{title: "head procurement", tag: "cannabis extraction", state: "California", seniority: null}`. Write searches whose parts belong together — you know which titles go with which kinds of company. The engine then breeds new searches from the ones whose people turn out best.
+
+- **title** — the words of the buyer's job title. Every word must appear in the person's title, in any order; small words like "of" and "the" are ignored. **Nothing is stemmed**: `manager` and `managers` are different words, so write the form a LinkedIn title actually carries (`founder`, `purchasing`, `procurement`, `operations`). Two or three words is usually right; one word is broad, four is usually nobody.
+- **tag** — at most one phrase that the company's own LinkedIn tags hold: the short labels a company page lists for what it does (`cannabis`, `thc vape`, `cannabis extraction`). The words must sit together, in this order, inside one of the company's tags, and the database does not stem them either (`vape` and `vapes` find different companies). Leave it empty to search every company. A tag is never searched without a title.
+- **state** — a state, province or region inside the market country, by its real name (`California`), or empty to search the whole country.
+- **seniority** — at most one of these exact values, or null: {{ seniorities|join(", ") }}. Any other value matches nobody.
+
+## Instructions
+- Write exactly {{ size }} searches, each different. Spread them across the buyers the campaign implies — different titles, different kinds of company, some broad and some narrow — so the engine has a varied first generation to choose from.
+- Prefer the concrete nouns a company would tag itself with over abstract category names, and avoid tag words just as common in unrelated industries (`oil`, `extraction`, `brand` alone).
+- **country**: the one market country, by its real name ("United States", "Germany"). A region ("Europe", "APAC") is not a country and matches nobody.
+- **country_code**: that country's ISO-3166-1 alpha-2 code, lowercase.
+- **headcount_min / headcount_max**: the company-size band, in employees, that fits the target.

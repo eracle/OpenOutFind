@@ -29,14 +29,10 @@ class Lead(models.Model):
     # Firmographic text built from the Lead Finder row at discovery (same fields as
     # the embedding), fed to the LLM qualifier. No profile re-scrape.
     profile_text = models.TextField(blank=True, default="")
-    # The row's queryable fields, kept apart from the flattened ``profile_text`` so the
-    # vocabulary knows which *search field* a word belongs to — ``cto`` is alive in
-    # ``lead_job_title`` and dead in every other, ``belgium`` the reverse, and guessing
-    # would file ``united states`` as a job title. See
-    # ``discovery.KEYWORD_SOURCE_FIELDS`` and ``core/pipeline/vocabulary.py``.
-    #
-    # Empty for leads discovered before this existed. They still count toward every
-    # node's a/b (that reads ``profile_text``); they just cannot contribute vocabulary.
+    # The row's searchable fields, kept apart from the flattened ``profile_text`` so a
+    # search's terms are matched each in its own field (``query.Terms.matches``) and the
+    # walk's moves can draw terms from them. See ``discovery.SOURCE_FIELDS``. A lead
+    # stored without one of them matches no search term on that field.
     source_fields = models.JSONField(default=dict, blank=True)
     # Who this person is and where they work — the record the product accumulates, and
     # what the lead export hands to whatever the operator sends with. Deliberately
@@ -86,18 +82,8 @@ class Lead(models.Model):
     # export, the promote gate and the counts leave the lead out, because the customer
     # already has this person. So a marked lead is never judged, printed or looked up.
     marked = models.BooleanField(default=False)
-    # First-touch discovery provenance: the query node that first surfaced this
-    # profile. A profile re-surfaced by a later node keeps its original node here
-    # (creation is deduped by profile_url), so this records who *found* it, not
-    # everyone who saw it. Null for pre-frontier leads. Seeds the future
-    # cluster→query association; on_delete keeps the Lead if its node is pruned.
-    #
-    # Provenance + discovery-steering ONLY — never read by qualify/promote/enrich.
-    # A lead advances on its own P over the global pool, independent of its node.
-    discovered_by = models.ForeignKey(
-        "outfind_core.QueryNode", null=True, blank=True,
-        on_delete=models.SET_NULL, related_name="leads",
-    )
+    # Which pages returned this person lives on ``core.PageLead`` (``lead.pages``) —
+    # every page, not just the first, since each is evidence about its search.
     creation_date = models.DateTimeField(default=timezone.now)
     update_date = models.DateTimeField(auto_now=True)
 

@@ -32,52 +32,48 @@ def promote_lead_to_deal(profile_url: str, reason: str = ""):
     return deal
 
 
-def create_lead(row: dict, country_code: str = "", discovered_by=None,
-                query_terms: str = "") -> bool:
-    """Persist one Lead Finder row as an embedded Lead awaiting qualification.
+def store_rows(rows: list[dict], country_code: str = "") -> tuple[list, int]:
+    """Persist Lead Finder rows as embedded Leads; return every row's Lead and how many
+    were new.
 
-    Keyed on ``profile_url`` (the provider's per-person URL). Stamps the firmographic
-    ``profile_text`` (the LLM qualifier's input) and the embedding from the same row,
-    so qualification never re-fetches anything. ``country_code`` is the ICP's target
-    country (Lead Finder rows carry no ISO code) — blank means unknown, which the
-    contacts-store geo-gate treats conservatively.
+    Keyed on ``profile_url`` (the provider's per-person URL): a person already in the
+    store comes back as the row it is, unchanged, since a page that returned them is
+    evidence about its search either way. A row with no URL is skipped. New rows are
+    embedded in one call — a generation brings in up to 3,000.
 
-    ``discovered_by`` is the query node that surfaced this row; it lands only on first
-    touch (a profile another query already created keeps its original node). Its
-    ``query_terms`` are folded into the **embedding only** — not ``profile_text`` — so
-    the GP learns which query keywords surface good leads while the LLM judges the
-    person on firmographics alone.
-
-    The row's person fields (``person_for``) land as named columns and its employer as a
-    shared ``Company`` row (``company_for``) — apart from both the text and the vector,
-    because the export hands them on as fields and a name would only add noise to the
-    embedding. Returns True when a new Lead was created, False when one already existed
-    (idempotent re-discovery).
+    Stamps the firmographic ``profile_text`` (the LLM qualifier's input) and the embedding
+    from the same row, so qualification never re-fetches anything. ``country_code`` is the
+    market's (Lead Finder rows carry no ISO code) — blank means unknown, which the
+    contacts-store geo-gate treats conservatively. The row's person fields
+    (``person_for``) land as named columns and its employer as a shared ``Company`` row
+    (``company_for``) — apart from both the text and the vector, because the export
+    hands them on as fields and a name would only add noise to the embedding.
     """
+    from openoutfind.core.ml.embeddings import embed_texts
     from openoutfind.crm.models import Lead
     from openoutfind.discovery import (
-        company_for, embed_profile, person_for, profile_text_for, source_fields_for,
+        company_for, person_for, profile_text_for, source_fields_for,
     )
 
-    profile_url = row.get("contact_linkedin_profile_url")
-    if not profile_url:
-        return False
+    by_url = {row["contact_linkedin_profile_url"]: row for row in rows
+              if row.get("contact_linkedin_profile_url")}
+    known = {lead.profile_url: lead for lead in Lead.objects.filter(profile_url__in=by_url)}
+    fresh = [url for url in by_url if url not in known]
 
-    profile_text = profile_text_for(row)
-    _, created = Lead.objects.get_or_create(
-        profile_url=profile_url,
-        defaults={
-            "embedding": np.asarray(
-                embed_profile(profile_text, query_terms), dtype=np.float32).tobytes(),
-            "profile_text": profile_text,
-            "source_fields": source_fields_for(row),
-            "country_code": country_code,
-            "discovered_by": discovered_by,
-            "company": company_for(row),
+    texts = [profile_text_for(by_url[url]) for url in fresh]
+    vectors = embed_texts(texts) if texts else []
+    for url, text, vector in zip(fresh, texts, vectors):
+        row = by_url[url]
+        known[url] = Lead.objects.create(
+            profile_url=url,
+            embedding=np.asarray(vector, dtype=np.float32).tobytes(),
+            profile_text=text,
+            source_fields=source_fields_for(row),
+            country_code=country_code,
+            company=company_for(row),
             **person_for(row),
-        },
-    )
-    return created
+        )
+    return [known[url] for url in by_url], len(fresh)
 
 
 def disqualify_lead(profile_url: str):

@@ -32,8 +32,10 @@ tests/
 ├── test_export.py              # the record schema, both serialisations, the two exclusions
 ├── test_business_time.py       # working-day arithmetic
 ├── test_discovery.py           # Lead Finder search + embed_row
-├── test_discovery_wiring.py    # discover → qualify wiring
-├── test_select.py              # the discovery walk: frontier, estimate, expand, retire
+├── test_query.py               # a search's terms: the provider's analyzers, matching, dead conviction
+├── test_moves.py               # the walk's moves and the term pools they draw on
+├── test_fitness.py             # a page's fitness: its own people, verdict or GP, each company once
+├── test_walk.py                # generations end to end against a stubbed Lead Finder
 ├── test_anchors.py             # synthetic ICP positives and their one-per-acceptance retirement
 ├── test_ready_pool.py          # GP rank gate
 ├── test_qualify.py             # qualification flow

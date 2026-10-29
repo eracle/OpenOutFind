@@ -4,12 +4,13 @@
 The same two inputs (``product_docs + campaign_target``) are the only prior available
 before any lead has been judged, and the engine needs them expressed two ways:
 
-- ``generate_seed`` — the ICP as a **query**: one value per family (a title, a
-  seniority, a country, a size band), the single most precise conjunction the model can
-  name. That conjunction is the whole starting **pool**, so the initial maximal set is
-  exactly one query — the seed. Breadth is not seeded; it grows from the leads that
-  qualify (``mint.py``), which add more values per family and so more maximals for the
-  selector to rank.
+- ``write_initial_population`` — the ICP as **searches**: the walk's whole first
+  generation, written by the model as whole searches rather than drawn at random. "A head
+  of procurement at a cannabis extraction company in California" is ``{title: head,
+  procurement; tag: cannabis extraction; place: California, United States}``: the model
+  knows which words go together, a title loses nothing by being a set of words (order and
+  stopwords are ignored), and a tag phrase is kept whole, as the provider matches it.
+  The answer also carries the **shape** every search rides — the size band and the market.
 - ``generate_anchors`` — the ICP as **profiles**: a few invented leads that would be
   ideal fits, written in the shape ``discovery.profile_text_for`` produces. Embedded and
   handed to the GP as synthetic positives (``BayesianQualifier.set_anchors``), they are
@@ -21,14 +22,10 @@ before any lead has been judged, and the engine needs them expressed two ways:
 
 Profiles rather than the product text itself because the space they have to land in is
 one of *lead* embeddings: marketing prose about the product embeds nowhere near a row of
-firmographics, so it would anchor the model in a region no candidate occupies. They are
-also embedded **without** query terms (unlike a discovered lead, whose retrieving query
-rides its embedding) — an anchor is a claim about what a good lead looks like, not about
-which query to run, and folding the seed's keywords in would have discovery score the
-seed highly on the strength of our own guess.
+firmographics, so it would anchor the model in a region no candidate occupies.
 
-One value per family, never headcount as a range to search: the size band is a single
-ICP attribute that rides every maximal unchanged. See ``discovery.filters_for``.
+Under ``--agent-qualify`` the calling agent writes both, in one answer
+(``PopulationAnswer``, handed in with ``find --population``).
 """
 from __future__ import annotations
 
@@ -40,7 +37,7 @@ import numpy as np
 from pydantic import BaseModel, Field
 from termcolor import colored
 
-from openoutfind.core.conf import PROMPTS_DIR
+from openoutfind.core.conf import PROMPTS_DIR, WALK_CONFIG
 from openoutfind.discovery import LEAD_SENIORITIES, Seniority
 
 logger = logging.getLogger(__name__)
@@ -50,175 +47,115 @@ logger = logging.getLogger(__name__)
 # enough that a handful of real labels outweighs them.
 ANCHOR_COUNT = 3
 
+POPULATION_SIZE = WALK_CONFIG["population"]
 
-class ICPSpec(BaseModel):
-    """The LLM's provider-agnostic ICP output — the walk's opening **vocabulary**.
 
-    Not a query. The seed used to be "one value per family, the single most precise
-    conjunction", which is what the clause model needed; the walk now conjoins tokens
-    itself against measured feedback, so what it wants from the LLM is *words worth
-    trying*, and as many as the ICP genuinely implies.
+# ── the initial population: the ICP as searches ──────────────────────
 
-    **``domain_keywords`` is the field that makes an ICP an ICP.** The old spec had
-    nowhere to put "what the target company actually does" — no field for it — so a
-    health-and-wellness ICP seeded on ``content``/``lead``/``united``/``states``
-    and every query it could compose selected for *role* while being blind to
-    *industry*. They go to ``company_keywords``, the employer's tag list: ``cannabis``
-    there counts 63,599 and finds cannabis companies, where the same word as a job title
-    counts 1,007 and finds regulators, bankers and attorneys whose title says it. A
-    company word is always fired with a title word, so the frontier opens each domain
-    word paired with each role word (``select.seed_frontier``).
 
-    ``seniority`` is typed to Lead Finder's vocabulary, not ``str``: an unknown level
-    returns an empty page rather than an error, wasting a fetch. Everything else is free
-    text — a token the index doesn't carry is a normal empty page, one fetch spent, and
-    the walk retires it.
-    """
+class WrittenSearch(BaseModel):
+    """One whole search, as the model writes it — every part optional but the title."""
 
-    role_keywords: list[str] = Field(
-        default_factory=list,
-        description="Single lowercase words from the job titles the buyer holds — "
-                    "'founder', 'head', 'marketing', 'content'. Words, never phrases.",
+    title: str = Field(
+        description="The words of the buyer's job title, as LinkedIn titles carry them — "
+                    "'head procurement', 'founder', 'production manager'. Every word must "
+                    "appear in the title; nothing is stemmed.",
     )
-    domain_keywords: list[str] = Field(
-        default_factory=list,
-        description="Single lowercase words naming what the target company does or "
-                    "sells, as its own company tags would — 'cannabis', 'supplement', "
-                    "'nutrition', 'saas'. Searched against the employer, never the job "
-                    "title. Words, never phrases.",
+    tag: str = Field(
+        default="",
+        description="At most one phrase the company's own LinkedIn tags hold — "
+                    "'cannabis', 'thc vape', 'cannabis extraction' — or empty for any "
+                    "company. Its words must sit together, in order, inside one tag.",
+    )
+    state: str = Field(
+        default="",
+        description="A state or region inside the market country — 'California' — or "
+                    "empty for the whole country.",
     )
     seniority: Seniority | None = None
-    location: str = ""
+
+
+class InitialPopulation(BaseModel):
+    """The walk's first generation, and the shape every search in the walk rides.
+
+    ``seniority`` is typed to Lead Finder's vocabulary, not ``str``: an unknown level
+    returns an empty page rather than an error, wasting a search.
+    """
+
+    searches: list[WrittenSearch] = Field(min_length=POPULATION_SIZE,
+                                          max_length=POPULATION_SIZE)
+    country: str = Field(description="The market country by its real name — "
+                                     "'United States'. Never a region.")
+    country_code: str = Field(default="", description="The market's ISO-3166-1 alpha-2 "
+                                                      "code, lowercase — 'us'.")
     headcount_min: int = 1
     headcount_max: int = 10000
-    country_code: str = ""
 
 
-# Which ``ICPSpec`` attrs feed which search axis. Role words are job-title words and
-# domain words are company words: ``lead_job_title`` matches the title alone (none of 100
-# rows for ``cannabis`` carried it only in the headline), so a domain word there finds
-# whoever's title happens to say it. Headcount is absent: numbers riding every query,
-# not search terms.
-_SEED_FIELDS = (
-    ("lead_job_title", "role_keywords"),
-    ("company_keywords", "domain_keywords"),
-    ("lead_seniority", "seniority"),
-    ("lead_location", "location"),
-)
+def as_terms(written: WrittenSearch, country: str):
+    """One written search as ``query.Terms``, its state placed inside the market."""
+    from openoutfind.core.pipeline.query import Terms, place_of
+
+    return Terms.written(title=written.title, tag=written.tag,
+                         place=place_of(written.state, country),
+                         seniority=written.seniority or "")
 
 
-def _seed_keywords(spec: ICPSpec) -> list[tuple[str, str]]:
-    """The ICP as ``(field, token)`` keywords — the vocabulary the walk opens with.
+def write_initial_population(site_config) -> int:
+    """Write the initial population as ``Search`` rows. Returns how many were new.
 
-    **A job title and a company's domain are split into words; the closed axes are
-    not.** Lead Finder reads
-    ``"Head of Growth"`` as three ANDed words, a query narrow enough to be empty before
-    the walk has learned anything, so splitting hands the frontier three separate
-    one-token nodes and lets *measurement* decide which pair is worth conjoining — which
-    is how ``"founder cto"`` (9,027 rows, near-perfect precision) gets found and ``"head
-    of growth"`` never gets fired. Stopwords go with them, so ``of`` never becomes a
-    search term, and the model's own phrasing survives being sloppy.
+    The cold start, and the **only** LLM call the walk makes: every later search is bred
+    from these by the moves, with no model in the loop. Under ``--agent-qualify`` the
+    population is the calling agent's ``--population`` answer instead, or the run stops
+    with ``population_pending``.
 
-    The same split applied to the other two axes was silently fatal, because they match a
-    whole value: ``"United States"`` seeded ``united`` and ``states``, which count 0
-    apiece and died at offset 0 as *nobody matches this*; ``c_suite`` came apart at the
-    underscore and seeded ``suite``. A place is re-cased instead (``as_place``) and a
-    seniority is passed through — it is already one of the twelve values the provider
-    publishes, typed as such on ``ICPSpec``.
+    A search that is not legal (a tag with no title words left once stopwords go) is
+    dropped; two that analyse to the same terms are one row.
     """
-    from openoutfind.core.pipeline.vocabulary import company_words, tokenize
-    from openoutfind.discovery import as_place
+    from openoutfind.core.models import Search
 
-    keywords = set()
-    for field, attr in _SEED_FIELDS:
-        value = getattr(spec, attr)
-        values = value if isinstance(value, list) else [value]
-        for item in values:
-            if not item:
-                continue
-            if field == "lead_job_title":
-                keywords |= {(field, token) for token in tokenize(str(item))}
-            elif field == "company_keywords":
-                keywords |= {(field, token) for token in company_words(str(item))}
-            elif field == "lead_location":
-                keywords.add((field, as_place(item)))
-            else:
-                keywords.add((field, str(item)))
-    return sorted(keywords)
+    answer = agent_population_answer(site_config)
+    population = answer if answer is not None else _population_from_llm(site_config)
 
-
-class Seed(NamedTuple):
-    """The opening vocabulary, and what every node built from it carries into a query.
-
-    The extras are query attributes rather than configuration: the band rides the
-    filters unchanged, the country code is what a lead surfaced by this walk is tagged
-    with, and ``location`` — the ICP's place, in the index's casing — is a constraint
-    every opening node carries. They travel to ``select.seed_frontier`` and land on the
-    nodes.
-    """
-
-    keywords: list[tuple[str, str]]
-    headcount: tuple[int, int]
-    country_code: str = ""
-    location: str = ""
+    created = 0
+    for written in population.searches:
+        terms = as_terms(written, population.country)
+        if not terms.is_legal:
+            logger.debug("written search dropped — not legal: %s", written)
+            continue
+        _, new = Search.objects.get_or_create(key=terms.key, defaults={
+            "terms": terms.as_json(),
+            "origin": Search.Origin.WRITTEN,
+            "headcount_min": population.headcount_min,
+            "headcount_max": population.headcount_max,
+            "country_code": population.country_code.lower(),
+        })
+        created += new
+    logger.debug("%s: %d search(es) · %s · headcount %d–%d",
+                 colored("initial population", "cyan", attrs=["bold"]), created,
+                 population.country, population.headcount_min, population.headcount_max)
+    return created
 
 
-def generate_seed(site_config) -> Seed:
-    """LLM-generate the opening vocabulary and size band.
-
-    The cold start, and the **only** LLM call discovery makes about queries: with no
-    qualified leads there are no profiles to count words from, so the ICP text is the one
-    available source. Everything after this is counting (``vocabulary.refresh``).
-
-    The band is **returned, not stored**: it rides every query unchanged and is never
-    searched, so it belongs on the nodes this seed opens (``select.seed_frontier``),
-    where it is part of the query that was actually fired.
-
-    Returns empty keywords when the ICP is empty. Under ``--agent-qualify`` the spec is
-    the calling agent's ``--icp`` answer instead, or the run stops with ``icp_pending``.
-    """
-    from openoutfind.core.models import Keyword
-    from openoutfind.discovery import as_place, describe_node
-
-    answer = agent_icp_answer(site_config)
-    spec = answer.seed if answer is not None else _spec_from_llm(site_config)
-
-    band = (spec.headcount_min, spec.headcount_max)
-    country_code = spec.country_code.lower()
-    location = as_place(spec.location) if spec.location else ""
-    keywords = _seed_keywords(spec)
-    if not keywords:
-        return Seed([], band, country_code, location)
-
-    Keyword.rows_for(keywords)
-
-    # The seed is a *query*, not a description of a buyer — it says `founder cto` where
-    # the operator asked for "engineering leaders at small SaaS firms". The operator's
-    # echo is `log_icp_echo` below; this one stays for the maintainer reading the walk.
-    logger.debug("%s: %s · headcount %d–%d",
-                 colored("discovery seed", "cyan", attrs=["bold"]),
-                 colored(describe_node(keywords), "cyan"),
-                 spec.headcount_min, spec.headcount_max)
-    return Seed(keywords, band, country_code, location)
-
-
-def _spec_from_llm(site_config) -> ICPSpec:
-    """Ask ``AI_MODEL`` for the opening vocabulary."""
+def _population_from_llm(site_config) -> InitialPopulation:
+    """Ask ``AI_MODEL`` for the initial population."""
     from pydantic_ai import Agent
 
     from openoutfind.core.llm import get_llm_model, run_agent_sync
     from openoutfind.core.pipeline.brief import ensure_rules
 
     env = jinja2.Environment(loader=jinja2.FileSystemLoader(str(PROMPTS_DIR)))
-    prompt = env.get_template("icp_filters.j2").render(
+    prompt = env.get_template("initial_population.j2").render(
         product_docs=site_config.product_docs,
         campaign_target=site_config.campaign_target,
         rules=ensure_rules(site_config),
         seniorities=LEAD_SENIORITIES,
+        size=POPULATION_SIZE,
     )
 
     # No temperature: the current Claude models reject one that isn't their default.
-    agent = Agent(get_llm_model(), output_type=ICPSpec, model_settings={"timeout": 60})
+    agent = Agent(get_llm_model(), output_type=InitialPopulation,
+                  model_settings={"timeout": 120})
     return run_agent_sync(agent.run(prompt)).output
 
 
@@ -230,7 +167,7 @@ class Anchor(NamedTuple):
 
     Two shapes of the same claim, because the two consumers read different things. The
     GP wants ``profile`` — one flat line in ``profile_text_for``'s shape, embedded whole.
-    The vocabulary wants ``source_fields`` — the same person as a *lead row*, each value
+    The moves want ``source_fields`` — the same person as a *lead row*, each value
     already under the field it is searchable in, exactly as ``discovery.source_fields_for``
     stores one for a real lead.
     """
@@ -242,10 +179,9 @@ class Anchor(NamedTuple):
 class _AnchorProfile(BaseModel):
     """One invented lead — written once as a line, and again as its queryable fields.
 
-    The fields are asked for rather than parsed out. Splitting the flat line by guess is
-    what made anchors unusable as vocabulary: a bag of words cannot say whether
-    ``united states`` is a job title or a place, and filing it wrong poisons the axis for
-    the install's life. The model already knows which is which — it just was never asked.
+    The fields are asked for rather than parsed out: a bag of words cannot say whether
+    ``united states`` is a job title or a place, and the model already knows which is
+    which.
     """
 
     profile: str = Field(
@@ -289,10 +225,10 @@ def generate_anchors(site_config, count: int = ANCHOR_COUNT, existing=()) -> lis
 
     Best-effort by design: an unanchored install still runs, it just spends its cold
     phase without a fitted GP, so failure must not propagate to the caller. The one
-    exception is ``icp_pending`` under ``--agent-qualify``, which is not a failure but
-    the question the calling agent answers with ``--icp``.
+    exception is ``population_pending`` under ``--agent-qualify``, which is not a failure
+    but the question the calling agent answers with ``--population``.
     """
-    answer = agent_icp_answer(site_config, existing=existing)
+    answer = agent_population_answer(site_config, existing=existing)
     if answer is not None:
         return [anchor for anchor in map(_as_anchor, answer.anchors[:count]) if anchor.profile]
 
@@ -323,51 +259,66 @@ def generate_anchors(site_config, count: int = ANCHOR_COUNT, existing=()) -> lis
     return [anchor for anchor in map(_as_anchor, result.profiles) if anchor.profile]
 
 
-# ── the calling agent as the author (`find --agent-qualify --icp`) ───
+# ── the calling agent as the author (`find --agent-qualify --population`) ──
 
 
-class IcpAnswer(BaseModel):
-    """Both cold-start priors in one answer — what ``--icp`` carries.
+class PopulationAnswer(InitialPopulation):
+    """Both cold-start priors in one answer — what ``--population`` carries.
 
     One answer rather than two questions because they come from the same two texts and
     an agent writes them in the same breath; asking twice would cost the caller a second
-    round trip for nothing.
+    round trip for nothing. The model path writes the same searches (``InitialPopulation``)
+    and its anchors in a call of their own.
     """
 
-    seed: ICPSpec
     anchors: list[_AnchorProfile] = Field(min_length=ANCHOR_COUNT)
 
 
-def agent_icp_answer(site_config, existing=()) -> IcpAnswer | None:
-    """The ``--icp`` answer when a calling agent is the author; ``None`` to ask the LLM.
+def agent_population_answer(site_config, existing=()) -> PopulationAnswer | None:
+    """The ``--population`` answer when a calling agent is the author; ``None`` to ask
+    the LLM.
 
-    Under ``--agent-qualify`` with no answer given, stops the run with ``icp_pending`` —
-    the payload is everything the answer is written from, plus its schema.
+    Under ``--agent-qualify`` with no answer given, stops the run with
+    ``population_pending`` — the payload is everything the answer is written from, the
+    field types it is written in, and its schema.
     """
     from openoutfind.core import agent_qualify
-    from openoutfind.core.pipeline.qualify import IcpPending
-
     from openoutfind.core.pipeline.brief import stored
+    from openoutfind.core.pipeline.qualify import PopulationPending
 
     if not agent_qualify.active():
         return None
-    answer = agent_qualify.icp_answer()
+    answer = agent_qualify.population_answer()
     if answer is not None:
         return answer
     brief = stored()
-    raise IcpPending(
-        "this store has no ICP yet — write the opening keywords and "
-        f"{ANCHOR_COUNT} ideal profiles",
+    raise PopulationPending(
+        f"this store has no searches yet — write the {POPULATION_SIZE} searches of the "
+        f"initial population and {ANCHOR_COUNT} ideal profiles",
         payload={
             "product_docs": site_config.product_docs,
             "campaign_target": site_config.campaign_target,
             "rules": brief.rules if brief is not None else "",
+            "population_size": POPULATION_SIZE,
+            "fields": FIELD_TYPES,
             "seniorities": list(LEAD_SENIORITIES),
             "anchor_count": ANCHOR_COUNT,
             "existing_anchors": list(existing),
-            "schema": IcpAnswer.model_json_schema(),
+            "schema": PopulationAnswer.model_json_schema(),
         },
     )
+
+
+# How the provider matches each field a written search holds — handed to the calling
+# agent with ``population_pending``, so it writes the forms that match.
+FIELD_TYPES = {
+    "title": "words, every one required in the job title, any order; stopwords ignored; "
+             "nothing stemmed (manager ≠ managers)",
+    "tag": "one phrase inside one of the company's LinkedIn tags: adjacent, in order, "
+           "nothing stemmed (vape ≠ vapes); never without a title",
+    "state": "a state or region inside the market country, or empty for all of it",
+    "seniority": "one value from the closed list, or null",
+}
 
 
 def _as_anchor(written: _AnchorProfile) -> Anchor:
@@ -375,8 +326,8 @@ def _as_anchor(written: _AnchorProfile) -> Anchor:
 
     ``source_fields_for`` is reused rather than reimplemented so an anchor row and a
     discovered lead row are built by the same function: it keeps only the keys
-    ``KEYWORD_SOURCE_FIELDS`` reads and drops the empty ones, which is what makes an
-    anchor with no state contribute its country alone instead of a blank place.
+    ``SOURCE_FIELDS`` reads and drops the empty ones, which is what makes an anchor with
+    no state contribute its country alone instead of a blank place.
     """
     from openoutfind.discovery import source_fields_for
 
@@ -395,8 +346,7 @@ def anchor_leads():
     """The invented ideal leads, oldest first — the anchors as the rows they are.
 
     One query, and the only definition of *anchor* the codebase has: a ``Lead`` this
-    install wrote rather than discovered. The GP reads their embeddings, the label store
-    their ``profile_text`` and the vocabulary their ``source_fields``, each with the same
+    install wrote rather than discovered. The GP reads their embeddings with the same
     accessor it uses for a real lead.
     """
     from openoutfind.crm.models import Lead
@@ -456,8 +406,6 @@ def ensure_anchors(site_config) -> np.ndarray | None:
             source_fields=anchor.source_fields,
             country_code=site_config.operator_country_code,
         )
-        # Embedded **without** query terms, unlike a discovered lead: an anchor is a claim
-        # about what a good lead looks like, not about which query to run.
         lead.embedding_array = embed_profile(anchor.profile)
         lead.save()
 

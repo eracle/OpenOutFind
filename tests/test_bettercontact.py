@@ -164,6 +164,60 @@ class TestPollOnce:
             bettercontact.poll_once("req1")
 
 
+# ── bettercontact.search_and_poll ─────────────────────────────────────
+
+class TestSearchAndPoll:
+    def test_the_first_poll_waits_the_ready_time_and_the_rest_one_second(self):
+        get = MagicMock(side_effect=[_response({"status": "not_started"}),
+                                     _response({"status": "terminated", "leads": [1]})])
+        post = MagicMock(return_value=_response({"request_id": "r1"}))
+        with _patch_session(post=post, get=get), \
+                patch.object(bettercontact.time, "sleep") as sleep:
+            body, ready = bettercontact.search_and_poll("k", "https://lf", {}, first_poll_s=1.7)
+
+        assert body["leads"] == [1]
+        assert [c.args[0] for c in sleep.call_args_list] == [1.7, 1]
+        assert ready >= 0
+
+    def test_a_transport_failure_is_unavailable(self):
+        post = MagicMock(return_value=_response({}, error=requests.HTTPError("500")))
+        with _patch_session(post=post), pytest.raises(BetterContactUnavailable):
+            bettercontact.search_and_poll("k", "https://lf", {}, first_poll_s=0)
+
+
+class TestRequestBudget:
+    def _budget(self, limit=2):
+        clock = {"now": 0.0}
+
+        def sleep(seconds):
+            clock["now"] += seconds
+
+        budget = bettercontact.RequestBudget(limit, 60.0, clock=lambda: clock["now"],
+                                             sleep=sleep)
+        return budget, clock
+
+    def test_requests_within_the_limit_never_wait(self):
+        budget, clock = self._budget()
+        budget.take()
+        budget.take()
+        assert clock["now"] == 0.0
+
+    def test_one_over_the_limit_waits_for_the_oldest_to_leave_the_window(self):
+        budget, clock = self._budget()
+        budget.take()
+        clock["now"] = 10.0
+        budget.take()
+        budget.take()
+        assert clock["now"] == pytest.approx(60.0)
+
+    def test_every_request_but_the_account_read_takes_a_place(self):
+        session = _fake_session(get=MagicMock(return_value=_response({})))
+        with patch.object(bettercontact._BUDGET, "take") as take:
+            bettercontact._request(session, "GET", bettercontact._ACCOUNT_URL)
+            bettercontact._request(session, "GET", "https://lf/r1")
+        assert take.call_count == 1
+
+
 # ── bettercontact.is_configured ───────────────────────────────────────
 
 class TestIsConfigured:

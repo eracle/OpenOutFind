@@ -33,15 +33,20 @@ def _reset_agent_qualify():
     yield
     agent_qualify._active.set(False)
     agent_qualify._verdict.set(None)
-    agent_qualify._icp.set(None)
+    agent_qualify._population.set(None)
 
 
-def _icp_answer():
-    from openoutfind.core.pipeline.icp import ANCHOR_COUNT, IcpAnswer
+def _searches(n=15):
+    return [{"title": f"founder baker {i}" if i else "head of purchasing", "tag": "bakery",
+             "state": "California" if i % 2 else "", "seniority": None} for i in range(n)]
 
-    return IcpAnswer.model_validate({
-        "seed": {"role_keywords": ["founder"], "domain_keywords": ["bakery"],
-                 "location": "united states", "headcount_min": 1, "headcount_max": 50},
+
+def _population_answer():
+    from openoutfind.core.pipeline.icp import ANCHOR_COUNT, PopulationAnswer
+
+    return PopulationAnswer.model_validate({
+        "searches": _searches(), "country": "United States", "country_code": "US",
+        "headcount_min": 1, "headcount_max": 50,
         "anchors": [{"profile": f"founder of bakery chain {n} united states",
                      "job_title": "founder", "location_country": "united states"}
                     for n in range(ANCHOR_COUNT)],
@@ -49,39 +54,46 @@ def _icp_answer():
 
 
 @pytest.mark.django_db
-class TestWritingTheIcp:
-    """The cold start's two LLM calls — the seed and the anchors — answered by the agent."""
+class TestWritingThePopulation:
+    """The cold start's two LLM calls — the searches and the anchors — answered by the agent."""
 
-    def test_a_fresh_store_stops_for_the_icp_instead_of_asking_the_llm(self, site_config):
-        from openoutfind.core.pipeline.icp import generate_seed
-        from openoutfind.core.pipeline.qualify import IcpPending
+    def test_a_fresh_store_stops_for_the_population_instead_of_asking_the_llm(self, site_config):
+        from openoutfind.core.pipeline.icp import write_initial_population
+        from openoutfind.core.pipeline.qualify import PopulationPending
 
         agent_qualify.enable(None)
 
-        with patch("openoutfind.core.pipeline.icp._spec_from_llm") as llm:
-            with pytest.raises(IcpPending) as raised:
-                generate_seed(site_config)
+        with patch("openoutfind.core.pipeline.icp._population_from_llm") as llm:
+            with pytest.raises(PopulationPending) as raised:
+                write_initial_population(site_config)
 
         llm.assert_not_called()
-        assert raised.value.error_type == "icp_pending"
-        assert raised.value.payload["product_docs"] == site_config.product_docs
-        assert "seed" in raised.value.payload["schema"]["properties"]
+        assert raised.value.error_type == "population_pending"
+        payload = raised.value.payload
+        assert payload["product_docs"] == site_config.product_docs
+        assert payload["population_size"] == 15
+        assert set(payload["fields"]) == {"title", "tag", "state", "seniority"}
+        assert "searches" in payload["schema"]["properties"]
 
-    def test_the_answer_becomes_the_seed(self, site_config):
-        from openoutfind.core.pipeline.icp import generate_seed
+    def test_the_answer_becomes_the_written_searches_and_their_shape(self, site_config):
+        from openoutfind.core.models import Search
+        from openoutfind.core.pipeline.icp import write_initial_population
 
-        agent_qualify.enable(None, _icp_answer())
+        agent_qualify.enable(None, _population_answer())
 
-        seed = generate_seed(site_config)
+        assert write_initial_population(site_config) == 15
 
-        assert ("company_keywords", "bakery") in seed.keywords
-        assert ("lead_location", "United States") in seed.keywords
-        assert seed.headcount == (1, 50)
+        first = Search.objects.get(terms__title=["head", "purchasing"])
+        assert first.origin == Search.Origin.WRITTEN
+        assert first.query.tag == ("bakery",)
+        assert first.query.place == "United States"
+        assert (first.headcount, first.country_code) == ((1, 50), "us")
+        assert Search.objects.filter(terms__place="California, United States").count() == 7
 
     def test_the_answer_becomes_the_anchors(self, site_config):
         from openoutfind.core.pipeline.icp import generate_anchors
 
-        agent_qualify.enable(None, _icp_answer())
+        agent_qualify.enable(None, _population_answer())
 
         anchors = generate_anchors(site_config, count=2)
 
@@ -92,30 +104,50 @@ class TestWritingTheIcp:
         """Anchor generation is best-effort and eats LLM failures; the question to the
         agent must not be eaten with them."""
         from openoutfind.core.pipeline.icp import generate_anchors
-        from openoutfind.core.pipeline.qualify import IcpPending
+        from openoutfind.core.pipeline.qualify import PopulationPending
 
         agent_qualify.enable(None)
 
-        with pytest.raises(IcpPending):
+        with pytest.raises(PopulationPending):
             generate_anchors(site_config)
 
-    def test_too_few_anchors_is_not_an_answer(self):
+    def test_too_few_anchors_or_searches_is_not_an_answer(self):
         from pydantic import ValidationError
 
-        from openoutfind.core.pipeline.icp import IcpAnswer
+        from openoutfind.core.pipeline.icp import PopulationAnswer
 
+        base = {"country": "United States", "searches": _searches(),
+                "anchors": [{"profile": "one"}]}
         with pytest.raises(ValidationError):
-            IcpAnswer.model_validate({"seed": {}, "anchors": [{"profile": "one"}]})
+            PopulationAnswer.model_validate(base)
+        with pytest.raises(ValidationError):
+            PopulationAnswer.model_validate({**base, "searches": _searches(14),
+                                             "anchors": [{"profile": "a"}] * 3})
 
-    def test_without_agent_mode_the_llm_writes_the_seed(self, site_config):
-        from openoutfind.core.pipeline.icp import ICPSpec, generate_seed
+    def test_without_agent_mode_the_llm_writes_the_searches(self, site_config):
+        from openoutfind.core.models import Search
+        from openoutfind.core.pipeline.icp import InitialPopulation, write_initial_population
 
-        with patch("openoutfind.core.pipeline.icp._spec_from_llm",
-                   return_value=ICPSpec(role_keywords=["cto"])) as llm:
-            seed = generate_seed(site_config)
+        population = InitialPopulation(searches=_searches(), country="United States")
+        with patch("openoutfind.core.pipeline.icp._population_from_llm",
+                   return_value=population) as llm:
+            write_initial_population(site_config)
 
         llm.assert_called_once()
-        assert ("lead_job_title", "cto") in seed.keywords
+        assert Search.objects.count() == 15
+
+    def test_an_illegal_written_search_is_dropped(self, site_config):
+        """A tag with no title words left once stopwords go cannot be fired."""
+        from openoutfind.core.models import Search
+        from openoutfind.core.pipeline.icp import InitialPopulation, write_initial_population
+
+        searches = _searches()
+        searches[0] = {"title": "of the", "tag": "bakery"}
+        population = InitialPopulation(searches=searches, country="United States")
+        with patch("openoutfind.core.pipeline.icp._population_from_llm",
+                   return_value=population):
+            assert write_initial_population(site_config) == 14
+        assert not Search.objects.filter(terms__title=[]).exists()
 
 
 @pytest.mark.django_db

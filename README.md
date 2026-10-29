@@ -42,8 +42,8 @@ It has **zero platform-ToS surface**: browserless, no social-network account, no
 **How it works:**
 
 1. **You provide** a product description and a campaign objective (e.g. "SaaS analytics platform" targeting "VP of Engineering at Series B startups")
-2. **An LLM turns that into opening search keywords** and pages matching firmographic profiles from a **licensed discovery source** (BetterContact **Lead Finder**) — no emails yet, billed nothing
-3. **Discovery walks the keyword index by counting**, adding one word at a time and spending its next query where the accepted-lead counts say the best ones came from. No model, no cadence knob
+2. **An LLM writes 15 whole searches** — "a head of procurement at a cannabis extraction company in California" — and pages matching firmographic profiles from a **licensed discovery source** (BetterContact **Lead Finder**) — no emails yet, billed nothing
+3. **Discovery breeds new searches from the best ones**: a genetic algorithm keeps the searches whose pages brought in the people the model rates best, and breeds 15 more from them each round — a word added or dropped, a company tag swapped, two searches crossed — fired all at once
 4. **An LLM qualifies each candidate** against your ICP and **writes down why**. A model of your ICP (Gaussian Process over profile embeddings) learns from those verdicts and picks who to qualify next
 5. **Every lead you have prints as CSV when the run ends** — name, title, company, website, profile URL, and the `reason` — so `> leads.csv` is the only file there is. Ask for addresses (`find 10 emails`, or `--emails`) and the best-fit leads get a **paid email lookup** first, one credit per verified hit, gated on the model's confidence so the spend goes to the leads most likely to fit
 
@@ -267,7 +267,7 @@ enrichment on top, never a precondition — so the file can carry rows with a bl
 
 | Feature                            | Description                                                                                                          |
 |------------------------------------|----------------------------------------------------------------------------------------------------------------------|
-| 🧠 **Autonomous Lead Discovery**   | No contact lists needed — an LLM turns your product + objective into opening keywords, and the walk grows them by counting the words that appear in profiles it already accepted. |
+| 🧠 **Autonomous Lead Discovery**   | No contact lists needed — an LLM turns your product + objective into the first searches, and the walk breeds new ones from those whose people look best. |
 | 📝 **A Reason Per Lead**           | Every qualified lead carries the LLM's written rationale for choosing it. It exports alongside the row, so the tool downstream can merge it — and so you can tell a bad ICP from a bad model. |
 | 🔒 **Licensed Discovery**          | Firmographic profiles come from a licensed provider (BetterContact Lead Finder) — no scraping, no browser, no account. |
 | 🎯 **Pay Only For What Resolves**  | Search against the licensed source is free; a confidence gate rations the paid lookups, billed only on a verified hit. Cost scales with qualified leads, not with how much you searched. |
@@ -294,7 +294,7 @@ Only step 3 costs money, and its only gate is whether you configured a provider.
 
 The run ends when the goal is met, or when **nothing can advance right now** — every lead is waiting on a lookup that is not due yet, or the search has drained. There is no timeout to configure, because each thing being waited on carries its own.
 
-**Discover → qualify → gate → resolve → export.** One LLM pass turns your product description into opening search keywords; from there the keyword vocabulary grows by counting the words that appear in profiles the LLM has accepted, and the walk keeps firing the most promising set. Qualification runs the GP + LLM loop over the stored firmographic text and writes the `reason`. The GP confidence gate promotes `QUALIFIED → READY_TO_FIND_EMAIL`, **rationing the paid lookup** so only the best-fit leads cost a credit. A miss ends the deal as `NO_EMAIL_FOUND` with a blank outcome (so the labeler skips it — an unfindable address is not a fit signal).
+**Discover → qualify → gate → resolve → export.** One LLM pass turns your product description into 15 whole searches; from there the walk keeps the searches whose latest page brought in the best people and breeds new ones from their terms and the terms of the people already found, 15 at a time. Qualification runs the GP + LLM loop over the stored firmographic text and writes the `reason`. The GP confidence gate promotes `QUALIFIED → READY_TO_FIND_EMAIL`, **rationing the paid lookup** so only the best-fit leads cost a credit. A miss ends the deal as `NO_EMAIL_FOUND` with a blank outcome (so the labeler skips it — an unfindable address is not a fit signal).
 
 **The qualification loop in detail:**
 
@@ -310,7 +310,7 @@ All qualification decisions go through the LLM. The GP model selects which candi
 
 **Cold start:** an install with no acceptances yet has nothing to fit on, so the ICP is also written out as a handful of **synthetic ideal profiles** and embedded as the model's positives. They are lead rows like any other (flagged `synthetic`, never contacted and never exported), and they stay — real acceptances simply outnumber them, so a few invented profiles decide less and less as ground truth arrives. When the unlabelled pool empties, discovery pages a fresh batch.
 
-Behaviour is configured by the environment (see [docs/configuration.md](docs/configuration.md)); Django Admin shows what the walk has done — the query nodes and the vocabulary.
+Behaviour is configured by the environment (see [docs/configuration.md](docs/configuration.md)); Django Admin shows what the walk has done — every search, every page it fired, and which are in the population.
 
 ---
 

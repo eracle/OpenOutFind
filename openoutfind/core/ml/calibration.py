@@ -200,22 +200,12 @@ def _draw(qualifier, pool: list, rng: random.Random):
 # ── The costs ──
 
 def leads_per_search() -> float:
-    """New leads a search has added on this store: leads discovered over pages fetched.
+    """New leads a search adds on this store — a search is one generation of the walk.
 
-    A page is counted where the walk left a trace of it: every 100 offset a node
-    advanced, plus the empty page that retired each dead or drained node. A lead the
-    customer marked (``--labels``) was never found by a search, so it is not counted.
+    The running mean of each generation's lead count after its harvest less before
+    (``meter.GENERATION_LEADS``). ``0.0`` before the first generation.
     """
-    from openoutfind.core.models import QueryNode
-    from openoutfind.core.pipeline.select import DISCOVERY_PAGE_SIZE
-    from openoutfind.crm.models import Lead
-
-    nodes = QueryNode.objects.all()
-    pages = sum(n.next_offset for n in nodes) / DISCOVERY_PAGE_SIZE + nodes.filter(
-        state__in=[QueryNode.State.DEAD, QueryNode.State.DRAINED]).count()
-    if not pages:
-        return 0.0
-    return Lead.objects.filter(synthetic=False, marked=False).count() / pages
+    return meter.mean(meter.GENERATION_LEADS, 0.0)
 
 
 def _dollars(seconds: float, billed: float) -> float:
@@ -224,11 +214,13 @@ def _dollars(seconds: float, billed: float) -> float:
 
 
 def search_cost() -> float:
-    """What one search costs, in dollars: its measured time — Lead Finder bills nothing.
+    """What one search — a generation of the walk — costs, in dollars: its measured time,
+    since Lead Finder bills nothing.
 
-    ``search_seconds`` until this store has fetched a page.
+    ``generation_seconds`` until this store has run a generation.
     """
-    return _dollars(meter.mean(meter.SEARCH_SECONDS, CAMPAIGN_CONFIG["search_seconds"]), 0.0)
+    return _dollars(meter.mean(meter.GENERATION_SECONDS,
+                               CAMPAIGN_CONFIG["generation_seconds"]), 0.0)
 
 
 def verdict_cost() -> float:

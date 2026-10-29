@@ -59,15 +59,12 @@ def _no_fit_survives_a_test():
     empty cache.
     """
     import openoutfind.core.ml.qualifier as qualifier_module
-    import openoutfind.core.pipeline.vocabulary as vocabulary_module
     import openoutfind.core.cycle as cycle_module
 
     qualifier_module._FITTED = None
-    vocabulary_module._refreshed_at = None
     cycle_module._scored_at = None
     yield
     qualifier_module._FITTED = None
-    vocabulary_module._refreshed_at = None
     cycle_module._scored_at = None
 
 

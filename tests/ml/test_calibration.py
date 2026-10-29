@@ -127,16 +127,13 @@ def test_a_resumed_draw_says_it_is_a_calibration_verdict(caplog):
 # ── The costs ──
 
 @pytest.mark.django_db
-def test_leads_per_search_counts_pages_from_the_walk():
-    from openoutfind.core.models import QueryNode
+def test_leads_per_search_is_each_generations_new_leads_on_average():
+    from openoutfind.core import meter
 
-    QueryNode.objects.create(token_key="a", next_offset=300, state=QueryNode.State.FIRED)
-    QueryNode.objects.create(token_key="b", next_offset=0, state=QueryNode.State.DEAD)
-    _pool(20)
-    LeadFactory(synthetic=True)
+    meter.record(meter.GENERATION_LEADS, 300)
+    meter.record(meter.GENERATION_LEADS, 100)
 
-    # Three pages advanced plus the one empty page that retired the dead node.
-    assert calibration.leads_per_search() == pytest.approx(20 / 4)
+    assert calibration.leads_per_search() == pytest.approx(200)
 
 
 @pytest.mark.django_db
@@ -145,24 +142,12 @@ def test_no_search_yet_adds_no_leads():
 
 
 @pytest.mark.django_db
-def test_the_customers_marks_were_not_found_by_a_search():
-    from openoutfind.core.models import QueryNode
-
-    QueryNode.objects.create(token_key="a", next_offset=100, state=QueryNode.State.FIRED)
-    _pool(10)
-    for i in range(30):
-        LeadFactory(marked=True, profile_text=f"marked {i}")
-
-    assert calibration.leads_per_search() == pytest.approx(10)
-
-
-@pytest.mark.django_db
 def test_a_search_costs_its_measured_time_once_there_is_one():
     from openoutfind.core import meter
 
-    meter.record(meter.SEARCH_SECONDS, 30)
-    meter.record(meter.SEARCH_SECONDS, 50)
-    with patch.dict(CAMPAIGN_CONFIG, {"run_hour_dollars": 36.0, "search_seconds": 70}):
+    meter.record(meter.GENERATION_SECONDS, 30)
+    meter.record(meter.GENERATION_SECONDS, 50)
+    with patch.dict(CAMPAIGN_CONFIG, {"run_hour_dollars": 36.0, "generation_seconds": 70}):
         assert calibration.search_cost() == pytest.approx(0.4)
 
 
@@ -216,7 +201,7 @@ def test_an_unpriced_model_is_billed_the_fallback():
 
 @pytest.mark.django_db
 def test_a_search_costs_only_its_time():
-    with patch.dict(CAMPAIGN_CONFIG, {"run_hour_dollars": 36.0, "search_seconds": 70}):
+    with patch.dict(CAMPAIGN_CONFIG, {"run_hour_dollars": 36.0, "generation_seconds": 70}):
         assert calibration.search_cost() == pytest.approx(0.7)
 
 

@@ -81,11 +81,11 @@ def require_initialized_database() -> None:
     from django.db import connection
     from django.db.migrations.executor import MigrationExecutor
 
-    from openoutfind.core.models import QueryNode
+    from openoutfind.crm.models import Lead
 
     # Asked of the model rather than spelled out: the app label is namespaced when
     # OpenOutreach hosts these apps, and a literal table name would go stale silently.
-    if QueryNode._meta.db_table not in connection.introspection.table_names():
+    if Lead._meta.db_table not in connection.introspection.table_names():
         raise OpenOutFindError(
             ErrorType.NOT_INITIALIZED,
             f"no pipeline yet at {settings.DATABASE_PATH} — run `outfind check` to create it",

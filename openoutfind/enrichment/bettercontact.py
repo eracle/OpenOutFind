@@ -11,13 +11,16 @@ raises ``BetterContactUnavailable`` (never a bare error), so enrichment can't
 take down the daemon. This is the *paid* finder — distinct from the free hub
 lookup (``contacts.resolve``), tried first.
 
-The blocking ``submit_and_poll`` transport remains for Lead Finder *discovery*
-(``discovery.py``), which legitimately waits inside its own handler.
+The blocking ``search_and_poll`` transport serves Lead Finder *discovery*
+(``discovery.py``), which waits for its pages — several at once, from the walk's worker
+threads, so every request passes one shared budget (``_BUDGET``).
 """
 from __future__ import annotations
 
 import logging
+import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 
 import requests
@@ -25,7 +28,6 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from openoutfind.core.errors import ErrorType
-from openoutfind.core.logblock import step_line
 from openoutfind.enrichment.provider import Lookup, PollOutcome, ProviderUnavailable
 
 logger = logging.getLogger(__name__)
@@ -52,15 +54,26 @@ also makes the destination swappable in one line without shipping a release.
 _ENRICH_URL = "https://app.bettercontact.rocks/api/v2/async"
 _ACCOUNT_URL = "https://app.bettercontact.rocks/api/v2/account"
 
-# **The poll interval is most of a Lead Finder search's time.** A search is ready
-# 1–2.5s after the submit, measured at 0.25s polls — at 5s every search takes ~5.5s,
-# count-only (`limit: 1`) or a full page alike. The budget the interval spends is the
-# rate limit, which counts **every request, polls included, per API key across all
-# endpoints**: 100/min on Starter and free accounts, 200/min from 1,000 monthly credits
-# (`GET /account` exempt). Their docs ask for "a few seconds" between polls.
+# **The poll interval was most of a Lead Finder search's time.** A search is ready
+# 1.1–3.6s after the submit, measured at 0.25s polls — at a 5s interval every search took
+# ~5.5s, count-only (`limit: 1`) or a full page alike. So a search polls first at the
+# store's measured typical ready time (`meter.SEARCH_READY_SECONDS`), then every
+# `_SEARCH_POLL_INTERVAL_S`: most are caught by the first or second poll, about three
+# requests each. Enrichment keeps `_POLL_INTERVAL_S` — its waterfall takes seconds to
+# minutes, and their docs ask for "a few seconds" between polls.
 _POLL_INTERVAL_S = 5
+_SEARCH_POLL_INTERVAL_S = 1
 _POLL_TIMEOUT_S = 300
 _HTTP_TIMEOUT_S = 30
+
+# **The rate limit counts every request, polls included, per API key across all
+# endpoints**: 100/min on Starter and free accounts, 200/min from 1,000 monthly credits,
+# `GET /account` exempt. Our key is on 100/min. A client firing through 429s can get the
+# account blocked, so the limit is taken from the docs and never probed by going over it:
+# the budget sits below it, and the walk runs one store at a time on the key, so no other
+# process spends it.
+REQUESTS_PER_MINUTE = 90
+_BUDGET_WINDOW_S = 60.0
 
 # **A 429 is backed off, never retried at speed** — their docs warn that a client which
 # keeps firing through one can get the *account* blocked, which costs the operator far
@@ -85,6 +98,39 @@ _BROWSER_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
+
+
+class RequestBudget:
+    """At most ``limit`` requests in any ``window`` seconds, across this process's threads.
+
+    ``take`` blocks until a request fits, then counts it. A generation of 15 searches
+    spends about 45, and a run judges for longer than the window between generations,
+    so it rarely waits.
+    """
+
+    def __init__(self, limit: int, window: float, clock=time.monotonic, sleep=time.sleep):
+        self._limit = limit
+        self._window = window
+        self._clock = clock
+        self._sleep = sleep
+        self._sent: deque[float] = deque()
+        self._lock = threading.Lock()
+
+    def take(self) -> None:
+        while True:
+            with self._lock:
+                now = self._clock()
+                while self._sent and now - self._sent[0] >= self._window:
+                    self._sent.popleft()
+                if len(self._sent) < self._limit:
+                    self._sent.append(now)
+                    return
+                wait = self._window - (now - self._sent[0])
+            logger.debug("bettercontact: request budget full — waiting %.1fs", wait)
+            self._sleep(wait)
+
+
+_BUDGET = RequestBudget(REQUESTS_PER_MINUTE, _BUDGET_WINDOW_S)
 
 
 class BetterContactUnavailable(ProviderUnavailable):
@@ -265,22 +311,24 @@ def _enrich_body(query: BetterContactQuery) -> dict:
 # ── shared async transport (used by enrichment + Lead Finder discovery) ───
 
 
-def submit_and_poll(api_key: str, url: str, body: dict) -> dict:
-    """Submit one job to a BetterContact async endpoint, poll until terminated,
-    return the terminal JSON body.
+def search_and_poll(api_key: str, url: str, body: dict,
+                    first_poll_s: float) -> tuple[dict, float]:
+    """Submit one Lead Finder search, poll until terminated; return the body and the
+    seconds from the submit to the poll that found it ready.
 
-    The two BetterContact endpoints — enrichment (`/async`) and Lead Finder
-    (`/lead_finder/async`) — share this submit→poll contract; only their request
-    body and the key holding the results (`data` vs `leads`) differ, so callers
-    pull those out themselves. Raises BetterContactUnavailable on a transport
-    failure (HTTP error, network drop, poll timeout) or an empty submit.
+    The first poll waits ``first_poll_s`` (the store's typical ready time), the rest one
+    second apart. The ready time is an upper bound — the poll that caught the search,
+    not the moment it finished. Thread-safe: each call has its own session, and every
+    request passes the shared ``_BUDGET``. Raises BetterContactUnavailable on a
+    transport failure (HTTP error, network drop, poll timeout) or an empty submit.
     """
     with _session(api_key) as session:
         try:
             request_id = _submit(session, url, body)
-            logger.info("%s", step_line(
-                "bettercontact", f"req {request_id[:12]}… · poll {_POLL_INTERVAL_S}s ≤{_POLL_TIMEOUT_S}s …"))
-            return _poll(session, url, request_id)
+            submitted = time.monotonic()
+            result = _poll(session, url, request_id, first_wait=first_poll_s,
+                           interval=_SEARCH_POLL_INTERVAL_S)
+            return result, time.monotonic() - submitted
         except (requests.RequestException, TimeoutError) as exc:
             raise BetterContactUnavailable(f"BetterContact unreachable: {exc}") from exc
 
@@ -306,7 +354,12 @@ def _request(session: requests.Session, method: str, url: str, **kwargs) -> requ
     and a hand-rolled loop would only be a worse copy of it. What is left for this
     function is naming the three refusals, because they are three different things to
     a reader: a bad key, an empty wallet, and *slow down*.
+
+    Every request but ``GET /account`` — the one the rate limit exempts — first takes a
+    place in the shared budget.
     """
+    if url != _ACCOUNT_URL:
+        _BUDGET.take()
     try:
         resp = session.request(method, url, timeout=_HTTP_TIMEOUT_S, **kwargs)
     except requests.exceptions.RetryError as exc:
@@ -336,19 +389,18 @@ def _submit(session: requests.Session, url: str, body: dict) -> str:
     return request_id
 
 
-def _poll(session: requests.Session, url: str, request_id: str) -> dict:
-    """Poll until status is terminal; return the terminal JSON body."""
+def _poll(session: requests.Session, url: str, request_id: str, first_wait: float,
+          interval: float) -> dict:
+    """Wait ``first_wait``, then poll every ``interval`` until terminal; return the body."""
     deadline = time.monotonic() + _POLL_TIMEOUT_S
-    attempt = 0
+    time.sleep(first_wait)
     while True:
         body = _request(session, "GET", f"{url}/{request_id}").json()
         if body.get("status") == "terminated":
             return body
-        attempt += 1
-        logger.debug("bettercontact: poll %d for %s — status=%s", attempt, request_id, body.get("status"))
         if time.monotonic() >= deadline:
             raise TimeoutError(f"poll timed out for {request_id}")
-        time.sleep(_POLL_INTERVAL_S)
+        time.sleep(interval)
 
 
 def _row_to_result(row: dict) -> BetterContactResult | None:
