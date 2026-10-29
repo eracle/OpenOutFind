@@ -6,25 +6,30 @@ people on that page are (``fitness``). The initial population is written whole b
 (``icp.write_initial_population``) instead of drawn at random. Each generation is one
 blocking step of the run:
 
-1. **Breed 10 children** from the population with the moves (``moves``): identity pages
-   the fittest survivors one page deeper, the other moves write new searches.
-2. **Fire all 10 at once** — page 1 for a new search, the next page for an identity
+1. **Rank** the last survivors and the last generation's children together by fitness,
+   on the GP as it stands now, and **keep the top 10** (μ + λ, ``tools.selBest``). The
+   first generation has nothing to rank.
+2. **Breed 10 children** from them with the moves (``moves``): identity pages the
+   fittest survivors one page deeper, the other moves write new searches.
+3. **Fire all 10 at once** — page 1 for a new search, the next page for an identity
    child. The worker threads only make the API calls.
-3. **Wait for all of them**, then, in the main thread, record each page and take every
+4. **Wait for all of them**, then, in the main thread, record each page and take every
    page's people into the store together (``discover.harvest``): one embedding pass over
    the whole generation, shortest profile first, since embedding is most of its time.
-   Then score each child on its own page.
-4. **Rank** parents and children together by fitness and **keep the top 10** as the
-   population (μ + λ, ``tools.selBest``).
+   The children join the population unranked.
 5. Hand back to the run, which goes on judging until it asks for the next generation
    (``judge_or_search``).
 
+**A generation's children are ranked at the start of the next one, not when they land**:
+by then the run has judged the people they brought in, and the GP reads every page with
+those verdicts. Ranked on landing, a child would be cut on a GP that had not yet seen
+any of its people judged, and a cut page never comes back.
+
 DEAP supplies the loop's parts — the fitness type, the toolbox the operators are
 registered on, ``toolbox.map`` as a thread pool's ``map`` so a generation fires
-concurrently, tournament selection of parents, ``selBest`` over parents and children, and
-the statistics and logbook. The walk supplies what is particular to it: the individual,
-the operators, the evaluation (fire the page, score its people) and the initial
-population.
+concurrently, tournament selection of parents and ``selBest`` over parents and children.
+The walk supplies what is particular to it: the individual, the operators, the
+evaluation (fire the page, score its people) and the initial population.
 
 **Every child is fired before it is ranked**, so nothing is guessed for a search that has
 not been fired. A search whose page 1 comes back empty is **dead**, and so is every search
@@ -88,8 +93,6 @@ class Generation:
     number: int
     fired: int
     new_leads: int
-    best: float
-    mean: float
 
 
 # ── the population ───────────────────────────────────────────────────
@@ -107,6 +110,28 @@ def evaluate(individuals, qualifier) -> None:
     scores = fitness.page_fitness([ind.page for ind in individuals], qualifier)
     for ind in individuals:
         ind.fitness.values = (scores[ind.page.pk],)
+
+
+def select(candidates, qualifier) -> list[Individual]:
+    """The fittest ``WALK_CONFIG["population"]`` of the last survivors and the last
+    children, fittest first — the parents of the next generation.
+
+    Ranked here, at the start of a generation, and nowhere else: the run has judged since
+    the last one fired, so the GP reads its children's people with those verdicts in.
+    """
+    from openoutfind.core.models import Page
+
+    if not candidates:
+        return []
+    evaluate(candidates, qualifier)
+    survivors = tools.selBest(candidates, WALK_CONFIG["population"])
+    Page.objects.filter(in_population=True).exclude(
+        pk__in=[ind.page.pk for ind in survivors]).update(in_population=False)
+    if logger.isEnabledFor(logging.DEBUG):
+        logger.debug("  survivors of %d:", len(candidates))
+        for ind in survivors:
+            logger.debug("  %.3f  %s", ind.fitness.values[0], ind)
+    return survivors
 
 
 def last_children_fitness(qualifier) -> float | None:
@@ -138,7 +163,6 @@ def _toolbox(pools, rng, executor) -> base.Toolbox:
         toolbox.register(move, moves.mutate, move, pools=pools, rng=rng)
     toolbox.register("mate", moves.crossover, rng=rng)
     toolbox.register("pick", tools.selTournament, tournsize=3)
-    toolbox.register("select", tools.selBest)
     return toolbox
 
 
@@ -352,14 +376,11 @@ def run_generation(site_config, qualifier, rng: random.Random | None = None) -> 
     last = Page.objects.aggregate(Max("generation"))["generation__max"]
     number = 0 if last is None else last + 1
 
-    parents = population()
-    if parents:
-        evaluate(parents, qualifier)
-    ranked = sorted(parents, key=lambda ind: ind.fitness.values[0], reverse=True)
+    parents = select(population(), qualifier)
 
     with ThreadPoolExecutor(max_workers=WALK_CONFIG["population"]) as executor:
         toolbox = _toolbox(_pools(qualifier), rng, executor)
-        children = _unfired_written() + (breed(ranked, toolbox) if ranked else [])
+        children = _unfired_written() + (breed(parents, toolbox) if parents else [])
         if not children:
             return None
         results = _fire_all(children, toolbox, site_config.bettercontact_api_key)
@@ -369,10 +390,9 @@ def run_generation(site_config, qualifier, rng: random.Random | None = None) -> 
     fired = [child for child, _ in pages]
     if fired:
         harvest([(child.page, rows) for child, rows in pages], fired[0].search.country_code)
-        evaluate(fired, qualifier)
-    survivors = toolbox.select(parents + fired, WALK_CONFIG["population"])
-    Page.objects.filter(in_population=True).update(in_population=False)
-    Page.objects.filter(pk__in=[ind.page.pk for ind in survivors]).update(in_population=True)
+        # Unranked until the next generation: its people have not been judged yet.
+        Page.objects.filter(pk__in=[child.page.pk for child in fired]).update(
+            in_population=True)
 
     new_leads = Lead.objects.filter(synthetic=False, marked=False).count() - before
     meter.record(meter.GENERATION_SECONDS, time.monotonic() - started)
@@ -381,7 +401,7 @@ def run_generation(site_config, qualifier, rng: random.Random | None = None) -> 
         # New leads make a new pool, so how often its verdicts fit starts over.
         meter.reset(meter.POOL_FIT)
 
-    return _log(number, children, fired, survivors, new_leads)
+    return _log(number, children, fired, new_leads)
 
 
 def _pools(qualifier) -> moves.TermPools:
@@ -398,22 +418,9 @@ def _pools(qualifier) -> moves.TermPools:
     return moves.TermPools.load(scores, written, country)
 
 
-def _log(number: int, children, fired, survivors, new_leads: int) -> Generation:
-    """Say what the generation did, and record it in a DEAP logbook line."""
-    stats = tools.Statistics(lambda ind: ind.fitness.values[0])
-    stats.register("max", max)
-    stats.register("mean", lambda values: sum(values) / len(values))
-    logbook = tools.Logbook()
-    logbook.record(gen=number, fired=len(fired), new=new_leads,
-                   **(stats.compile(fired) if fired else {"max": 0.0, "mean": 0.0}))
-    record = logbook[-1]
-
+def _log(number: int, children, fired, new_leads: int) -> Generation:
+    """Say what the generation did. Its children are not scored until the next one."""
     logger.info("%s", colored(
         f"■ generation {number}: {len(fired)} of {len(children)} search(es) fired · "
-        f"+{new_leads} new lead(s) · children's fitness best {record['max']:.2f}, "
-        f"mean {record['mean']:.2f}", "blue"))
-    if logger.isEnabledFor(logging.DEBUG):
-        for ind in sorted(survivors, key=lambda i: i.fitness.values[0], reverse=True):
-            logger.debug("  %.3f  %s%s", ind.fitness.values[0], ind,
-                         "" if ind.move in ("", "identity") else f"  ({ind.move})")
-    return Generation(number, len(fired), new_leads, record["max"], record["mean"])
+        f"+{new_leads} new lead(s)", "blue"))
+    return Generation(number, len(fired), new_leads)

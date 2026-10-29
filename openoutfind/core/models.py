@@ -77,8 +77,9 @@ class Page(models.Model):
     """One fired page of a search — the walk's individual is a search at a page.
 
     ``number`` is 1-based, at ``PAGE_SIZE`` people a page. ``in_population`` marks the
-    pages the last generation kept (``walk``): a search at its page, ranked on the
-    people that page brought in and nothing else.
+    pages the next generation ranks (``walk.select``): the last survivors and the last
+    children, each a search at its page, ranked on the people that page brought in and
+    nothing else.
     """
 
     search = models.ForeignKey(Search, on_delete=models.CASCADE, related_name="pages")

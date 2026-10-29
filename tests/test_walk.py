@@ -102,6 +102,13 @@ class TestTheFirstGeneration:
         assert {offset for _, offset in finder.calls} == {0}
         assert Page.objects.filter(in_population=True).count() == POPULATION
 
+    def test_it_ranks_nothing(self, site):
+        """No parents, and none of its people judged yet: there is nothing to rank on."""
+        with patch.object(walk.fitness, "page_fitness") as page_fitness:
+            _run(site, FakeLeadFinder())
+
+        page_fitness.assert_not_called()
+
     def test_every_search_rides_the_customers_shape(self, site):
         _run(site, FakeLeadFinder())
 
@@ -185,7 +192,7 @@ class TestTakingPagesIn:
 
 
 class TestBreeding:
-    def test_the_next_generation_breeds_a_population_and_keeps_one(self, site):
+    def test_the_next_generation_breeds_and_keeps_its_children_unranked(self, site):
         _run(site, FakeLeadFinder())
         finder = FakeLeadFinder()
 
@@ -193,7 +200,8 @@ class TestBreeding:
 
         assert generation.number == 1
         assert len(finder.calls) == POPULATION
-        assert Page.objects.filter(in_population=True).count() == POPULATION
+        assert Page.objects.filter(in_population=True).count() == 2 * POPULATION
+        assert Page.objects.filter(in_population=True, generation=1).count() == POPULATION
 
     def test_identity_pages_the_fittest_survivors_one_page_deeper(self, site):
         _run(site, FakeLeadFinder())
@@ -213,17 +221,26 @@ class TestBreeding:
 
         assert all(offset == 0 for _, offset in finder.calls)
 
-    def test_the_survivors_are_the_fittest_of_parents_and_children(self, site):
+    def test_the_survivors_are_the_fittest_on_the_verdicts_judged_since(self, site):
+        """Ranked at the start of a generation, on the verdicts that came in after the
+        last one fired: the first time 20 pages compete for 10 places."""
         _run(site, FakeLeadFinder())
+        _run(site, FakeLeadFinder(), seed=1)
         for lead in Lead.objects.filter(source_fields__contact_job_title="founder"):
             Deal.objects.create(lead=lead, state=DealState.QUALIFIED)
         for lead in Lead.objects.exclude(source_fields__contact_job_title="founder"):
             Deal.objects.create(lead=lead, state=DealState.FAILED, outcome=Outcome.WRONG_FIT)
 
-        _run(site, FakeLeadFinder(), seed=1)
+        with patch.object(walk, "breed", wraps=walk.breed) as breed:
+            _run(site, FakeLeadFinder(), seed=2)
 
-        kept = Page.objects.filter(in_population=True)
-        assert kept.filter(search__terms__title=["founder"], number=1).exists()
+        parents = breed.call_args.args[0]
+        assert len(parents) == POPULATION
+        assert parents[0].terms.title == {"founder"}
+        assert parents[0].fitness.values[0] == 1.0
+        kept = Page.objects.filter(in_population=True).exclude(generation=2)
+        assert kept.count() == POPULATION
+        assert kept.filter(search__terms__title=["founder"]).exists()
 
     def test_no_child_repeats_a_fired_search_or_holds_a_dead_ones_terms(self, site):
         _run(site, FakeLeadFinder(dead={"purchasing"}))

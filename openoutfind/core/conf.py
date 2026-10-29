@@ -151,8 +151,9 @@ CAMPAIGN_CONFIG = {
 # The walk (core/pipeline/walk.py): a genetic algorithm over searches, ranked on how good
 # the people on each one's latest page are. 10 is the initial population the LLM writes,
 # the population kept, and the children bred each generation; selection is one ranking,
-# the top 10 of parents and children (μ + λ). A generation is embedded before it is
-# ranked, so its size is the run's wait: 15 pages of new people took 14½ minutes.
+# the top 10 of parents and children (μ + λ), taken at the start of the next generation.
+# A generation is embedded as it lands, so its size is the run's wait: 15 pages of new
+# people took 14½ minutes.
 #
 # The 10 children split across the moves (core/pipeline/moves.py): identity pages the 3
 # fittest survivors not at the bottom one page deeper, and the rest breed new searches. A
