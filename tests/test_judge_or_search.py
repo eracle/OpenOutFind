@@ -115,14 +115,17 @@ def _arm(rate, new=20.0, cost=0.0001):
                new=new, rate=rate, cost=cost)
 
 
-def _decide(*, waiting, batch, verdict=0.05, fired=True):
+def _decide(*, waiting, batch, verdict=0.05, fired=True, judged=True):
     """``decide`` with a verdict at ``verdict`` dollars, the best lead waiting at a fit
-    rate of ``waiting`` and the frontier's batch at ``batch``."""
+    rate of ``waiting`` and the frontier's batch at ``batch``; ``judged``, a verdict
+    given since the last round's new leads."""
     from openoutfind.core.models import Page, Search
 
     if fired and not Page.objects.exists():
         search = Search.objects.create(key="k", terms={"title": ["founder"]})
         Page.objects.create(search=search, number=1, round=0, rows=3)
+    if judged and not meter.totals(meter.POOL_FIT)[1]:
+        meter.record(meter.POOL_FIT, 0)
     plan = patch("openoutfind.core.pipeline.frontier.plan", return_value=batch)
     with (
         plan as planned,
@@ -140,6 +143,21 @@ class TestTheRule:
         decision, plan = _decide(waiting=0.1, batch=[_arm(0.5)], fired=False)
         assert decision.judge is True
         plan.assert_not_called()
+
+    def test_a_round_that_added_leads_is_judged_before_the_next(self, caplog):
+        """Batch 5: a GP scoring everyone alike fired six rounds with no verdict between."""
+        meter.record(meter.POOL_FIT, 1)
+        meter.reset(meter.POOL_FIT)  # what a round adding leads does
+        with caplog.at_level("INFO"):
+            decision, plan = _decide(waiting=0.12, batch=[_arm(0.5)], judged=False)
+
+        assert decision == judge_or_search.Decision(True, 0.12)
+        plan.assert_not_called()
+        assert "no verdict yet" in caplog.text
+
+    def test_one_verdict_after_a_round_lets_the_rule_weigh_again(self):
+        decision, _ = _decide(waiting=0.12, batch=[_arm(0.5)])
+        assert decision.judge is False
 
     def test_a_best_lead_below_what_a_search_would_bring_is_left_for_a_search(self):
         """The batch-5 shape: the pool's best is off-industry, a search's people fit more."""

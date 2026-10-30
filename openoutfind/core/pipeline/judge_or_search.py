@@ -20,8 +20,13 @@ sides are a fit rate over a cost, in dollars per fit:
 
 A search is cheap next to a verdict, so this is close to *judge while the best lead
 waiting fits as often as the people the best search would bring*. Before the first round
-there is nothing to weigh, and the pool is judged. The best waiting lead's rate is handed
-on as the **floor** a round's arms must beat (``walk.run_round``).
+there is nothing to weigh, and the pool is judged. **After a round that added leads, the
+pool is judged at least once before the next**: an arm is valued on the GP as the run's
+verdicts leave it, and with no verdict on the new people nothing has tested what the
+round brought. On batch 5 a GP scoring everyone alike put the best waiting lead at the
+base rate round after round, and six rounds fired with no verdict between them. The best
+waiting lead's rate is handed on as the **floor** a round's arms must beat
+(``walk.run_round``).
 """
 from __future__ import annotations
 
@@ -68,6 +73,12 @@ def decide(qualifier, candidates) -> Decision:
     floor = best_waiting(qualifier, candidates, frontier.fit_rate_map())
     if not Page.objects.exists():
         return Decision(True, floor)
+    fits, verdicts = meter.totals(meter.POOL_FIT)
+    if not verdicts:
+        logger.info("  %s the last round's people have no verdict yet (best waiting %.2f) → %s",
+                    colored("·", "cyan", attrs=["bold"]), floor,
+                    colored("judge", "cyan", attrs=["bold"]))
+        return Decision(True, floor)
     batch = frontier.plan(qualifier, floor)
     verdict = calibration.verdict_cost()
 
@@ -76,7 +87,6 @@ def decide(qualifier, candidates) -> Decision:
     search = best.cost_per_fit(verdict) if best is not None else math.inf
     pays = judge <= search
 
-    fits, verdicts = meter.totals(meter.POOL_FIT)
     beyond = (f"{len(batch)} search(es) would beat it, the best {best} at "
               f"{best.rate:.2f} × ~{best.new:.0f} new" if best else "no search beats it")
     logger.info("  %s judge %s/fit (best waiting %.2f; %d of %d fit since the last new "
