@@ -11,10 +11,13 @@ second row nobody reads.
 """
 from __future__ import annotations
 
-# Wall time of one generation of the walk: its children bred, fired at once, taken in.
-GENERATION_SECONDS = "generation_seconds"
-# New leads one generation added: the store's lead count after its harvest, less before.
-GENERATION_LEADS = "generation_leads"
+# Wall time of one round of the walk: the frontier valued, its batch fired, taken in.
+ROUND_SECONDS = "round_seconds"
+# New leads one round added: the store's lead count after its harvest, less before.
+ROUND_LEADS = "round_leads"
+# Seconds a round's harvest spent per new lead — embedding, mostly — the frontier's price
+# of a stranger on a page.
+INGEST_SECONDS_PER_LEAD = "ingest_seconds_per_lead"
 # Seconds from a Lead Finder submit to the poll that found it ready — where a search's
 # first poll goes (`bettercontact.search_and_poll`).
 SEARCH_READY_SECONDS = "search_ready_seconds"
@@ -22,7 +25,7 @@ SEARCH_READY_SECONDS = "search_ready_seconds"
 # candidate being handed over to the verdict coming back.
 VERDICT_SECONDS_MODEL = "verdict_seconds_model"
 VERDICT_SECONDS_AGENT = "verdict_seconds_agent"
-# 1 for a fit, 0 for a no-fit, over the verdicts since a generation last added leads.
+# 1 for a fit, 0 for a no-fit, over the verdicts since a round last added leads.
 POOL_FIT = "pool_fit"
 
 

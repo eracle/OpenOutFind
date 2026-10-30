@@ -103,9 +103,9 @@ _BROWSER_UA = (
 class RequestBudget:
     """At most ``limit`` requests in any ``window`` seconds, across this process's threads.
 
-    ``take`` blocks until a request fits, then counts it. A generation of 10 searches
-    spends about 30, and a run judges for longer than the window between generations,
-    so it rarely waits.
+    ``take`` blocks until a request fits, then counts it. A round of 10 searches spends
+    about 30, and a run judges for longer than the window between rounds, so it rarely
+    waits.
     """
 
     def __init__(self, limit: int, window: float, clock=time.monotonic, sleep=time.sleep):

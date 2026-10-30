@@ -4,8 +4,8 @@
 The same two inputs (``product_docs + campaign_target``) are the only prior available
 before any lead has been judged, and the engine needs them expressed two ways:
 
-- ``write_initial_population`` — the ICP as **searches**: the walk's whole first
-  generation, written by the model as whole searches rather than drawn at random. "A head
+- ``write_initial_population`` — the ICP as **searches**: the walk's whole first round,
+  written by the model as whole searches rather than drawn at random. "A head
   of procurement at a cannabis extraction company in California" is ``{title: head,
   procurement; tag: cannabis extraction; place: California, United States}``: the model
   knows which words go together, a title loses nothing by being a set of words (order and
@@ -76,7 +76,7 @@ class WrittenSearch(BaseModel):
 
 
 class InitialPopulation(BaseModel):
-    """The walk's first generation, and the shape every search in the walk rides.
+    """The walk's first round, and the shape every search in the walk rides.
 
     ``seniority`` is typed to Lead Finder's vocabulary, not ``str``: an unknown level
     returns an empty page rather than an error, wasting a search.
@@ -104,8 +104,8 @@ def as_terms(written: WrittenSearch, country: str):
 def write_initial_population(site_config) -> int:
     """Write the initial population as ``Search`` rows. Returns how many were new.
 
-    The cold start, and the **only** LLM call the walk makes: every later search is bred
-    from these by the moves, with no model in the loop. Under ``--agent-qualify`` the
+    The cold start, and the **only** LLM call the walk makes: every later search is a
+    neighbour of a fired one on the lattice, with no model in the loop. Under ``--agent-qualify`` the
     population is the calling agent's ``--population`` answer instead, or the run stops
     with ``population_pending``.
 
@@ -167,7 +167,7 @@ class Anchor(NamedTuple):
 
     Two shapes of the same claim, because the two consumers read different things. The
     GP wants ``profile`` — one flat line in ``profile_text_for``'s shape, embedded whole.
-    The moves want ``source_fields`` — the same person as a *lead row*, each value
+    The term pools want ``source_fields`` — the same person as a *lead row*, each value
     already under the field it is searchable in, exactly as ``discovery.source_fields_for``
     stores one for a real lead.
     """

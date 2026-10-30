@@ -33,9 +33,10 @@ tests/
 ├── test_business_time.py       # working-day arithmetic
 ├── test_discovery.py           # Lead Finder search + embed_row
 ├── test_query.py               # a search's terms: the provider's analyzers, matching, dead conviction
-├── test_moves.py               # the walk's moves and the term pools they draw on
-├── test_fitness.py             # a page's fitness: its own people, verdict or GP, each company once
-├── test_walk.py                # generations end to end against a stubbed Lead Finder
+├── test_lattice.py             # a search's neighbours and the term pools they draw on
+├── test_frontier.py            # the arms, their rate, new people and value, the batch
+├── test_judge_or_search.py     # dollars per fit: the best lead waiting against the best arm
+├── test_walk.py                # rounds end to end against a stubbed Lead Finder
 ├── test_anchors.py             # synthetic ICP positives and their one-per-acceptance retirement
 ├── test_ready_pool.py          # GP rank gate
 ├── test_qualify.py             # qualification flow

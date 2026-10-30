@@ -60,12 +60,15 @@ def _no_fit_survives_a_test():
     """
     import openoutfind.core.ml.qualifier as qualifier_module
     import openoutfind.core.cycle as cycle_module
+    import openoutfind.core.pipeline.frontier as frontier_module
 
     qualifier_module._FITTED = None
     cycle_module._scored_at = None
+    frontier_module._FIT_RATE = None
     yield
     qualifier_module._FITTED = None
     cycle_module._scored_at = None
+    frontier_module._FIT_RATE = None
 
 
 @pytest.fixture

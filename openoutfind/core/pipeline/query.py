@@ -161,7 +161,7 @@ class Terms:
 
     @property
     def key(self) -> str:
-        """sha256 of the canonical terms — a search's identity, whoever bred it."""
+        """sha256 of the canonical terms — a search's identity, whichever move reached it."""
         canonical = json.dumps(
             [sorted(self.title), list(self.tag), self.place.lower(), self.seniority],
             separators=(",", ":"))

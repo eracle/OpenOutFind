@@ -10,6 +10,7 @@ from openoutfind.core.conf import CAMPAIGN_CONFIG
 from openoutfind.core.ml import calibration
 from openoutfind.core.ml.qualifier import BayesianQualifier
 from openoutfind.core.models import CalibrationBar, CalibrationDraw
+from openoutfind.core.pipeline.judge_or_search import Decision
 from openoutfind.core.pipeline.top_up import top_up
 from openoutfind.crm.models import DealState, Outcome
 from tests.factories import DealFactory, LeadFactory
@@ -127,11 +128,11 @@ def test_a_resumed_draw_says_it_is_a_calibration_verdict(caplog):
 # ── The costs ──
 
 @pytest.mark.django_db
-def test_leads_per_search_is_each_generations_new_leads_on_average():
+def test_leads_per_search_is_each_rounds_new_leads_on_average():
     from openoutfind.core import meter
 
-    meter.record(meter.GENERATION_LEADS, 300)
-    meter.record(meter.GENERATION_LEADS, 100)
+    meter.record(meter.ROUND_LEADS, 300)
+    meter.record(meter.ROUND_LEADS, 100)
 
     assert calibration.leads_per_search() == pytest.approx(200)
 
@@ -145,9 +146,9 @@ def test_no_search_yet_adds_no_leads():
 def test_a_search_costs_its_measured_time_once_there_is_one():
     from openoutfind.core import meter
 
-    meter.record(meter.GENERATION_SECONDS, 30)
-    meter.record(meter.GENERATION_SECONDS, 50)
-    with patch.dict(CAMPAIGN_CONFIG, {"run_hour_dollars": 36.0, "generation_seconds": 70}):
+    meter.record(meter.ROUND_SECONDS, 30)
+    meter.record(meter.ROUND_SECONDS, 50)
+    with patch.dict(CAMPAIGN_CONFIG, {"run_hour_dollars": 36.0, "round_seconds": 70}):
         assert calibration.search_cost() == pytest.approx(0.4)
 
 
@@ -201,7 +202,7 @@ def test_an_unpriced_model_is_billed_the_fallback():
 
 @pytest.mark.django_db
 def test_a_search_costs_only_its_time():
-    with patch.dict(CAMPAIGN_CONFIG, {"run_hour_dollars": 36.0, "generation_seconds": 70}):
+    with patch.dict(CAMPAIGN_CONFIG, {"run_hour_dollars": 36.0, "round_seconds": 70}):
         assert calibration.search_cost() == pytest.approx(0.7)
 
 
@@ -400,7 +401,7 @@ def test_without_a_measured_bar_the_fallback_gates_exploit(site_config):
 
     with (
         patch.object(qualifier, "predict_probs", return_value=np.array([0.5])),
-        patch("openoutfind.core.pipeline.top_up.judging_pays", return_value=False),
+        patch("openoutfind.core.pipeline.top_up.decide", return_value=Decision(False, 0.5)),
         patch("openoutfind.core.pipeline.top_up.fetch_qualification_candidates",
               return_value=[_Candidate()]),
         patch("openoutfind.core.pipeline.top_up.run_qualification") as qualify,

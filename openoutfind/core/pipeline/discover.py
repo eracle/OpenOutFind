@@ -1,9 +1,9 @@
 # openoutfind/core/pipeline/discover.py
-"""Discovery leg — one generation of the walk into first-touch Leads.
+"""Discovery leg — one round of the walk into first-touch Leads.
 
 The top of the funnel: the walk's pages become ``Lead`` rows awaiting qualification. Free
-(Lead Finder bills nothing) and browserless, so wall-clock is the only budget. A
-generation is the unit: 10 searches fired at once (``walk.run_generation``), their pages
+(Lead Finder bills nothing) and browserless, so wall-clock is the only budget. A round is
+the unit: the frontier's best 10 searches fired at once (``walk.run_round``), their pages
 taken in together.
 """
 from __future__ import annotations
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 def harvest(pages: list[tuple], country_code: str) -> int:
-    """Take a generation's fetched pages, ``(page, rows)`` each, into the store. Returns
+    """Take a round's fetched pages, ``(page, rows)`` each, into the store. Returns
     how many people were new.
 
     Rows with no headline are dropped (``discovery.is_live_profile`` — forgotten
@@ -26,13 +26,14 @@ def harvest(pages: list[tuple], country_code: str) -> int:
     several pages is evidence about each — except a marked lead or an anchor, whose
     verdict came from elsewhere and must not inflate a page.
 
-    The pages' new people are stored in one call, so the whole generation is embedded
-    in one pass, shortest profile first (``embed_texts``): embedding is most of a
-    generation's time, and a pass padded page by page cost three times as much.
+    The pages' new people are stored in one call, so the whole round is embedded in one
+    pass, shortest profile first (``embed_texts``): embedding is most of a round's time,
+    and a pass padded page by page cost three times as much.
 
     Each whole page — dropped rows and known profiles included — is then given back to the
     hub (``share_profiles``), best-effort, and its distinct employers too
-    (``share_companies``), for the hub's company index — one request per page, so no body grows with the generation.
+    (``share_companies``), for the hub's company index — one request per page, so no body
+    grows with the round.
     """
     from openoutfind.contacts.service import share_companies, share_profiles
     from openoutfind.core.db.leads import store_rows
@@ -74,18 +75,19 @@ def _leads_of(rows: list[dict], by_url: dict) -> list:
     return [by_url[url] for url in urls if url in by_url]
 
 
-def discover(site_config, qualifier=None) -> bool:
-    """Run one generation of the walk. Returns whether one was fired.
+def discover(site_config, qualifier=None, floor: float = 0.0) -> bool:
+    """Run one round of the walk. Returns whether one was fired.
 
-    ``False`` means nothing was left to fire — no population to breed from — or a gate is
-    shut. A provider *refusal* propagates (``walk._take_in``): a rejected key must never
-    be read as a search that matches nobody. ``qualifier`` scores each page's people, which
-    is what the population is ranked by; without one, only judged people count.
+    ``False`` means no search on the frontier is worth firing — none would bring people
+    fitting more often than ``floor``, the best lead waiting — or a gate is shut. A
+    provider *refusal* propagates (``walk._take_in``): a rejected key must never be read as
+    a search that matches nobody. ``qualifier`` scores the store's people, which is what
+    the frontier is valued on; without one, only judged people count.
 
     Two gates: no finder key means the index can't be reached, and no product or target
     means there is nothing to write the initial population from.
     """
-    from openoutfind.core.pipeline.walk import run_generation
+    from openoutfind.core.pipeline.walk import run_round
     from openoutfind.enrichment import bettercontact
 
     if not bettercontact.is_configured():
@@ -94,8 +96,8 @@ def discover(site_config, qualifier=None) -> bool:
         return False
 
     logger.info(colored("▶ discover", "blue", attrs=["bold"]))
-    if run_generation(site_config, qualifier) is None:
-        logger.info(colored("■ no more people left to find — the walk has nothing left "
-                            "to fire", "blue"))
+    if run_round(site_config, qualifier, floor) is None:
+        logger.info(colored("■ no search left worth firing — the frontier holds none that "
+                            "beats the pool", "blue"))
         return False
     return True

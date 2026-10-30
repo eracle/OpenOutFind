@@ -1,36 +1,33 @@
 # openoutfind/core/pipeline/judge_or_search.py
-"""Judge the best lead waiting, or run a generation of the walk — whichever buys a fit
-for less.
+"""Judge the best lead waiting, or fire a round of the walk — whichever buys a fit for
+less.
 
-Exploit asks this when no lead clears the bar (``calibration.current_threshold``). Each
-route's cost per fit is a cost over a chance:
+Exploit asks this when no lead clears the bar (``calibration.current_threshold``). Both
+sides are a fit rate over a cost, in dollars per fit:
 
-    judge   = c_verdict / p_pool
-    search  = (c_generation / leads_per_generation + c_verdict) / p_generation
+    judge   = c_verdict / rate(best waiting)
+    search  = (c_arm + c_verdict · new) / (new · rate(arm))      for the best arm
 
-and the run takes the cheaper one. The costs are measured on this store's run:
+- **rate** is a fit rate on both sides — the GP's score through the isotonic map fitted on
+  the store's verdicts (``frontier.fit_rate_map``) — so a lead waiting and the people a
+  search would bring are weighed on one scale, never the raw score against a mean of raw
+  scores;
+- **the arm** is the frontier's best (``frontier.plan``): a search whose new people are
+  expected to fit more often than the best lead waiting, at ``new`` of them for
+  ``c_arm`` (its ready time and their ingest time);
+- ``c_verdict`` (``calibration.verdict_cost``) is a verdict's measured time at
+  ``run_hour_dollars`` plus its LLM bill, or an agent's fixed cost.
 
-- ``c_verdict`` and ``c_generation`` (``calibration.verdict_cost``/``search_cost``): the
-  running mean of their wall time (``core/meter.py``) priced at ``run_hour_dollars``,
-  plus a verdict's tokens at the model's rates, or an agent's fixed cost;
-- ``leads_per_generation``: the new leads a generation added, from the store's lead
-  count before and after it, as a running mean (``calibration.leads_per_search``).
-
-**The two chances are compared by rank, on the GP's one scale.** ``p_generation`` is the
-mean fitness of the last generation's children (``walk.last_children_fitness``) — what a
-generation brings, not its best survivor, whose people are already in the pool — and
-``p_pool`` is the GP's score for the best lead waiting. The GP orders people but is not
-calibrated (0.15 where the truth was 0.28), so neither is read as a probability and
-neither is mixed with a measured fit rate: the two are only ever weighed against each
-other. Before the first generation there is nothing to weigh, and the pool is judged.
-
-A search is cheap next to an agent's verdict, so under ``--agent-qualify`` this is close
-to *judge while the best lead waiting scores like the people a generation brings*.
+A search is cheap next to a verdict, so this is close to *judge while the best lead
+waiting fits as often as the people the best search would bring*. Before the first round
+there is nothing to weigh, and the pool is judged. The best waiting lead's rate is handed
+on as the **floor** a round's arms must beat (``walk.run_round``).
 """
 from __future__ import annotations
 
 import logging
 import math
+from dataclasses import dataclass
 
 import numpy as np
 from termcolor import colored
@@ -38,48 +35,56 @@ from termcolor import colored
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class Decision:
+    """Whether to judge, and the fit rate a search's people must beat to be worth one."""
+
+    judge: bool
+    floor: float
+
+
 def cost_per_fit(cost: float, rate: float) -> float:
     """Dollars per fit for a step costing ``cost`` that fits at ``rate`` — inf at 0."""
     return cost / rate if rate > 0 else math.inf
 
 
-def best_waiting(qualifier, candidates) -> float:
-    """The GP's score for the best lead in ``candidates`` — 0.0 when it cannot score."""
+def best_waiting(qualifier, candidates, fit_rate) -> float:
+    """The fit rate of the best lead in ``candidates`` — 0.0 when the GP cannot score."""
     if not candidates:
         return 0.0
     X = np.array([c.embedding_array for c in candidates], dtype=np.float64)
     probs = qualifier.predict_probs(X)
-    return float(np.max(probs)) if probs is not None else 0.0
+    return float(np.max(fit_rate(probs))) if probs is not None else 0.0
 
 
-def judging_pays(qualifier, candidates) -> bool:
-    """Whether judging the best lead waiting is cheaper per fit than a generation first.
-
-    Logs both costs, so a run says why it searched or judged.
-    """
+def decide(qualifier, candidates) -> Decision:
+    """Judge the best lead waiting, or search, on dollars per fit. Logs both costs, so a
+    run says why it searched or judged."""
     from openoutfind.core import meter
     from openoutfind.core.ml import calibration
-    from openoutfind.core.pipeline.walk import last_children_fitness
+    from openoutfind.core.models import Page
+    from openoutfind.core.pipeline import frontier
 
-    generation_rate = last_children_fitness(qualifier)
-    if generation_rate is None:
-        return True
-    pool_rate = best_waiting(qualifier, candidates)
+    floor = best_waiting(qualifier, candidates, frontier.fit_rate_map())
+    if not Page.objects.exists():
+        return Decision(True, floor)
+    batch = frontier.plan(qualifier, floor)
     verdict = calibration.verdict_cost()
-    leads = calibration.leads_per_search()
 
-    judge = cost_per_fit(verdict, pool_rate)
-    search = (cost_per_fit(calibration.search_cost() / leads + verdict, generation_rate)
-              if leads > 0 else math.inf)
+    judge = cost_per_fit(verdict, floor)
+    best = min(batch, key=lambda arm: arm.cost_per_fit(verdict), default=None)
+    search = best.cost_per_fit(verdict) if best is not None else math.inf
     pays = judge <= search
 
     fits, verdicts = meter.totals(meter.POOL_FIT)
+    beyond = (f"{len(batch)} search(es) would beat it, the best {best} at "
+              f"{best.rate:.2f} × ~{best.new:.0f} new" if best else "no search beats it")
     logger.info("  %s judge %s/fit (best waiting %.2f; %d of %d fit since the last new "
-                "leads) vs search %s/fit (a generation's children %.2f) → %s",
-                colored("·", "cyan", attrs=["bold"]), _dollars(judge), pool_rate,
-                int(fits), verdicts, _dollars(search), generation_rate,
+                "leads) vs search %s/fit (%s) → %s",
+                colored("·", "cyan", attrs=["bold"]), _dollars(judge), floor,
+                int(fits), verdicts, _dollars(search), beyond,
                 colored("judge" if pays else "search", "cyan", attrs=["bold"]))
-    return pays
+    return Decision(pays, floor)
 
 
 def _dollars(value: float) -> str:

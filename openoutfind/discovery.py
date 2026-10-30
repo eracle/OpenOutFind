@@ -455,7 +455,7 @@ def search(api_key: str, filters: dict, limit: int, offset: int,
            first_poll_s: float) -> Fetched:
     """Search Lead Finder; return the rows, the corpus count and the measured ready time.
 
-    Thread-safe and quiet: the walk fires a generation's pages from worker threads, so
+    Thread-safe and quiet: the walk fires a round's pages from worker threads, so
     this makes the API calls and nothing else — no database, no log line. The caller
     logs the page and records the ready time (``meter.SEARCH_READY_SECONDS``), which is
     what ``first_poll_s`` is set from.

@@ -11,11 +11,11 @@ LAST_PAGE = 10_000 // PAGE_SIZE
 
 
 class Search(models.Model):
-    """One search the walk has written or bred — its terms and the shape it rides.
+    """One search the walk has written or reached — its terms and the shape it rides.
 
     ``terms`` is ``query.Terms`` as JSON: title words, one tag phrase, one place, one
-    seniority. ``key`` is the terms' identity, so a search bred twice by two moves is
-    one row. The size band and the country code are the **shape** the customer fixed;
+    seniority. ``key`` is the terms' identity, so a search two moves reach is one row.
+    The size band and the country code are the **shape** the customer fixed;
     every search carries the same, copied from the initial population, because they are
     part of the query that was fired rather than a setting.
 
@@ -27,13 +27,14 @@ class Search(models.Model):
     class Origin(models.TextChoices):
         # Written whole by the LLM (or the calling agent) — the initial population.
         WRITTEN = "written", "written"
-        # Bred from the population by a move.
-        BRED = "bred", "bred"
+        # A neighbour of a fired search on the lattice, fired from the frontier.
+        NEIGHBOUR = "neighbour", "neighbour"
 
     terms = models.JSONField()
     key = models.CharField(max_length=64, unique=True)
-    origin = models.CharField(max_length=8, choices=Origin.choices, default=Origin.BRED)
-    # The move that bred it (``moves.MOVES``), blank for a written search.
+    origin = models.CharField(max_length=9, choices=Origin.choices,
+                              default=Origin.NEIGHBOUR)
+    # The move that reached it (``lattice.MOVES``), blank for a written search.
     move = models.CharField(max_length=16, blank=True, default="")
     # The provider's exact count, read from page 1 — the only offset whose count is an
     # answer. ``None`` until page 1 has been fetched.
@@ -74,20 +75,17 @@ class Search(models.Model):
 
 
 class Page(models.Model):
-    """One fired page of a search — the walk's individual is a search at a page.
+    """One fired page of a search — the frontier's arm is a search at a page.
 
-    ``number`` is 1-based, at ``PAGE_SIZE`` people a page. ``in_population`` marks the
-    pages the next generation ranks (``walk.select``): the last survivors and the last
-    children, each a search at its page, ranked on the people that page brought in and
-    nothing else.
+    ``number`` is 1-based, at ``PAGE_SIZE`` people a page. ``round`` is the batch it was
+    fired in (``walk.run_round``), 0 for the initial population.
     """
 
     search = models.ForeignKey(Search, on_delete=models.CASCADE, related_name="pages")
     number = models.PositiveSmallIntegerField()
-    generation = models.PositiveIntegerField()
+    round = models.PositiveIntegerField()
     # Rows the provider returned, before any were dropped.
     rows = models.PositiveIntegerField(default=0)
-    in_population = models.BooleanField(default=False)
     leads = models.ManyToManyField("outfind_crm.Lead", through="PageLead",
                                    related_name="pages")
     created_at = models.DateTimeField(auto_now_add=True)
@@ -96,7 +94,6 @@ class Page(models.Model):
         constraints = [
             models.UniqueConstraint(fields=["search", "number"], name="uniq_search_page"),
         ]
-        indexes = [models.Index(fields=["in_population"], name="page_population_idx")]
 
     @property
     def at_bottom(self) -> bool:
@@ -114,7 +111,8 @@ class PageLead(models.Model):
     """One person a page returned — written for every row the page brought back.
 
     Whether the person was new to the store or not: a person on several pages is
-    evidence about each. Rows dropped for no headline or a company at its cap are not
+    evidence about each, and the first page that holds them is the one that brought them
+    in (``frontier`` reads a page's novelty from that). Rows dropped for no headline or a company at its cap are not
     here, and neither is a marked lead or an anchor.
     """
 

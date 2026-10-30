@@ -340,8 +340,15 @@ class BayesianQualifier(GPBaldQualifier):
     def _balance(self, X: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Subsample the majority class to at most _MAX_IMBALANCE_RATIO * minority.
 
-        Prevents the GP from becoming degenerate when one class dominates.
-        Keeps all minority samples and selects majority samples randomly.
+        Prevents the GP from becoming degenerate when one class dominates. Keeps all
+        minority samples, the newest half of the majority's quota, and a seeded draw
+        from the older majority rows for the rest. Rows are in verdict order
+        (``get_labeled_rows``), so the verdict just given always trains the next fit:
+        drawn at random from the whole majority, a new no-fit was in with probability
+        ~108/375 on CaleafTech's batch 5, and its lookalike topped the pool one refit
+        later. The draw is stable: each row keeps one seeded key however many rows
+        follow it (``rand(n + 1)`` begins with ``rand(n)``), and the lowest keys are
+        kept, so one more verdict changes the draw by a row or two, not wholesale.
         """
         n_pos = int(y.sum())
         n_neg = len(y) - n_pos
@@ -356,14 +363,18 @@ class BayesianQualifier(GPBaldQualifier):
         minority_idx = np.where(y == minority_label)[0]
         majority_idx = np.where(y != minority_label)[0]
 
-        chosen = self._rng.choice(majority_idx, size=cap, replace=False)
-        keep = np.concatenate([minority_idx, chosen])
+        n_newest = cap // 2
+        newest = majority_idx[len(majority_idx) - n_newest:] if n_newest else majority_idx[:0]
+        older = majority_idx[:len(majority_idx) - n_newest]
+        row_keys = np.random.RandomState(self._seed).rand(len(y))
+        drawn = older[np.argsort(row_keys[older], kind="stable")[:cap - n_newest]]
+        keep = np.concatenate([minority_idx, drawn, newest])
         keep.sort()
 
         logger.debug(
             "Balancing training set: %d → %d (kept all %d minority, "
-            "subsampled %d → %d majority)",
-            len(y), len(keep), n_min, n_max, cap,
+            "subsampled %d → %d majority, the newest %d always)",
+            len(y), len(keep), n_min, n_max, cap, n_newest,
         )
         return X[keep], y[keep]
 
@@ -501,7 +512,7 @@ class BayesianQualifier(GPBaldQualifier):
 _FITTED: tuple[str, "BayesianQualifier"] | None = None
 
 
-def _label_fingerprint() -> str:
+def label_fingerprint() -> str:
     """A digest of everything the fit reads: which lead carries which verdict, and the
     anchors.
 
@@ -543,7 +554,7 @@ def qualifier_for():
     until the next restart.
 
     **The cache answers that objection instead of reopening it**, because its key *is*
-    the evidence (``_label_fingerprint``). A model can only be handed back when a refit
+    the evidence (``label_fingerprint``). A model can only be handed back when a refit
     would have reproduced it exactly, and the one thing that can change what the GP would
     say — an LLM verdict — always changes the key.
 
@@ -562,7 +573,7 @@ def qualifier_for():
     from openoutfind.core.ml import calibration
     from openoutfind.crm.models import Lead
 
-    if _FITTED is not None and _FITTED[0] == _label_fingerprint():
+    if _FITTED is not None and _FITTED[0] == label_fingerprint():
         logger.debug("ranking model: reusing the fit — no verdict since")
         return _FITTED[1]
 
@@ -573,7 +584,7 @@ def qualifier_for():
     # Fingerprinted *after* the build, because ``ensure_anchors`` may have just written
     # the first anchor set — keying on the pre-build state would miss on the very next
     # call and refit for nothing.
-    _FITTED = (_label_fingerprint(), qualifier)
+    _FITTED = (label_fingerprint(), qualifier)
     return qualifier
 
 

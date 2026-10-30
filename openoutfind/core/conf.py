@@ -97,16 +97,16 @@ CAMPAIGN_CONFIG = {
     #
     # The two costs the rule weighs, in dollars: run time priced at `run_hour_dollars`,
     # plus what the step itself is billed. The same two costs drive `judge_or_search`,
-    # which decides below the bar. A search is one **generation** of the walk, and how many
+    # which decides below the bar. A search is one **round** of the walk, and how many
     # new leads one adds is not a setting — it is measured from the store.
     #
     # **The times below are starting values only.** Each store measures its own as a
-    # running mean (`core/meter.py`: every generation fired, every verdict given), and a
+    # running mean (`core/meter.py`: every round fired, every verdict given), and a
     # setting stands in only until its first measurement.
     #
-    # A generation is 10 Lead Finder pages fired at once, each ready in 1.1–3.6 s, then
-    # up to 2,000 rows embedded in one pass and stored — 2m42s for 1,169 new people on a
-    # fresh store — and free: Lead Finder bills nothing.
+    # A round is 10 Lead Finder pages fired at once, each ready in 1.1–3.6 s, then up to
+    # 2,000 rows embedded in one pass and stored — 2m42s for 1,169 new people on a fresh
+    # store, 0.14 s a new person — and free: Lead Finder bills nothing.
     #
     # A verdict is one candidate judged: a few seconds and an LLM call for a model, and
     # ~40 s for a calling agent under --agent-qualify (178 verdicts in 1h49m on the same
@@ -130,7 +130,8 @@ CAMPAIGN_CONFIG = {
     # 824 MB resident, so 1 GiB is too tight once an OS sits underneath and 2 GiB is not. At
     # this price time is nearly free next to an LLM's bill, so the bill decides the bar.
     "run_hour_dollars": 0.01786,
-    "generation_seconds": 160,
+    "round_seconds": 160,
+    "ingest_seconds_per_lead": 0.14,
     "verdict_seconds_model": 5,
     "verdict_seconds_agent": 40,
     # An agent's verdict longer than this is not measured: the candidate waited on a
@@ -148,23 +149,21 @@ CAMPAIGN_CONFIG = {
     "embedding_model": "BAAI/bge-small-en-v1.5",
 }
 
-# The walk (core/pipeline/walk.py): a genetic algorithm over searches, ranked on how good
-# the people on each one's latest page are. 10 is the initial population the LLM writes,
-# the population kept, and the children bred each generation; selection is one ranking,
-# the top 10 of parents and children (μ + λ), taken at the start of the next generation.
-# A generation is embedded as it lands, so its size is the run's wait: 15 pages of new
-# people took 14½ minutes.
-#
-# The 10 children split across the moves (core/pipeline/moves.py): identity pages the 3
-# fittest survivors not at the bottom one page deeper, and the rest breed new searches. A
-# move with no legal child gives its slot to the next one in this order; slots left after
-# crossover are not fired. If the survivors collapse onto one search's neighbours, this
-# split is where diversity comes back.
+# The walk (core/pipeline/walk.py): a best-first search over the lattice of searches, a
+# batch at a time. `population` is how many searches the LLM writes to start it, fired
+# whole as round 0; every later round fires the `batch` highest-value arms of the frontier
+# (core/pipeline/frontier.py). A round is embedded as it lands, so its size is the run's
+# wait: 15 pages of new people took 14½ minutes, 10 took 2m42s.
 WALK_CONFIG = {
     "population": 10,
-    "moves": {"identity": 3, "stricter": 2, "wider": 2, "swap": 2, "crossover": 1},
-    # Tries per slot before a move gives it up: a draw can repeat a fired or dead search.
-    "tries_per_slot": 10,
+    "batch": 10,
+    # The heaviest terms each field offers a neighbour (core/pipeline/lattice.py): ~100
+    # neighbours a fired search, each valued from the store in microseconds.
+    "terms_per_field": 15,
+    # Pseudo-companies at the store's base rate that a search's rate is shrunk toward:
+    # batch 5's first pages held 4–21 people from about 3 companies, and an unshrunk
+    # ranking keeps whichever page got lucky.
+    "prior_companies": 3,
 }
 
 # What a verdict's model is billed, in dollars per million tokens (input, output), keyed by

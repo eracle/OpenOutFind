@@ -1,12 +1,11 @@
 # tests/test_walk.py
-"""The walk end to end — generations of searches, with Lead Finder stubbed.
+"""The walk end to end — rounds of searches, with Lead Finder stubbed.
 
 The stub answers each search with a few people whose job title is the search's own, so
-every person matches the search that found them and the fitness has something to read.
+every person matches the search that found them and the frontier has something to read.
 """
 from __future__ import annotations
 
-import random
 from unittest.mock import patch
 
 import pytest
@@ -25,7 +24,6 @@ from openoutfind.discovery import Fetched, Page as LeadFinderPage
 from openoutfind.enrichment.bettercontact import BetterContactUnavailable
 
 POPULATION = WALK_CONFIG["population"]
-IDENTITY = WALK_CONFIG["moves"]["identity"]
 TITLES = ["founder", "purchasing", "procurement", "production", "operations", "buyer",
           "extraction", "cultivation", "compliance", "quality", "sourcing", "supply",
           "logistics", "packaging", "formulation"][:POPULATION]
@@ -38,7 +36,7 @@ def _population():
         country="United States", country_code="us", headcount_min=1, headcount_max=50)
 
 
-def _row(url, title, company="Acme"):
+def _row(url, title, company):
     return {"contact_linkedin_profile_url": url, "contact_job_title": title,
             "contact_headline": f"{title} at {company}", "company_name": company,
             "company_keywords": ["cannabis", "thc vape"],
@@ -46,7 +44,8 @@ def _row(url, title, company="Acme"):
 
 
 class FakeLeadFinder:
-    """Answers a search with ``rows`` people titled like it, from ``found`` in the index.
+    """Answers a search with ``rows`` people titled like it, from ``found`` in the index,
+    each at a company of their own.
 
     ``dead`` titles count 0; ``artifacts`` come back empty with a positive count;
     ``outages`` raise. Every call is recorded as ``(title, offset)``.
@@ -70,8 +69,9 @@ class FakeLeadFinder:
         if title in self.artifacts:
             return Fetched(LeadFinderPage([], found(71_000_000)), 1.0)
         slug = title.replace(" ", "-")
-        rows = [_row(f"https://linkedin.com/in/{slug}-{offset}-{i}", title)
-                for i in range(self.rows)]
+        rows = [_row(f"https://linkedin.com/in/{slug}-{offset}-{i}", title,
+                     f"{slug}-co-{offset}-{i}")
+                for i in range(min(self.rows, max(0, self.found - offset)))]
         return Fetched(LeadFinderPage(rows, found(self.found)), 2.0)
 
 
@@ -82,32 +82,39 @@ def site(db, configure):
     return SiteConfig.load()
 
 
-def _run(site, finder, qualifier=None, seed=0):
+def _run(site, finder, floor=0.0):
     with (
         patch("openoutfind.core.pipeline.icp._population_from_llm", return_value=_population()),
         patch("openoutfind.discovery.search", side_effect=finder),
     ):
-        random.seed(seed)  # DEAP's tournament draws from the module's generator
-        return walk.run_generation(site, qualifier, rng=random.Random(seed))
+        return walk.run_round(site, None, floor)
 
 
-class TestTheFirstGeneration:
+def _judge(title_fits: str):
+    """Every stored person titled ``title_fits`` a fit, everyone else a no-fit."""
+    for lead in Lead.objects.filter(deal__isnull=True):
+        fit = lead.source_fields.get("contact_job_title") == title_fits
+        Deal.objects.create(lead=lead, state=DealState.QUALIFIED if fit else DealState.FAILED,
+                            outcome="" if fit else Outcome.WRONG_FIT)
+
+
+class TestTheFirstRound:
     def test_the_written_population_is_fired_whole_at_page_one(self, site):
         finder = FakeLeadFinder()
 
-        generation = _run(site, finder)
+        fired = _run(site, finder)
 
-        assert generation.number == 0 and generation.fired == POPULATION
+        assert fired.number == 0 and fired.fired == POPULATION
         assert sorted(title for title, _ in finder.calls) == sorted(TITLES)
         assert {offset for _, offset in finder.calls} == {0}
-        assert Page.objects.filter(in_population=True).count() == POPULATION
+        assert set(Page.objects.values_list("round", flat=True)) == {0}
 
-    def test_it_ranks_nothing(self, site):
-        """No parents, and none of its people judged yet: there is nothing to rank on."""
-        with patch.object(walk.fitness, "page_fitness") as page_fitness:
+    def test_it_values_nothing(self, site):
+        """None of its people judged yet: there is nothing to value it on."""
+        with patch.object(walk.frontier, "plan") as plan:
             _run(site, FakeLeadFinder())
 
-        page_fitness.assert_not_called()
+        plan.assert_not_called()
 
     def test_every_search_rides_the_customers_shape(self, site):
         _run(site, FakeLeadFinder())
@@ -118,9 +125,10 @@ class TestTheFirstGeneration:
     def test_it_is_measured(self, site):
         _run(site, FakeLeadFinder())
 
-        assert meter.totals(meter.GENERATION_SECONDS)[1] == 1
-        assert meter.totals(meter.GENERATION_LEADS) == (3.0 * POPULATION, 1)
+        assert meter.totals(meter.ROUND_SECONDS)[1] == 1
+        assert meter.totals(meter.ROUND_LEADS) == (3.0 * POPULATION, 1)
         assert meter.totals(meter.SEARCH_READY_SECONDS) == (2.0 * POPULATION, POPULATION)
+        assert meter.totals(meter.INGEST_SECONDS_PER_LEAD)[1] == 1
 
 
 class TestTakingPagesIn:
@@ -135,8 +143,8 @@ class TestTakingPagesIn:
         assert page.leads.count() == 3
         assert known in page.leads.all()
 
-    def test_a_generation_is_embedded_in_one_call(self, site):
-        """Embedding is most of a generation's time; one pass sorts every page's people."""
+    def test_a_round_is_embedded_in_one_call(self, site):
+        """Embedding is most of a round's time; one pass sorts every page's people."""
         from openoutfind.core.ml import embeddings
 
         _run(site, FakeLeadFinder())
@@ -146,7 +154,7 @@ class TestTakingPagesIn:
 
     def test_a_person_on_two_pages_is_stored_once_and_on_both(self, site):
         finder = FakeLeadFinder()
-        shared = _row("https://linkedin.com/in/shared", "founder")
+        shared = _row("https://linkedin.com/in/shared", "founder", "Shared")
 
         def both(api_key, filters, limit, offset, first_poll_s):
             page, ready = finder(api_key, filters, limit, offset, first_poll_s)
@@ -176,10 +184,12 @@ class TestTakingPagesIn:
         search = Search.objects.get(terms__title=["founder"])
         assert not search.dead and not search.pages.exists()
 
-    def test_an_outage_leaves_the_search_to_fire_again(self, site):
+    def test_an_outage_leaves_the_search_on_the_frontier(self, site):
         _run(site, FakeLeadFinder(outages={"founder"}))
+        _judge("purchasing")
         finder = FakeLeadFinder()
-        _run(site, finder)
+        with patch.dict(walk.WALK_CONFIG, {"batch": 500}):
+            _run(site, finder)
 
         assert ("founder", 0) in finder.calls
 
@@ -191,71 +201,65 @@ class TestTakingPagesIn:
             _run(site, FakeLeadFinder(outages={"founder"}, error=refusal))
 
 
-class TestBreeding:
-    def test_the_next_generation_breeds_and_keeps_its_children_unranked(self, site):
+class TestTheNextRound:
+    def test_it_fires_the_frontiers_batch(self, site):
         _run(site, FakeLeadFinder())
+        _judge("founder")
         finder = FakeLeadFinder()
 
-        generation = _run(site, finder, seed=1)
+        fired = _run(site, finder)
 
-        assert generation.number == 1
-        assert len(finder.calls) == POPULATION
-        assert Page.objects.filter(in_population=True).count() == 2 * POPULATION
-        assert Page.objects.filter(in_population=True, generation=1).count() == POPULATION
+        assert fired.number == 1
+        assert 0 < len(finder.calls) <= WALK_CONFIG["batch"]
+        assert set(Page.objects.filter(round=1).values_list("round", flat=True)) == {1}
 
-    def test_identity_pages_the_fittest_survivors_one_page_deeper(self, site):
+    def test_the_search_whose_people_fit_pages_deeper(self, site):
         _run(site, FakeLeadFinder())
+        _judge("founder")
         finder = FakeLeadFinder()
 
-        _run(site, finder, seed=1)
+        _run(site, finder)
 
-        deeper = [title for title, offset in finder.calls if offset == PAGE_SIZE]
-        assert len(deeper) == IDENTITY
+        assert ("founder", PAGE_SIZE) in finder.calls
+        assert all(offset == 0 for title, offset in finder.calls if title != "founder")
 
-    def test_a_search_at_the_bottom_is_not_paged_again(self, site):
-        """Its first page held everyone the provider counts."""
+    def test_a_drained_search_is_neither_paged_nor_narrowed(self, site):
+        """Its first page held everyone the provider counts: anything holding all its
+        terms can only re-find people the store already has."""
         _run(site, FakeLeadFinder(found=3))
+        _judge("founder")
         finder = FakeLeadFinder(found=3)
 
-        _run(site, finder, seed=1)
+        _run(site, finder)
 
         assert all(offset == 0 for _, offset in finder.calls)
+        founder = Terms.written(title="founder")
+        assert not any(search.query.holds_all_of(founder)
+                       for search in Search.objects.filter(origin=Search.Origin.NEIGHBOUR))
 
-    def test_the_survivors_are_the_fittest_on_the_verdicts_judged_since(self, site):
-        """Ranked at the start of a generation, on the verdicts that came in after the
-        last one fired: the first time 20 pages compete for 10 places."""
-        _run(site, FakeLeadFinder())
-        _run(site, FakeLeadFinder(), seed=1)
-        for lead in Lead.objects.filter(source_fields__contact_job_title="founder"):
-            Deal.objects.create(lead=lead, state=DealState.QUALIFIED)
-        for lead in Lead.objects.exclude(source_fields__contact_job_title="founder"):
-            Deal.objects.create(lead=lead, state=DealState.FAILED, outcome=Outcome.WRONG_FIT)
-
-        with patch.object(walk, "breed", wraps=walk.breed) as breed:
-            _run(site, FakeLeadFinder(), seed=2)
-
-        parents = breed.call_args.args[0]
-        assert len(parents) == POPULATION
-        assert parents[0].terms.title == {"founder"}
-        assert parents[0].fitness.values[0] == 1.0
-        kept = Page.objects.filter(in_population=True).exclude(generation=2)
-        assert kept.count() == POPULATION
-        assert kept.filter(search__terms__title=["founder"]).exists()
-
-    def test_no_child_repeats_a_fired_search_or_holds_a_dead_ones_terms(self, site):
+    def test_no_arm_repeats_a_fired_search_or_holds_a_dead_ones_terms(self, site):
         _run(site, FakeLeadFinder(dead={"purchasing"}))
-        _run(site, FakeLeadFinder(), seed=1)
+        _judge("founder")
+        _run(site, FakeLeadFinder())
 
         dead = Terms.written(title="purchasing")
-        for search in Search.objects.filter(origin=Search.Origin.BRED):
+        for search in Search.objects.filter(origin=Search.Origin.NEIGHBOUR):
             assert not search.query.holds_all_of(dead)
         assert Search.objects.filter(pages__number=1).count() == Page.objects.filter(
             number=1).count()
 
+    def test_nothing_is_fired_when_no_arm_beats_the_floor(self, site):
+        _run(site, FakeLeadFinder())
+        _judge("founder")
+        finder = FakeLeadFinder()
+
+        assert _run(site, finder, floor=1.0) is None
+        assert finder.calls == []
+
     def test_a_walk_with_nothing_left_to_fire_says_so(self, site):
         _run(site, FakeLeadFinder(dead=set(TITLES)))
 
-        assert _run(site, FakeLeadFinder(), seed=1) is None
+        assert _run(site, FakeLeadFinder()) is None
 
 
 class TestThePool:
@@ -265,43 +269,37 @@ class TestThePool:
 
         assert meter.totals(meter.POOL_FIT) == (0.0, 0)
 
-    def test_a_generation_of_known_people_leaves_the_pool_as_it_was(self, site):
-        _run(site, FakeLeadFinder(rows=0, found=0))
+    def test_a_round_of_known_people_leaves_the_pool_as_it_was(self, site):
+        _run(site, FakeLeadFinder())
+        _judge("founder")
         meter.record(meter.POOL_FIT, 0)
-        _run(site, FakeLeadFinder(rows=0, found=0), seed=1)
+        _run(site, FakeLeadFinder(rows=0))
 
         assert meter.totals(meter.POOL_FIT) == (0.0, 1)
-
-
-class TestLastChildrenFitness:
-    def test_none_before_the_first_generation(self, db):
-        assert walk.last_children_fitness(None) is None
-
-    def test_the_mean_over_the_last_generations_pages(self, site):
-        _run(site, FakeLeadFinder())
-        for lead in Lead.objects.filter(source_fields__contact_job_title="founder"):
-            Deal.objects.create(lead=lead, state=DealState.QUALIFIED)
-
-        assert walk.last_children_fitness(None) == pytest.approx(1 / POPULATION)
 
 
 class TestDiscover:
     def test_no_finder_key_is_a_no_op(self, db, configure):
         configure(product_docs="p", campaign_target="t")
-        with patch.object(walk, "run_generation") as generation:
+        with patch.object(walk, "run_round") as fired:
             assert discover(SiteConfig.load()) is False
-        generation.assert_not_called()
+        fired.assert_not_called()
 
     def test_no_icp_text_is_a_no_op(self, db, configure):
         configure(bettercontact_api_key="k")
-        with patch.object(walk, "run_generation") as generation:
+        with patch.object(walk, "run_round") as fired:
             assert discover(SiteConfig.load()) is False
-        generation.assert_not_called()
+        fired.assert_not_called()
 
-    def test_a_fired_generation_is_work(self, site):
+    def test_a_fired_round_is_work(self, site):
         with (
             patch("openoutfind.core.pipeline.icp._population_from_llm",
                   return_value=_population()),
             patch("openoutfind.discovery.search", side_effect=FakeLeadFinder()),
         ):
             assert discover(site) is True
+
+    def test_the_floor_reaches_the_round(self, site):
+        with patch.object(walk, "run_round", return_value=None) as fired:
+            discover(site, None, 0.4)
+        assert fired.call_args.args[2] == 0.4

@@ -150,9 +150,10 @@ class Lead(models.Model):
         from openoutfind.crm.models.deal import Deal
         from openoutfind.crm.models import DealState
 
+        # In verdict order (a deal is created with its verdict): balancing keeps the newest.
         deals = Deal.objects.filter(
             lead_id__isnull=False,
-        ).values_list("lead_id", "state", "outcome")
+        ).order_by("pk").values_list("lead_id", "state", "outcome")
 
         label_by_lead: dict[int, int] = {}
         for lid, state, outcome in deals:

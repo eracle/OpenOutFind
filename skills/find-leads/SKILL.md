@@ -187,8 +187,8 @@ outfind find 10 --agent-qualify --population '{"searches": [
 
 **Write 10 whole searches, each a person you would want to find** — "a head of procurement at a
 dental clinic in California" is `{"title": "head procurement", "tag": "dental clinic", "state":
-"California"}`. The model knows which titles go with which companies; the walk then breeds new
-searches from the ones whose people turn out best. Spread them: different titles, different kinds
+"California"}`. The model knows which titles go with which companies; the walk then fires the
+searches next to them whose people would fit best. Spread them: different titles, different kinds
 of company, some broad and some narrow.
 
 - **`title`** — the job title's words. Every word is required, in any order, and small words

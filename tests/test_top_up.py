@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from openoutfind.core.ml.qualifier import BayesianQualifier
+from openoutfind.core.pipeline.judge_or_search import Decision
 from openoutfind.core.pipeline.top_up import top_up
 
 
@@ -74,7 +75,7 @@ def test_below_the_bar_exploit_judges_the_whole_pool_when_judging_is_cheaper(sit
         patch.object(qualifier, "predict_probs", return_value=np.array([0.37, 0.2])),
         patch("openoutfind.core.pipeline.top_up.fetch_qualification_candidates",
               return_value=pool),
-        patch("openoutfind.core.pipeline.top_up.judging_pays", return_value=True),
+        patch("openoutfind.core.pipeline.top_up.decide", return_value=Decision(True, 0.37)),
         patch("openoutfind.core.pipeline.top_up.run_qualification",
               return_value="https://example.com/in/alice/") as qualify,
         patch("openoutfind.core.pipeline.top_up.discover", return_value=True) as discover,
@@ -95,14 +96,14 @@ def test_below_the_bar_exploit_searches_when_searching_is_cheaper(site_config):
         patch.object(qualifier, "predict_probs", return_value=np.array([0.5])),
         patch("openoutfind.core.pipeline.top_up.fetch_qualification_candidates",
               return_value=[_Candidate()]),
-        patch("openoutfind.core.pipeline.top_up.judging_pays", return_value=False),
+        patch("openoutfind.core.pipeline.top_up.decide", return_value=Decision(False, 0.4)),
         patch("openoutfind.core.pipeline.top_up.run_qualification") as qualify,
         patch("openoutfind.core.pipeline.top_up.discover", return_value=True) as discover,
     ):
         assert top_up(site_config, qualifier) is True
 
     assert not qualify.called
-    assert discover.called
+    assert discover.call_args.args[2] == 0.4  # the round must beat the best lead waiting
 
 
 @pytest.mark.django_db
@@ -115,7 +116,7 @@ def test_with_nothing_left_to_search_the_pool_is_judged(site_config):
         patch.object(qualifier, "predict_probs", return_value=np.array([0.5])),
         patch("openoutfind.core.pipeline.top_up.fetch_qualification_candidates",
               return_value=[_Candidate()]),
-        patch("openoutfind.core.pipeline.top_up.judging_pays", return_value=False),
+        patch("openoutfind.core.pipeline.top_up.decide", return_value=Decision(False, 0.4)),
         patch("openoutfind.core.pipeline.top_up.run_qualification",
               return_value="https://example.com/in/alice/") as qualify,
         patch("openoutfind.core.pipeline.top_up.discover", return_value=False),

@@ -349,6 +349,38 @@ class TestAnchors:
                           side_effect=AssertionError("must not balance while anchored")):
             assert qualifier.acquisition_mode() is not None
 
+    def test_balancing_always_keeps_the_newest_verdicts(self):
+        """A no-fit just given must train the next fit, or its lookalike tops the pool."""
+        qualifier = BayesianQualifier(seed=42)
+        X = np.arange(40, dtype=np.float64).reshape(40, 1)
+        y = np.array([1] * 5 + [0] * 35, dtype=np.float64)
+
+        X_fit, y_fit = qualifier._balance(X, y)
+
+        assert int((y_fit == 0).sum()) == 10
+        assert int(y_fit.sum()) == 5
+        assert set(range(35, 40)) <= set(X_fit.ravel().astype(int))
+
+    def test_one_more_verdict_does_not_reshuffle_the_older_draw(self):
+        qualifier = BayesianQualifier(seed=42)
+        X = np.arange(40, dtype=np.float64).reshape(40, 1)
+        y = np.array([1] * 5 + [0] * 35, dtype=np.float64)
+
+        before, _ = qualifier._balance(X, y)
+        after, _ = qualifier._balance(np.vstack([X, [[40.0]]]), np.append(y, 0.0))
+
+        dropped = set(before.ravel().astype(int)) - set(after.ravel().astype(int))
+        assert len(dropped) <= 1
+
+    def test_balancing_leaves_a_balanced_set_alone(self):
+        qualifier = BayesianQualifier(seed=42)
+        X = np.zeros((6, 1))
+        y = np.array([1, 1, 0, 0, 0, 0], dtype=np.float64)
+
+        X_fit, y_fit = qualifier._balance(X, y)
+
+        assert len(y_fit) == 6
+
     def test_warm_start_leaves_anchors_intact(self):
         """Boot order is warm_start then anchor, but neither may clobber the other."""
         qualifier = BayesianQualifier(seed=42)

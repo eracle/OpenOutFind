@@ -9,8 +9,8 @@ from openoutfind.discovery import describe_filters
 class SearchAdmin(admin.ModelAdmin):
     """The walk's searches — what each one asks the provider, and how far it paged.
 
-    There is no fitness column: a page's fitness is recomputed from its people on the GP
-    as it stands (``fitness.page_fitness``), so a stored number would only show a stale one.
+    There is no value column: the frontier values a search from the store's people on the
+    GP as it stands (``frontier``), so a stored number would only show a stale one.
     """
 
     list_display = ("id", "query_filters", "origin", "move", "leads_found", "dead",
@@ -33,13 +33,11 @@ class SearchAdmin(admin.ModelAdmin):
 
 @admin.register(Page)
 class PageAdmin(admin.ModelAdmin):
-    """Every fired page — the walk's individuals — and which the population holds."""
+    """Every fired page, and the round that fired it."""
 
-    list_display = ("__str__", "generation", "rows", "people", "in_population",
-                    "created_at")
-    list_filter = ("in_population", "generation")
-    readonly_fields = ("search", "number", "generation", "rows", "in_population",
-                       "created_at")
+    list_display = ("__str__", "round", "rows", "people", "created_at")
+    list_filter = ("round",)
+    readonly_fields = ("search", "number", "round", "rows", "created_at")
 
     @admin.display(description="people")
     def people(self, obj):

@@ -151,7 +151,7 @@ class TestQualificationScan:
 def _page():
     terms = Terms.written(title="quality")
     search = Search.objects.create(terms=terms.as_json(), key=terms.key)
-    return Page.objects.create(search=search, number=1, generation=0, rows=2)
+    return Page.objects.create(search=search, number=1, round=0, rows=2)
 
 
 class TestDiscovery:

@@ -200,27 +200,26 @@ def _draw(qualifier, pool: list, rng: random.Random):
 # ── The costs ──
 
 def leads_per_search() -> float:
-    """New leads a search adds on this store — a search is one generation of the walk.
+    """New leads a search adds on this store — a search is one round of the walk.
 
-    The running mean of each generation's lead count after its harvest less before
-    (``meter.GENERATION_LEADS``). ``0.0`` before the first generation.
+    The running mean of each round's lead count after its harvest less before
+    (``meter.ROUND_LEADS``). ``0.0`` before the first round.
     """
-    return meter.mean(meter.GENERATION_LEADS, 0.0)
+    return meter.mean(meter.ROUND_LEADS, 0.0)
 
 
-def _dollars(seconds: float, billed: float) -> float:
+def dollars(seconds: float, billed: float = 0.0) -> float:
     """A step's cost: its run time at ``run_hour_dollars``, plus what it is billed."""
     return seconds / 3600 * CAMPAIGN_CONFIG["run_hour_dollars"] + billed
 
 
 def search_cost() -> float:
-    """What one search — a generation of the walk — costs, in dollars: its measured time,
+    """What one search — a round of the walk — costs, in dollars: its measured time,
     since Lead Finder bills nothing.
 
-    ``generation_seconds`` until this store has run a generation.
+    ``round_seconds`` until this store has run a round.
     """
-    return _dollars(meter.mean(meter.GENERATION_SECONDS,
-                               CAMPAIGN_CONFIG["generation_seconds"]), 0.0)
+    return dollars(meter.mean(meter.ROUND_SECONDS, CAMPAIGN_CONFIG["round_seconds"]))
 
 
 def verdict_cost() -> float:
@@ -236,9 +235,9 @@ def verdict_cost() -> float:
 
     if agent_qualify.active():
         seconds = meter.mean(meter.VERDICT_SECONDS_AGENT, CAMPAIGN_CONFIG["verdict_seconds_agent"])
-        return _dollars(seconds, CAMPAIGN_CONFIG["verdict_dollars_agent"])
+        return dollars(seconds, CAMPAIGN_CONFIG["verdict_dollars_agent"])
     seconds = meter.mean(meter.VERDICT_SECONDS_MODEL, CAMPAIGN_CONFIG["verdict_seconds_model"])
-    return _dollars(seconds, model_verdict_bill(SiteConfig.load().ai_model))
+    return dollars(seconds, model_verdict_bill(SiteConfig.load().ai_model))
 
 
 def model_verdict_bill(ai_model: str) -> float:
