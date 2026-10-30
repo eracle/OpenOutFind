@@ -32,8 +32,11 @@ places through ``current_threshold``.
 
 Choices worth knowing before changing anything:
 
-- **√N of the pool as it stands, every pass.** Discovery growing the pool raises the
-  target by itself, so there is no redraw rule and no sample rounds.
+- **√N of the pool when the arm switches on, then closed.** Once a bar is measured the
+  arm draws no more, however the pool grows. Reopening on growth let every round raise
+  the target: on batch 5 rounds of 200–400 mostly off-industry people took it from 40
+  to 53, and each new draw was a stranger judged at random while the bar stayed at
+  0.19–0.21.
 - **Scores are out of fold, on the current model** — not the score at draw time. Early
   draws were scored by a GP many verdicts older, and the calibration verdicts themselves
   (mostly low-band rejections) move the scores the bar is compared against.
@@ -140,8 +143,11 @@ def verdict_counts() -> tuple[int, int]:
 
 
 def should_calibrate(pool: list) -> bool:
-    """Whether this pass belongs to the calibrate arm: switched on and short of √N."""
-    if not is_switched_on(len(pool)):
+    """Whether this pass belongs to the calibrate arm: switched on, short of √N, and no
+    bar measured yet."""
+    from openoutfind.core.models import CalibrationBar
+
+    if not is_switched_on(len(pool)) or CalibrationBar.objects.exists():
         return False
     return len(_labels()) < target_size(len(pool))
 

@@ -60,12 +60,25 @@ def test_a_small_pool_never_calibrates():
 
 
 @pytest.mark.django_db
-def test_the_arm_stops_at_root_n_and_pool_growth_reopens_it():
+def test_the_arm_stops_at_root_n():
+    for i in range(39):
+        _judged_draw(band=i % 8, label=i % 2)
+    assert calibration.should_calibrate([object()] * 1600)      # √N = 40, 39 in
+
+    _judged_draw(band=7, label=0)
+    assert not calibration.should_calibrate([object()] * 1600)  # 40 in
+
+
+@pytest.mark.django_db
+def test_once_a_bar_is_measured_pool_growth_does_not_reopen_the_arm():
+    """Batch 5: each round's off-industry people raised √N, 40 → 53 random draws."""
+    from openoutfind.core.models import CalibrationBar
+
     for i in range(40):
         _judged_draw(band=i % 8, label=i % 2)
+    CalibrationBar.objects.create(threshold=0.21, break_even=0.12, n_verdicts=40)
 
-    assert not calibration.should_calibrate([object()] * 1600)  # √N = 40, 40 in
-    assert calibration.should_calibrate([object()] * 2500)      # √N = 50
+    assert not calibration.should_calibrate([object()] * 2500)  # √N = 50
 
 
 # ── The draw ──
