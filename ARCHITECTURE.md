@@ -657,13 +657,18 @@ rather than pinned to a single hallucination.
   anchors were sized to, but reading it off the real positives rather than off the anchor count is
   what lets the anchors stay forever without freezing the engine in its cold-phase acquisition
   strategy forever too.
-- **Balancing is skipped only while `is_cold` holds.** `_balance` caps the majority at 2× the
-  minority; early on, with the positive class still mostly invented, subsampling would throw away
-  real rejections to match it — and balancing has nothing useful to do yet regardless. Once real
-  positives reach `ANCHOR_COUNT`, balancing takes over even though the anchors keep contributing
-  to every fit after that: there is now enough real evidence for the balance to mean something,
-  and 3 fixed synthetic positives are a small, constant addition next to a growing real count.
-  Their pull stays local to their own neighbourhood (RBF kernel), which is the shape wanted.
+- **Balancing runs in the early window only** (`BayesianQualifier.balances`). `_balance` caps the
+  majority at 2× the minority, drawn at random. It is skipped while `is_cold` holds: with the
+  positive class still mostly invented, subsampling would throw away real rejections to match it.
+  Once real positives reach `ANCHOR_COUNT` it takes over — the anchors keep contributing to every
+  fit, but there is now enough real evidence for the balance to mean something, and 3 fixed
+  synthetic positives are a small, constant addition next to a growing real count; their pull
+  stays local to their own neighbourhood (RBF kernel), which is the shape wanted. **At
+  `_BALANCE_UNTIL_POSITIVES` (10) real fits it stops**, and every verdict trains: past a handful
+  of fits, subsampling only drops verdicts the run paid for — CaleafTech's batch 5 at 54 fits kept
+  108 of 375 no-fits, a fresh no-fit was usually left out, and its lookalike topped the pool on
+  the next fit — while the scores need only rank, since `frontier.fit_rate_map` turns them into
+  fit rates. 10 is a placeholder until a replay measures where balancing stops helping.
 - **They are on no page.** An anchor was never returned by a search, so it scores none; it reaches
   the walk only through the GP, which rates the real people on each page.
 

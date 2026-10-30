@@ -349,37 +349,30 @@ class TestAnchors:
                           side_effect=AssertionError("must not balance while anchored")):
             assert qualifier.acquisition_mode() is not None
 
-    def test_balancing_always_keeps_the_newest_verdicts(self):
-        """A no-fit just given must train the next fit, or its lookalike tops the pool."""
+    @staticmethod
+    def _real(n_pos: int, n_neg: int) -> BayesianQualifier:
         qualifier = BayesianQualifier(seed=42)
-        X = np.arange(40, dtype=np.float64).reshape(40, 1)
-        y = np.array([1] * 5 + [0] * 35, dtype=np.float64)
+        rng = np.random.RandomState(3)
+        for label in [1] * n_pos + [0] * n_neg:
+            qualifier.update(rng.randn(384).astype(np.float32), label)
+        return qualifier
 
-        X_fit, y_fit = qualifier._balance(X, y)
+    def test_a_few_real_fits_are_balanced(self):
+        qualifier = self._real(n_pos=4, n_neg=40)
 
-        assert int((y_fit == 0).sum()) == 10
-        assert int(y_fit.sum()) == 5
-        assert set(range(35, 40)) <= set(X_fit.ravel().astype(int))
+        assert qualifier.balances
+        _, y_fit = qualifier._balance(*qualifier._training_arrays())
+        assert len(y_fit) == 12
 
-    def test_one_more_verdict_does_not_reshuffle_the_older_draw(self):
-        qualifier = BayesianQualifier(seed=42)
-        X = np.arange(40, dtype=np.float64).reshape(40, 1)
-        y = np.array([1] * 5 + [0] * 35, dtype=np.float64)
+    def test_past_the_early_window_every_verdict_trains(self):
+        """Subsampling there drops paid-for verdicts: a fresh no-fit was usually left
+        out, and its lookalike topped the pool."""
+        qualifier = self._real(n_pos=BayesianQualifier._BALANCE_UNTIL_POSITIVES, n_neg=60)
 
-        before, _ = qualifier._balance(X, y)
-        after, _ = qualifier._balance(np.vstack([X, [[40.0]]]), np.append(y, 0.0))
-
-        dropped = set(before.ravel().astype(int)) - set(after.ravel().astype(int))
-        assert len(dropped) <= 1
-
-    def test_balancing_leaves_a_balanced_set_alone(self):
-        qualifier = BayesianQualifier(seed=42)
-        X = np.zeros((6, 1))
-        y = np.array([1, 1, 0, 0, 0, 0], dtype=np.float64)
-
-        X_fit, y_fit = qualifier._balance(X, y)
-
-        assert len(y_fit) == 6
+        assert not qualifier.balances
+        with patch.object(BayesianQualifier, "_balance",
+                          side_effect=AssertionError("must not balance past the window")):
+            assert qualifier._fit_if_needed()
 
     def test_warm_start_leaves_anchors_intact(self):
         """Boot order is warm_start then anchor, but neither may clobber the other."""

@@ -5,8 +5,8 @@ The domain-agnostic engine (the GP pipeline, P(f>0.5), BALD, the balance-driven
 acquisition axis) lives in ``openoutlearn.GPBaldQualifier`` — extracted once this
 module and OpenOutNews's qualifier had converged on identical code under two
 different domain labels. ``BayesianQualifier`` adds what's genuinely lead-gen
-specific: cold-start anchors, majority-class balancing gated on the cold phase,
-and the Django-backed ranking/explain helpers.
+specific: cold-start anchors, majority-class balancing in the early window between
+the cold phase and a handful of real fits, and the Django-backed ranking/explain helpers.
 """
 from __future__ import annotations
 
@@ -163,8 +163,8 @@ def _explain_score(pipeline, embedding: np.ndarray) -> float:
 
 class BayesianQualifier(GPBaldQualifier):
     """The shared GP+BALD engine (``openoutlearn.GPBaldQualifier``), plus what's
-    genuinely lead-gen specific: cold-start anchors, majority-class balancing
-    gated on the cold phase, and Django-backed ranking/explain.
+    genuinely lead-gen specific: cold-start anchors, majority-class balancing in
+    the early window (``balances``), and Django-backed ranking/explain.
 
     Training data is accumulated incrementally; the GPR is lazily
     re-fitted on ALL accumulated data (real observations + anchors)
@@ -287,6 +287,19 @@ class BayesianQualifier(GPBaldQualifier):
     # Beyond this, the majority class is subsampled to prevent degenerate
     # predictions when labels are heavily imbalanced.
     _MAX_IMBALANCE_RATIO = 2
+    # Real fits past which the GP trains on every verdict. Balancing is for the early
+    # window, when a handful of fits is outweighed by the rejections around them; past
+    # it, subsampling drops verdicts the run paid for (batch 5 at 54 fits kept 108 of
+    # 375 no-fits, so a fresh one was usually left out and its lookalike topped the
+    # pool), and scores need only rank — ``frontier.fit_rate_map`` turns them into fit
+    # rates. 10 is a placeholder until a replay measures where balancing stops helping.
+    _BALANCE_UNTIL_POSITIVES = 10
+
+    @property
+    def balances(self) -> bool:
+        """Whether a fit subsamples the majority class: past the cold phase, while real
+        fits are still fewer than ``_BALANCE_UNTIL_POSITIVES``."""
+        return not self.is_cold and self.n_real_positives < self._BALANCE_UNTIL_POSITIVES
 
     def _fit_if_needed(self) -> bool:
         """Fit StandardScaler + GPR pipeline if dirty and feasible.  Returns True when model is usable."""
@@ -306,8 +319,9 @@ class BayesianQualifier(GPBaldQualifier):
         # during the cold phase: subsampling would throw away real rejections to match a
         # positive class still mostly invented. It takes over once real acceptances reach
         # ANCHOR_COUNT — the anchors keep contributing after that, but there is now enough
-        # real evidence for the balance to mean something.
-        X_fit, y_fit = (X_arr, y_arr) if self.is_cold else self._balance(X_arr, y_arr)
+        # real evidence for the balance to mean something, and stops at
+        # _BALANCE_UNTIL_POSITIVES, past which every verdict trains (``balances``).
+        X_fit, y_fit = self._balance(X_arr, y_arr) if self.balances else (X_arr, y_arr)
         n = X_fit.shape[0]
 
         # The kernel is searched only when the labels have grown 25% since the last search
@@ -340,15 +354,8 @@ class BayesianQualifier(GPBaldQualifier):
     def _balance(self, X: np.ndarray, y: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         """Subsample the majority class to at most _MAX_IMBALANCE_RATIO * minority.
 
-        Prevents the GP from becoming degenerate when one class dominates. Keeps all
-        minority samples, the newest half of the majority's quota, and a seeded draw
-        from the older majority rows for the rest. Rows are in verdict order
-        (``get_labeled_rows``), so the verdict just given always trains the next fit:
-        drawn at random from the whole majority, a new no-fit was in with probability
-        ~108/375 on CaleafTech's batch 5, and its lookalike topped the pool one refit
-        later. The draw is stable: each row keeps one seeded key however many rows
-        follow it (``rand(n + 1)`` begins with ``rand(n)``), and the lowest keys are
-        kept, so one more verdict changes the draw by a row or two, not wholesale.
+        Prevents the GP from becoming degenerate when one class dominates.
+        Keeps all minority samples and selects majority samples randomly.
         """
         n_pos = int(y.sum())
         n_neg = len(y) - n_pos
@@ -363,18 +370,14 @@ class BayesianQualifier(GPBaldQualifier):
         minority_idx = np.where(y == minority_label)[0]
         majority_idx = np.where(y != minority_label)[0]
 
-        n_newest = cap // 2
-        newest = majority_idx[len(majority_idx) - n_newest:] if n_newest else majority_idx[:0]
-        older = majority_idx[:len(majority_idx) - n_newest]
-        row_keys = np.random.RandomState(self._seed).rand(len(y))
-        drawn = older[np.argsort(row_keys[older], kind="stable")[:cap - n_newest]]
-        keep = np.concatenate([minority_idx, drawn, newest])
+        chosen = self._rng.choice(majority_idx, size=cap, replace=False)
+        keep = np.concatenate([minority_idx, chosen])
         keep.sort()
 
         logger.debug(
             "Balancing training set: %d → %d (kept all %d minority, "
-            "subsampled %d → %d majority, the newest %d always)",
-            len(y), len(keep), n_min, n_max, cap, n_newest,
+            "subsampled %d → %d majority)",
+            len(y), len(keep), n_min, n_max, cap,
         )
         return X[keep], y[keep]
 
