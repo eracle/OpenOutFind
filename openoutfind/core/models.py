@@ -205,3 +205,19 @@ class Brief(models.Model):
 
     def __str__(self):
         return f"brief by {self.written_by}, {self.updated_at:%Y-%m-%d %H:%M}"
+
+
+class CompanyEnrichPage(models.Model):
+    """One explicitly authorized paid request, retained to prevent accidental replay.
+
+    A reservation is committed before HTTP. A response is saved before embedding, so
+    local work can resume without buying the page again. An ambiguous request is never
+    repeated under the same operator-supplied request ID.
+    """
+
+    request_id = models.CharField(max_length=64, unique=True)
+    query = models.JSONField()
+    maximum_credits = models.PositiveIntegerField()
+    response = models.JSONField(null=True, blank=True)
+    imported = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)

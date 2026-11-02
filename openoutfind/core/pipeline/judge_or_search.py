@@ -70,7 +70,13 @@ def decide(qualifier, candidates) -> Decision:
     from openoutfind.core.models import Page
     from openoutfind.core.pipeline import frontier
 
+    from openoutfind.core.discovery_source import current
+
     floor = best_waiting(qualifier, candidates, frontier.fit_rate_map())
+    if current() is not None:
+        # The selected paid source is one bounded page, not a free frontier arm.
+        # Exhaust useful local qualification work before asking it for anything.
+        return Decision(True, floor)
     if not Page.objects.exists():
         return Decision(True, floor)
     fits, verdicts = meter.totals(meter.POOL_FIT)

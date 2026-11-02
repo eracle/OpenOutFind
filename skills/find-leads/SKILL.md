@@ -84,8 +84,8 @@ Three things about `N` that are easy to get wrong:
 
 ### What costs money
 
-Discovery and qualification are free (they cost only the user's own LLM key). **The address lookup
-is the only paid step**, and it is opt-in:
+Default BetterContact discovery and qualification cost only the user's own LLM key.
+**Email lookup and optional CompanyEnrich discovery are separately opt-in paid steps**:
 
 - a bare `find N` **cannot** spend a credit, however many leads are queued past the confidence gate;
 - `--emails` permits buying for whatever is ready;
@@ -95,6 +95,41 @@ is the only paid step**, and it is opt-in:
 **Do not add `emails` or `--emails` unless the user asked for email addresses.** If they said
 "find me leads", run the free form and tell them the paid form exists. A lead with no address still
 exports — the row carries the person, the company and the reason with a blank `email`.
+
+### Optional CompanyEnrich discovery (paid)
+
+CompanyEnrich supplies B2B professional profiles, without emails or phone numbers.
+Never select it merely because `OPENOUTFIND_COMPANYENRICH_API_KEY` is present. Only
+use it when the user authorizes paid discovery and its maximum credit reservation:
+
+```bash
+outfind find 5 --companyenrich-query people.json \
+  --companyenrich-request-id founders-page-1 --discovery-credit-budget 20
+```
+
+All three flags are required. The JSON query uses the direct people-search filters:
+domains/company-name query, titles, countries, seniority, department, UTC join/start
+dates, education, exclusions, page and pageSize. Size defaults to 10, maximum 100;
+reserve **2 credits per requested profile**, at the currently published rate. Ten
+profiles cost at most 20 credits at that rate, regardless of how many qualify. This
+makes at most one request; a larger budget never buys additional pages. No
+`companyFilter`, compound search, expansions or automatic pagination. A bare `find N`
+still uses the free BetterContact path. Discovery authorization never implies emails.
+
+Reuse the exact query and **same request ID** when answering `population_pending` or
+`qualify_pending` or resuming local failures. The response is saved before embedding.
+A timeout/HTTP error is not retried; an ambiguous reserved ID cannot be submitted
+again. Check provider usage before authorizing a new ID for a retry, which may charge
+again. A new ID/different database is a new purchase, not a resume. A page without
+enough fits ends `goal_unreached`; do not silently add pages to meet the goal.
+
+CompanyEnrich data is excluded from the shared contacts hub, including later hub
+lookups/email give-back. The existing qualifier still sends text to the user's LLM,
+and CSV/JSON still goes to the user's chosen tools. API key configuration is required
+instead of BetterContact for this source; email lookup still requires an email finder.
+Standalone `check`/`status` describe the default source. `--json` run metadata adds
+`discovery`; exported columns and `ErrorType` values stay the same. Full setup,
+query example and provider pricing caveat: [docs/companyenrich.md](../../docs/companyenrich.md).
 
 ### Other flags
 
