@@ -10,6 +10,49 @@ export** — off licensed data, with no social-network account and no scraping.
 reason the LLM chose it. Everything downstream of that file — the message, the mailbox, the
 sequence, the opt-out — belongs to whatever tool the operator already sends with.
 
+## Explicit paid source: CompanyEnrich
+
+CompanyEnrich is a B2B company/people data API. Its integration is an optional,
+provider-selected page source (`core/discovery_source.py`), separate from the default
+free BetterContact lattice and the email-resolver seam. The CLI requires
+`--companyenrich-query PATH`, `--companyenrich-request-id ID` and
+`--discovery-credit-budget N` together. Only that invocation reads
+`OPENOUTFIND_COMPANYENRICH_API_KEY` for discovery; readiness uses that key instead of
+BetterContact's. Selection resets at the command boundary, even on errors.
+
+`companyenrich.py` validates direct people-search filters against a bundled OpenAPI
+subset (no `companyFilter`, expansions or unknown fields), defaults to page 1/size 10,
+and caps size at 100. The reservation is `2 * pageSize` credits at the current published
+rate. It sends one POST to the fixed HTTPS host with timeout/body bounds, no redirects,
+no retries and redacted errors. A larger budget never causes more requests. `find 0`
+never calls it; existing pool work may meet the goal before any purchase.
+
+`core.CompanyEnrichPage` is a durable reservation keyed by the operator-supplied ID,
+created in autocommit before HTTP. The same ID cannot submit again, including after a
+crash or concurrent invocation. An unknown response blocks reuse until the operator
+inspects usage and explicitly authorizes a new ID. A successful full response is saved
+before local embedding, enabling no-spend recovery. Query, maximum credits and import
+state persist; keys do not. It does not create free-lattice Search/Page observations.
+
+The adapter accepts a usable professional profile URL and current title, copies reported
+name parts, country and current employment, and applies the existing company cap.
+The free provider's headline heuristic is not applied. The qualifier consumes local
+candidates before considering this one page; exhausted authorized data gives
+`goal_unreached` and no implicit further spending. The full raw response keeps exact
+IDs, nested fields and pagination; existing CSV/JSON lead columns remain unchanged.
+`--json` run metadata gains a `discovery` object; existing error types cover refusal.
+
+`crm.Lead.discovery_source` records CompanyEnrich provenance, including duplicate
+identities whose existing profile stays unchanged. Later discovery cannot clear that
+marker. Contacts-hub resolution and contribution skip those leads permanently; raw
+CompanyEnrich profiles/companies never enter the hub sharing path. Qualification still
+uses the operator's LLM, and exports still go wherever the operator directs stdout.
+See [setup and the complete scope/cost contract](docs/companyenrich.md).
+Later free-provider pages also filter identities already marked CompanyEnrich before
+sharing raw profiles or employers; alternate host/trailing-slash/query spellings are
+matched conservatively. A new source cannot undo the persisted local-only choice.
+
+
 ## Project Layout
 
 All source lives in the single `openoutfind/` package; Django apps are nested inside it
@@ -28,7 +71,7 @@ openoutfind/
                      #   config.py (the environment) + readiness.py, llm.py, conf.py,
                      #   ML (qualifier/embeddings), discovery+qualify pipeline,
                      #   the lead export, db/ helpers, geo, management commands
-  enrichment/        # the one paid step (not an app — no models) — the BetterContact
+  enrichment/        # paid email resolution (not an app — no models) — the BetterContact
                      #   client and the two-step buy/check lookup
   crm/               # app (label: outfind_crm) — Lead, Company, Deal
   contacts/          # central contacts-store client (service.py only — no models, not an app)

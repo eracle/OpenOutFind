@@ -20,9 +20,9 @@ OpenOutFind — a self-hosted **lead finder that qualifies for you**, with **zer
 
 **define ICP → discover → qualify → rank → (optionally) resolve an address → export CSV.**
 
-- **Discovery** is a licensed source — BetterContact **Lead Finder** (ICP search returns firmographic profiles, no emails, billed nothing). The walk is a best-first search over the lattice of searches: the LLM writes the first 10, and each round fires at once the 10 searches — next pages, neighbours on the lattice — expected to add the most people beating the best lead waiting, per cost.
+- **Default discovery** is a licensed source — BetterContact **Lead Finder** (ICP search returns firmographic profiles, no emails, billed nothing). The walk is a best-first search over the lattice of searches: the LLM writes the first 10, and each round fires at once the 10 searches — next pages, neighbours on the lattice — expected to add the most people beating the best lead waiting, per cost.
 - **Qualification** is the crown jewel — **GPR + BALD active learning** over 384-dim embeddings, decided by an LLM, which also **writes down why**. That reason is the product.
-- **Enrichment** is the one paid step — a **finder** resolves a work email for the top-ranked leads only (one credit per verified hit), fronted by a free cross-operator cache (the hub). Optional: a lead with no address still exports. **The resolver sits behind a seam** (`enrichment/provider.py`), which picks a finder from whichever key is configured — BetterContact (async waterfall) is the only one upstream ships, and the seam's `Lookup` still spans a synchronous finder so a fork can add one without touching the pipeline. **Only the resolver leg is behind it** — discovery is BetterContact's Lead Finder and nothing else.
+- **Email enrichment** is a separate paid step — a **finder** resolves a work email for the top-ranked leads only (one credit per verified hit), fronted by a free cross-operator cache (the hub). Optional: a lead with no address still exports. **The resolver sits behind a seam** (`enrichment/provider.py`), which picks a finder from whichever key is configured — BetterContact (async waterfall) is the only one upstream ships, and the seam's `Lookup` still spans a synchronous finder so a fork can add one without touching the pipeline. **Only the resolver leg is behind that seam.** Default discovery is BetterContact Lead Finder; an explicitly selected CompanyEnrich page uses the separate `core/discovery_source.py` seam.
 - **The output is the command's own stdout.** `outfind find 10 emails > leads.csv` prints **every lead in the store** in the column names Instantly and Smartlead already read, so the newest file supersedes every earlier one. No export command, and no file the tool manages. See *The lead export* below.
 
 Django + Django Admin own the CRM/ORM (models are this project's); pydantic-ai drives the LLM calls.
@@ -36,6 +36,35 @@ Three consequences worth knowing before changing anything:
 1. **Nothing gates a free step on a paid one.** Discovery and qualification are ungated. Do not gate qualifying a lead, or discovering one, on whether there is "room" to email them — that coupling belongs to a sender, not a finder, and OpenOutFind has no sender.
 2. **The opt-out duty belongs to whoever sends.** A finder that contacts nobody is not the sender under CAN-SPAM/GDPR/CASL. `Lead.disqualified` is the export's exclusion filter; nothing sets it automatically. The hub store's own suppression is separate and unaffected.
 3. **The GP never trains on a market signal.** `get_labeled_arrays` reads the LLM's fit verdict alone — no reply or bounce data ever enters that loop, by construction, since OpenOutFind never sees a reply or a bounce.
+
+## Optional paid CompanyEnrich discovery
+
+`find --companyenrich-query PATH --companyenrich-request-id ID --discovery-credit-budget N`
+selects one bounded people-search page. All three flags are required; a configured
+`OPENOUTFIND_COMPANYENRICH_API_KEY` alone is inert. `N >= 2 * pageSize` reserves the
+maximum at the current published 2-credit/profile rate, independently of `--emails`.
+No automatic next page, compound company lookup, expansion or free-walk fallback.
+The default bare `find N` retains its free BetterContact discovery contract.
+
+`core/discovery_source.py` scopes selection to one command and restores it on failure.
+`companyenrich.py` validates the query against the checked-in official schema subset,
+makes one bounded/no-retry/no-redirect HTTPS request and adapts current professional
+profiles. `core/pipeline/companyenrich.py` commits `CompanyEnrichPage` before HTTP,
+stores the full response before embedding, and reuses it across resumed invocations.
+An ambiguous outcome never automatically replays; a different query cannot reuse its
+ID. The paid source does not fabricate free lattice searches or change their estimates.
+
+Persist `Lead.discovery_source=companyenrich` even for previously known URLs. Do not
+clear it on later BetterContact discovery: hub `resolve` and `contribute` must stay
+blocked, and raw CompanyEnrich pages/companies never go to `share_*`. Existing LLM
+qualification and operator-directed exports still consume these profiles. CLI JSON
+metadata adds `discovery`; export columns and error vocabulary remain unchanged.
+See [the complete contract](docs/companyenrich.md).
+Later free-provider pages also filter identities already marked CompanyEnrich before
+sharing raw profiles or employers; alternate host/trailing-slash/query spellings are
+matched conservatively. A new source cannot undo the persisted local-only choice.
+ Keep these flags and paid/local
+boundaries synchronized in README, ARCHITECTURE and `skills/find-leads/SKILL.md`.
 
 ## Commands
 

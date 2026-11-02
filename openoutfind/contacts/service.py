@@ -16,6 +16,7 @@ lead's own ``country_code`` (persisted at discovery), so there is no extra scrap
 from __future__ import annotations
 
 import logging
+from urllib.parse import urlsplit
 
 import requests
 
@@ -71,9 +72,44 @@ def token_in_hand(config: SiteConfig, *, mint: bool = True) -> str:
     return _minted_token or ""
 
 
+def _profile_key(value: str) -> str:
+    """Match provider URL variants without fetching a profile."""
+    try:
+        parsed = urlsplit(value.strip())
+        if parsed.hostname in ("linkedin.com", "www.linkedin.com"):
+            return "https://www.linkedin.com" + parsed.path.rstrip("/")
+    except ValueError:
+        pass
+    return value
+
+
+def _local_profile(lead) -> bool:
+    from openoutfind.crm.models import Lead
+
+    if getattr(lead, "discovery_source", "") == "companyenrich":
+        return True
+    # Another source may have stored the same identity with a trailing slash or
+    # alternate host. Its independently fetched page must not undo the local choice.
+    return Lead.objects.filter(discovery_source="companyenrich",
+                               profile_url=_profile_key(lead.profile_url)).exists()
+
+
+def _shareable_rows(rows: list[dict]) -> list[dict]:
+    from openoutfind.crm.models import Lead
+
+    rows = [row for row in rows if row.get("_discovery_source") != "companyenrich"]
+    keys = {_profile_key(str(row.get("contact_linkedin_profile_url") or "")) for row in rows}
+    private = set(Lead.objects.filter(discovery_source="companyenrich", profile_url__in=keys)
+                  .values_list("profile_url", flat=True))
+    return [row for row in rows
+            if _profile_key(str(row.get("contact_linkedin_profile_url") or "")) not in private]
+
+
 def resolve(lead) -> str | None:
     """A stored email for *lead*, or ``None`` — a miss, no token yet, or an
     outage all return ``None``, so the caller falls back to BetterContact."""
+    if _local_profile(lead):
+        return None
     config = SiteConfig.load()
     token = token_in_hand(config)
     if not token:
@@ -123,6 +159,8 @@ def contribute(lead, emails: list[str], origin: str) -> None:
     with their discovery page (``share_profiles``). An operator who declares none contributes; the server
     re-gates every record authoritatively.
     """
+    if _local_profile(lead):
+        return
     operator_country = SiteConfig.load().operator_country_code
     if operator_country and is_eea_located(operator_country):
         logger.debug("hub: operator in EEA/UK/CH — skipping give-back for %s", lead.profile_url)
@@ -169,7 +207,7 @@ def share_profiles(rows: list[dict], country_code: str) -> None:
     The same gates as ``contribute``: an operator in the EEA/UK/CH sends nothing, and a
     page searched in one — or in no named country — is not sent. The hub gates again.
     """
-    rows = [row for row in rows if row.get("contact_linkedin_profile_url")]
+    rows = [row for row in _shareable_rows(rows) if row.get("contact_linkedin_profile_url")]
     token = _page_token(country_code) if rows else ""
     if not token:
         return
@@ -187,6 +225,8 @@ def share_companies(rows: list[dict], country_code: str) -> None:
     shares none of it.
     """
     from openoutfind.discovery import company_records
+
+    rows = _shareable_rows(rows)
 
     records = company_records(rows)
     token = _page_token(country_code) if records else ""

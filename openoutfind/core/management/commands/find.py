@@ -11,8 +11,8 @@ to try.
     outfind find 10 --exclude F      # ...never judging or printing the URLs listed in F
     outfind find 10 --labels F       # ...a fresh store starting from a customer's marks
 
-**Finding is free; buying an address is not, and the free thing is the default.**
-Discovery and qualification cost only the operator's own LLM key, so a bare ``find 10``
+**Default discovery is free; paid source selection and addresses are separately opt-in.**
+Default BetterContact discovery and qualification cost only the operator's own LLM key, so a bare ``find 10``
 cannot spend a credit however many deals have queued up past the confidence gate. The
 address lookup is opt-in — ``--emails`` permits it, and the ``emails`` unit implies it.
 
@@ -113,7 +113,7 @@ class Command(OpenOutFindCommand):
         parser.add_argument("--emails", action="store_true", dest="buy_emails",
                             help="Also buy an address for any lead that has cleared the "
                                  "confidence gate — one credit per verified hit. Without "
-                                 "this the run cannot spend. Implied by the `emails` unit.")
+                                 "this no email credits are spent. Implied by the `emails` unit.")
         parser.add_argument("--json", action="store_true", dest="as_json",
                             help="Emit the rows as JSON Lines, one record per line, "
                                  "profile text included. The run's own metadata goes to "
@@ -169,7 +169,21 @@ class Command(OpenOutFindCommand):
                  "lead is never judged, printed or looked up. Marks already in the "
                  "store are skipped, so the flag can ride every call.")
 
+        parser.add_argument("--companyenrich-query", metavar="PATH",
+                            help="Explicitly use one paid CompanyEnrich people-search page from JSON.")
+        parser.add_argument("--companyenrich-request-id", metavar="ID",
+                            help="Stable request ID; reuse it when resuming to avoid buying a page twice.")
+        parser.add_argument("--discovery-credit-budget", type=int, metavar="CREDITS",
+                            help="Maximum CompanyEnrich discovery credits authorized; requires its query and ID.")
+
     def handle(self, *args, **options):
+        from openoutfind.core.discovery_source import selected
+        from openoutfind.core.pipeline.companyenrich import from_options
+
+        with selected(from_options(options)):
+            return self._handle(*args, **options)
+
+    def _handle(self, *args, **options):
         if options["count"] < 0:
             raise OpenOutFindError(ErrorType.BAD_CONFIG, "count cannot be negative")
         if options["verdict"] and not options["agent_qualify"]:
@@ -338,6 +352,10 @@ def _write_run_object(result: JobResult, action, rows: int, labels: dict | None)
     }
     if labels is not None:
         run["labels"] = labels
+    from openoutfind.core.discovery_source import current
+
+    if current() is not None:
+        run["discovery"] = current().report()
     sys.stderr.write(json.dumps(run) + "\n")
 
 
@@ -364,6 +382,12 @@ def _announce_the_run(site_config, goal: Goal, buy_addresses: bool) -> None:
                 else "finding only, no addresses bought")
     work = f"goal: {goal}" if goal.count else "no work — printing what is already there"
     logger.info("%s · %s", work, spending)
+    from openoutfind.core.discovery_source import current
+
+    if current() is not None:
+        details = current().report()
+        logger.info("CompanyEnrich selected: one page, up to %d discovery credits; no hub sharing",
+                    details["maximum_credits"])
     log_icp_echo()
     log_brief_echo()
 
