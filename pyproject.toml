@@ -59,8 +59,9 @@ dependencies = [
     "fastembed>=0.4,<1",
     "scikit-learn>=1.4,<2",
     "huggingface_hub>=0.23,<1",
-    # 0.1.7: embed_texts sorts by length, so a round embeds in a third of the time.
-    "openoutlearn>=0.1.7,<1",
+    # 0.1.8: the GP centres its labels (normalize_y), so it ranks on every verdict at few
+    # fits instead of fitting a flat score; 0.1.7 sorted embed_texts by length.
+    "openoutlearn>=0.1.8,<1",
     "pytz>=2024.1",
     "imapclient>=3,<4",
     "tenacity>=8,<10",
