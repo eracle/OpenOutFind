@@ -32,9 +32,15 @@ worth the people it adds that would be judged before what is already waiting:
   ready time, and each new person's measured ingest time — embedding is most of a
   round's — so a page of 200 strangers pays for every one.
 
-The batch is the ``batch`` highest-value arms, greedy: an arm holding all the terms of one
-already chosen whose page holds everyone it counts is skipped, since its people come with
-that one. ``judge_or_search`` weighs the best of them against judging the pool.
+The batch is chosen greedily on **marginal** value, the textbook strategy for coverage
+(Nemhauser, Wolsey & Fisher): take the best arm, then re-value every other arm on the
+people it would add *beyond the arms already chosen*, and take the best again. An arm's
+overlap with the chosen is read off the store's people it matches (its ``sample``): the
+share of them the chosen arms' samples already hold is the share of its new people taken
+off. An arm holding all the terms of a chosen one whose page holds everyone it counts
+adds nobody, since its people come with that one. Without this the batch was the top 10
+valued alone, and ten near-copies resting on one fit (all at 0.389 on batch 5) could fill
+it. ``judge_or_search`` weighs the best of them against judging the pool.
 """
 from __future__ import annotations
 
@@ -42,7 +48,7 @@ import logging
 import math
 import statistics
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -269,6 +275,9 @@ class Arm:
     rate: float = 0.0        # the fit rate expected of them
     cost: float = 0.0        # dollars to fire it and take its new people in
     value: float = 0.0
+    # The store's people that stand for its region — the overlap with other arms is read
+    # off these: a next page's latest page, an unfired search's matched people.
+    sample: set[int] = field(default_factory=set, repr=False)
 
     def cost_per_fit(self, verdict_cost: float) -> float:
         """Dollars per fit to fire it and judge every new person it brings."""
@@ -351,7 +360,8 @@ class Frontier:
         novelty = len(fired.fresh) / fired.latest.rows if fired.latest.rows else 0.0
         return self._priced(Arm(fired.terms, fired.latest.number + 1, "deepen", fired.search,
                                 size=size, new=size * novelty,
-                                rate=self.people.rate_of(fired.latest_people, self.prior)))
+                                rate=self.people.rate_of(fired.latest_people, self.prior),
+                                sample=fired.latest_people))
 
     def _first_page(self, terms: Terms, move: str, search=None) -> Arm:
         """Page 1 of an unfired search: its count estimated from the fired searches next
@@ -366,7 +376,8 @@ class Frontier:
         return self._priced(Arm(terms, 1, move, search, size=size,
                                 new=size * self.kept * novelty,
                                 rate=self.people.rate_of(self._evidence(matched, wider),
-                                                         self.prior)))
+                                                         self.prior),
+                                sample=matched))
 
     @staticmethod
     def _evidence(matched: set[int], wider: list[Fired]) -> set[int]:
@@ -407,29 +418,56 @@ class Frontier:
     # ── the batch ──
 
     def batch(self, floor: float, slots: int | None = None) -> list[Arm]:
-        """The highest-value arms whose people would beat ``floor``, best first."""
-        from openoutfind.core.models import PAGE_SIZE
+        """The arms whose people would beat ``floor`` that together add the most, chosen
+        greedily on marginal value, in the order chosen.
 
+        Each chosen arm's ``new``, ``cost`` and ``value`` are what it adds beyond the arms
+        chosen before it.
+        """
         slots = slots or WALK_CONFIG["batch"]
-        valued = []
-        for arm in self.arms():
-            gain = arm.new * (arm.rate - floor)
-            if gain > 0:
-                arm.value = gain / arm.cost if arm.cost > 0 else math.inf
-                valued.append(arm)
-        valued.sort(key=lambda arm: arm.value, reverse=True)
+        # Each arm with what it would add alone; only those beat the floor at all.
+        candidates = [(arm, arm.new) for arm in self.arms() if arm.new * (arm.rate - floor) > 0]
+        beating = len(candidates)
 
         chosen: list[Arm] = []
-        for arm in valued:
-            if len(chosen) >= slots:
+        covered: set[int] = set()
+        while candidates and len(chosen) < slots:
+            for arm, alone in candidates:
+                self._revalue(arm, alone * (1.0 - self._overlap(arm, chosen, covered)), floor)
+            candidates = [(arm, alone) for arm, alone in candidates if arm.value > 0]
+            if not candidates:
                 break
-            if arm.number == 1 and any(
-                    other.number == 1 and other.size < PAGE_SIZE
-                    and arm.terms.holds_all_of(other.terms) for other in chosen):
-                continue  # its people come with ``other``'s whole page
+            best = max(range(len(candidates)), key=lambda i: candidates[i][0].value)
+            arm, _ = candidates.pop(best)
             chosen.append(arm)
-        _log(chosen, len(valued), floor)
+            covered |= arm.sample
+        _log(chosen, beating, floor)
         return chosen
+
+    @staticmethod
+    def _overlap(arm: Arm, chosen: list[Arm], covered: set[int]) -> float:
+        """The share of ``arm``'s new people the ``chosen`` arms would already bring.
+
+        1 for a page-1 arm inside a chosen page-1 whose page holds everyone it counts:
+        its people come with that page. Otherwise the share of its sample the chosen
+        arms' samples hold — 0 with no sample to read it from.
+        """
+        from openoutfind.core.models import PAGE_SIZE
+
+        if arm.number == 1 and any(other.number == 1 and other.size < PAGE_SIZE
+                                   and arm.terms.holds_all_of(other.terms)
+                                   for other in chosen):
+            return 1.0
+        if not arm.sample:
+            return 0.0
+        return len(arm.sample & covered) / len(arm.sample)
+
+    def _revalue(self, arm: Arm, new: float, floor: float) -> None:
+        """Price and value ``arm`` as adding ``new`` people."""
+        arm.new = new
+        self._priced(arm)
+        gain = new * (arm.rate - floor)
+        arm.value = (gain / arm.cost if arm.cost > 0 else math.inf) if gain > 0 else 0.0
 
 
 def plan(qualifier, floor: float = 0.0) -> list[Arm]:

@@ -216,6 +216,49 @@ class TestTheBatch:
         arms = [_arm(f"title{i}", 0.5, 10) for i in range(30)]
         assert len(self._batch(arms, slots=10)) == 10
 
+    def test_a_near_copy_of_a_chosen_arm_loses_its_slot_to_a_different_one(self):
+        """Batch 5: ten arms resting on the same fit, all at 0.389, could fill a batch."""
+        first = _arm("founder", 0.5, 10)
+        first.sample = {1, 2, 3}
+        copy = _arm("chief", 0.49, 10)
+        copy.sample = {1, 2, 3}
+        other = _arm("buyer", 0.3, 10)
+        other.sample = {7, 8}
+
+        assert self._batch([first, copy, other]) == [first, other]
+
+    def test_an_arm_sharing_half_its_people_with_the_chosen_adds_half(self):
+        first = _arm("founder", 0.5, 10)
+        first.sample = {1, 2}
+        half = _arm("chief", 0.4, 10)
+        half.sample = {1, 2, 3, 4}
+
+        batch = self._batch([first, half])
+
+        assert batch == [first, half]
+        assert (first.new, half.new) == (10, pytest.approx(5))
+
+    def test_an_arm_valued_alone_below_another_can_be_chosen_first_once_that_one_overlaps(self):
+        """Greedy on what each adds: a pick re-ranks the rest."""
+        best = _arm("founder", 0.6, 10)
+        best.sample = {1, 2, 3, 4}
+        shadow = _arm("chief", 0.55, 10)
+        shadow.sample = {1, 2, 3, 5}
+        fresh = _arm("buyer", 0.5, 10)
+        fresh.sample = {9}
+
+        assert self._batch([best, shadow, fresh]) == [best, fresh, shadow]
+
+    def test_an_arms_sample_is_the_people_it_matches(self):
+        people = [_lead("Purchasing Manager") for _ in range(2)]
+        _fired(Terms.written(title="purchasing"), people, found=5000)
+
+        f = Frontier(None)
+        unfired = f._first_page(Terms.written(title="purchasing manager"), "stricter")
+        (deepen,) = [arm for arm in f.arms() if arm.move == "deepen"]
+
+        assert unfired.sample == deepen.sample == {lead.pk for lead in people}
+
 
 @pytest.mark.django_db
 class TestTheFitRate:
