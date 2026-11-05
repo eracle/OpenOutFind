@@ -1,9 +1,22 @@
 # openoutfind/core/pipeline/frontier.py
-"""The frontier — every search the walk could fire next, valued by what it would add to
-the top of the pool, per cost.
+"""The frontier — every search the walk could fire next, and the round chosen from them.
 
-The pool is an inventory the GP orders, and verdicts are drawn from its top, so a page is
-worth the people it adds that would be judged before what is already waiting:
+**The round covers the fits** (``Frontier.batch``). The promising people are every lead
+judged a fit — the customer's marked fits among them — and the anchors, the ICP written
+as profiles. An unfired search holds the promising people whose own fields match all its
+terms; a next page holds the fits on its search's latest page. The batch is chosen
+greedily: take the arm holding the most promising people, mark them covered, recount the
+rest on the people not yet covered, and take the best again, ties to the arm matching
+fewer of the store's people (the narrower search), until no arm holds anyone new. The
+slots left are drawn at random from the other arms, seeded by the round's number so a
+replay repeats. No rate, floor or cost orders the batch, and the GP only orders the
+judging: an offline replay of seven ways to pick a round on four stores found this one
+reached the most later fits by far — on batch 5, 55 over 15 rounds against the walk's 0
+— where the rate below picked small areas and found none (openoutreach-docs card
+``p2-e3-the-round-fires-searches-that-pay-or-teach``, finding 8).
+
+**What each arm is expected to bring** is still valued, for ``judge_or_search``'s
+decision of *when* to fire a round, and for the debug log:
 
     value(arm) = new(arm) · max(0, rate(arm) − floor)  ÷  (c_fire + c_ingest · new(arm))
 
@@ -32,20 +45,14 @@ worth the people it adds that would be judged before what is already waiting:
   ready time, and each new person's measured ingest time — embedding is most of a
   round's — so a page of 200 strangers pays for every one.
 
-The batch is chosen greedily on **marginal** value, the textbook strategy for coverage
-(Nemhauser, Wolsey & Fisher): take the best arm, then re-value every other arm on the
-people it would add *beyond the arms already chosen*, and take the best again. An arm's
-overlap with the chosen is read off the store's people it matches (its ``sample``): the
-share of them the chosen arms' samples already hold is the share of its new people taken
-off. An arm holding all the terms of a chosen one whose page holds everyone it counts
-adds nobody, since its people come with that one. Without this the batch was the top 10
-valued alone, and ten near-copies resting on one fit (all at 0.389 on batch 5) could fill
-it. ``judge_or_search`` weighs the best of them against judging the pool.
+``judge_or_search`` weighs the best of the arms beating the floor against judging the
+pool, and a round fires only while one does.
 """
 from __future__ import annotations
 
 import logging
 import math
+import random
 import statistics
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -120,6 +127,15 @@ def lead_rates(qualifier, fit_rate) -> dict[int, float]:
     return rates
 
 
+def judged_fits() -> set[int]:
+    """Every lead judged a fit: any deal but the ``wrong_fit`` rejection, marks included."""
+    from openoutfind.crm.models import Deal, DealState, Outcome
+
+    return set(Deal.objects.filter(lead_id__isnull=False)
+               .exclude(state=DealState.FAILED, outcome=Outcome.WRONG_FIT)
+               .values_list("lead_id", flat=True))
+
+
 # ── the store's people ───────────────────────────────────────────────
 
 class People:
@@ -147,6 +163,18 @@ class People:
 
         return cls(Lead.objects.filter(synthetic=False).exclude(source_fields={})
                    .values_list("pk", "company_id", "source_fields"), rates)
+
+    @classmethod
+    def promising(cls, fits: set[int]) -> "People":
+        """The people a round covers: the ``fits`` and the anchors, each matched on its own
+        fields — an anchor's are the model's own assignment of value to field."""
+        from django.db.models import Q
+
+        from openoutfind.crm.models import Lead
+
+        return cls(Lead.objects.filter(Q(pk__in=fits) | Q(synthetic=True))
+                   .exclude(source_fields={})
+                   .values_list("pk", "company_id", "source_fields"), {})
 
     def match(self, terms: Terms) -> set[int]:
         """Every stored person matching every term of ``terms``, each in its own field."""
@@ -274,10 +302,14 @@ class Arm:
     new: float = 0.0         # of them, people the store does not hold, after drops
     rate: float = 0.0        # the fit rate expected of them
     cost: float = 0.0        # dollars to fire it and take its new people in
-    value: float = 0.0
-    # The store's people that stand for its region — the overlap with other arms is read
-    # off these: a next page's latest page, an unfired search's matched people.
+    covers: int = 0          # promising people it was the first in its batch to hold
+    # The store's people that stand for its region: a next page's latest page, an
+    # unfired search's matched people.
     sample: set[int] = field(default_factory=set, repr=False)
+
+    def beats(self, floor: float) -> bool:
+        """Whether its new people are expected to fit more often than ``floor``."""
+        return self.new * (self.rate - floor) > 0
 
     def cost_per_fit(self, verdict_cost: float) -> float:
         """Dollars per fit to fire it and judge every new person it brings."""
@@ -300,6 +332,8 @@ class Frontier:
         self.fit_rate = fit_rate_map()
         self.people = People.load(lead_rates(qualifier, self.fit_rate))
         self.prior = self.people.base_rate()
+        self.fits = judged_fits()
+        self.promising = People.promising(self.fits)
         self.fired = _fired()
         self.written = list(Search.objects.filter(origin=Search.Origin.WRITTEN))
         self.taken = set(Search.objects.filter(pages__isnull=False).values_list("key", flat=True))
@@ -320,7 +354,7 @@ class Frontier:
     # ── candidates ──
 
     def arms(self) -> list[Arm]:
-        """Every arm, valued at a floor of 0 — ``batch`` re-values at its own."""
+        """Every arm, each valued alone."""
         arms = [self._deepen(f) for f in self.fired if not f.latest.at_bottom]
         fired_keys = {f.search.key for f in self.fired}
         arms += [self._first_page(search.query, "written", search) for search in self.written
@@ -417,62 +451,53 @@ class Frontier:
 
     # ── the batch ──
 
-    def batch(self, floor: float, slots: int | None = None) -> list[Arm]:
-        """The arms whose people would beat ``floor`` that together add the most, chosen
-        greedily on marginal value, in the order chosen.
+    def holds(self, arm: Arm) -> set[int]:
+        """The promising people ``arm`` holds: for a next page, the fits on its search's
+        latest page; for an unfired search, the fits and anchors matching all its terms."""
+        if arm.move == "deepen":
+            return arm.sample & self.fits
+        return self.promising.match(arm.terms)
 
-        Each chosen arm's ``new``, ``cost`` and ``value`` are what it adds beyond the arms
-        chosen before it.
-        """
+    def batch(self, arms: list[Arm], round_number: int, slots: int | None = None) -> list[Arm]:
+        """The ``slots`` arms of a round: those that between them hold the most promising
+        people, chosen greedily, then a random fill seeded by ``round_number``."""
         slots = slots or WALK_CONFIG["batch"]
-        # Each arm with what it would add alone; only those beat the floor at all.
-        candidates = [(arm, arm.new) for arm in self.arms() if arm.new * (arm.rate - floor) > 0]
-        beating = len(candidates)
+        # One order however the lattice enumerated them, so a replay draws the same fill.
+        rest = sorted(arms, key=lambda arm: (arm.terms.key, arm.number))
+        holding = {id(arm): self.holds(arm) for arm in rest}
 
         chosen: list[Arm] = []
         covered: set[int] = set()
-        while candidates and len(chosen) < slots:
-            for arm, alone in candidates:
-                self._revalue(arm, alone * (1.0 - self._overlap(arm, chosen, covered)), floor)
-            candidates = [(arm, alone) for arm, alone in candidates if arm.value > 0]
-            if not candidates:
+        while rest and len(chosen) < slots:
+            best = max(rest, key=lambda arm: (len(holding[id(arm)] - covered),
+                                              -len(arm.sample)))
+            gained = holding[id(best)] - covered
+            if not gained:
                 break
-            best = max(range(len(candidates)), key=lambda i: candidates[i][0].value)
-            arm, _ = candidates.pop(best)
-            chosen.append(arm)
-            covered |= arm.sample
-        _log(chosen, beating, floor)
-        return chosen
+            best.covers = len(gained)
+            chosen.append(best)
+            rest.remove(best)
+            covered |= gained
 
-    @staticmethod
-    def _overlap(arm: Arm, chosen: list[Arm], covered: set[int]) -> float:
-        """The share of ``arm``'s new people the ``chosen`` arms would already bring.
-
-        1 for a page-1 arm inside a chosen page-1 whose page holds everyone it counts:
-        its people come with that page. Otherwise the share of its sample the chosen
-        arms' samples hold — 0 with no sample to read it from.
-        """
-        from openoutfind.core.models import PAGE_SIZE
-
-        if arm.number == 1 and any(other.number == 1 and other.size < PAGE_SIZE
-                                   and arm.terms.holds_all_of(other.terms)
-                                   for other in chosen):
-            return 1.0
-        if not arm.sample:
-            return 0.0
-        return len(arm.sample & covered) / len(arm.sample)
-
-    def _revalue(self, arm: Arm, new: float, floor: float) -> None:
-        """Price and value ``arm`` as adding ``new`` people."""
-        arm.new = new
-        self._priced(arm)
-        gain = new * (arm.rate - floor)
-        arm.value = (gain / arm.cost if arm.cost > 0 else math.inf) if gain > 0 else 0.0
+        drawn = random.Random(round_number).sample(rest, min(len(rest), slots - len(chosen)))
+        _log(chosen, drawn, len(arms), len(self.promising.everyone))
+        return chosen + drawn
 
 
-def plan(qualifier, floor: float = 0.0) -> list[Arm]:
-    """The next batch: the highest-value arms whose people would beat ``floor``."""
-    return Frontier(qualifier).batch(floor)
+def arms_beating(qualifier, floor: float) -> list[Arm]:
+    """Every arm whose new people are expected to fit more often than ``floor``, each
+    valued alone — what ``judge_or_search`` weighs a search on."""
+    return [arm for arm in Frontier(qualifier).arms() if arm.beats(floor)]
+
+
+def next_round(qualifier, round_number: int, floor: float = 0.0) -> list[Arm]:
+    """The round's batch, or ``[]`` when no arm beats ``floor``, the fit rate of the best
+    lead waiting: ``judge_or_search`` decides *when* a round fires, the batch *what*."""
+    f = Frontier(qualifier)
+    arms = f.arms()
+    if not any(arm.beats(floor) for arm in arms):
+        return []
+    return f.batch(arms, round_number)
 
 
 def written_arms() -> list[Arm]:
@@ -485,11 +510,15 @@ def written_arms() -> list[Arm]:
                                                 pages__isnull=True)]
 
 
-def _log(chosen: list[Arm], valued: int, floor: float) -> None:
+def _log(chosen: list[Arm], drawn: list[Arm], candidates: int, promising: int) -> None:
     if not logger.isEnabledFor(logging.DEBUG):
         return
-    logger.debug("  frontier: %d arm(s) beat a floor of %.2f, %d chosen", valued, floor,
-                 len(chosen))
+    logger.debug("  frontier: %d arm(s), %d cover %d of %d promising, %d drawn",
+                 candidates, len(chosen), sum(arm.covers for arm in chosen), promising,
+                 len(drawn))
     for arm in chosen:
-        logger.debug("  %-9s rate %.2f · ~%.0f new of ~%.0f  %s", arm.move, arm.rate,
-                     arm.new, arm.size, arm)
+        logger.debug("  %-9s covers %d · rate %.2f · ~%.0f new  %s", arm.move, arm.covers,
+                     arm.rate, arm.new, arm)
+    for arm in drawn:
+        logger.debug("  %-9s drawn · rate %.2f · ~%.0f new  %s", arm.move, arm.rate,
+                     arm.new, arm)

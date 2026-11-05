@@ -180,74 +180,105 @@ class TestTheArms:
         assert by_title["purchasing"] > 0 and by_title["manager"] == 0
 
 
-def _arm(title, rate, new, size=PAGE_SIZE, number=1):
-    return Arm(Terms.written(title=title, tag="cannabis"), number, "swap", size=size,
-               new=new, rate=rate)
+def _arm(title, tag="cannabis", rate=0.2, new=10.0, number=1, move="swap", sample=()):
+    return Arm(Terms.written(title=title, tag=tag), number, move, new=new, rate=rate,
+               sample=set(sample))
+
+
+def _anchor(title="Head of Procurement", tags="cannabis extraction"):
+    return Lead.objects.create(synthetic=True, profile_text=title.lower(), source_fields={
+        "contact_job_title": title.lower(), "company_keywords": tags,
+        "contact_location_country": "united states"})
 
 
 @pytest.mark.django_db
 class TestTheBatch:
-    def _batch(self, arms, floor=0.0, slots=None):
+    def test_it_takes_the_arm_holding_the_most_fits_first(self):
+        for _ in range(3):
+            _lead("Founder", verdict=1)
+        _lead("Buyer", verdict=1)
+        buyer, founder = _arm("buyer"), _arm("founder")
+
+        assert Frontier(None).batch([buyer, founder], 1, slots=1) == [founder]
+        assert founder.covers == 3
+
+    def test_an_arm_holding_only_fits_already_covered_is_skipped(self):
+        """Batch 5: ten near-copies resting on one fit could fill a round."""
+        for _ in range(2):
+            _lead("Founder", verdict=1)
+        _lead("Buyer", verdict=1)
+        founder, copy, buyer = _arm("founder"), _arm("founder", tag="thc vape"), _arm("buyer")
+
+        assert Frontier(None).batch([founder, copy, buyer], 1, slots=2) == [founder, buyer]
+
+    def test_a_no_fit_is_not_promising(self):
+        _lead("Founder", verdict=0)
+        _lead("Buyer", verdict=1)
+        founder, buyer = _arm("founder"), _arm("buyer")
+
+        assert Frontier(None).batch([founder, buyer], 1, slots=1) == [buyer]
+
+    def test_an_anchors_fields_count_as_a_promising_person(self):
+        anchor = _anchor()
         f = Frontier(None)
-        for arm in arms:
-            f._priced(arm)
-        with patch.object(Frontier, "arms", return_value=arms):
-            return f.batch(floor, slots)
 
-    def test_only_arms_whose_people_beat_the_floor(self):
-        batch = self._batch([_arm("founder", 0.5, 10), _arm("buyer", 0.2, 10)], floor=0.3)
-        assert [arm.terms.title for arm in batch] == [frozenset({"founder"})]
+        assert f.holds(_arm("procurement head", tag="cannabis")) == {anchor.pk}
+        assert f.holds(_arm("procurement", tag="banking")) == set()
 
-    def test_volume_counts_when_the_people_beat_the_floor(self):
-        """200 at 0.35 bring more fits than 4 at 0.5, and pay for each one's ingest."""
-        many, few = _arm("buyer", 0.35, 200), _arm("founder", 0.5, 4)
-        with patch.dict(frontier.CAMPAIGN_CONFIG, {"ingest_seconds_per_lead": 0.01}):
-            batch = self._batch([few, many], floor=0.2)
-        assert batch[0] is many
+    def test_a_next_page_counts_the_fits_on_its_latest_page(self):
+        fit, miss, elsewhere = _lead(verdict=1), _lead(verdict=0), _lead(verdict=1)
+        _fired(Terms.written(title="purchasing"), [fit, miss], found=5000)
 
-    def test_an_arm_inside_a_chosen_whole_page_is_skipped(self):
-        """Its people come with the wider search's page."""
-        wide = _arm("founder", 0.6, 8, size=8)
-        narrow = Arm(Terms.written(title="founder ceo", tag="cannabis"), 1, "stricter",
-                     size=4, new=4, rate=0.5)
-        assert self._batch([wide, narrow]) == [wide]
+        f = Frontier(None)
+        (deepen,) = [arm for arm in f.arms() if arm.move == "deepen"]
 
-    def test_at_most_a_batch(self):
-        arms = [_arm(f"title{i}", 0.5, 10) for i in range(30)]
-        assert len(self._batch(arms, slots=10)) == 10
+        assert f.holds(deepen) == {fit.pk}
+        assert elsewhere.pk in f.fits
 
-    def test_a_near_copy_of_a_chosen_arm_loses_its_slot_to_a_different_one(self):
-        """Batch 5: ten arms resting on the same fit, all at 0.389, could fill a batch."""
-        first = _arm("founder", 0.5, 10)
-        first.sample = {1, 2, 3}
-        copy = _arm("chief", 0.49, 10)
-        copy.sample = {1, 2, 3}
-        other = _arm("buyer", 0.3, 10)
-        other.sample = {7, 8}
+    def test_a_tie_goes_to_the_narrower_search(self):
+        _lead("Founder", verdict=1)
+        wide = _arm("founder", sample=range(50))
+        narrow = _arm("founder", tag="thc vape", sample=range(5))
 
-        assert self._batch([first, copy, other]) == [first, other]
+        assert Frontier(None).batch([wide, narrow], 1, slots=1) == [narrow]
 
-    def test_an_arm_sharing_half_its_people_with_the_chosen_adds_half(self):
-        first = _arm("founder", 0.5, 10)
-        first.sample = {1, 2}
-        half = _arm("chief", 0.4, 10)
-        half.sample = {1, 2, 3, 4}
+    def test_the_slots_left_are_filled_the_same_way_twice(self):
+        fit = _lead("Founder", verdict=1)
+        arms = [_arm("founder")] + [_arm(f"title{i}") for i in range(30)]
 
-        batch = self._batch([first, half])
+        first = Frontier(None).batch(list(arms), 4, slots=10)
+        again = Frontier(None).batch(list(reversed(arms)), 4, slots=10)
+        other_round = Frontier(None).batch(list(arms), 5, slots=10)
 
-        assert batch == [first, half]
-        assert (first.new, half.new) == (10, pytest.approx(5))
+        assert len(first) == 10 and first[0].terms.title == frozenset({"founder"})
+        assert [a.terms.key for a in first] == [a.terms.key for a in again]
+        assert [a.terms.key for a in first] != [a.terms.key for a in other_round]
+        assert fit.pk in Frontier(None).holds(first[0])
 
-    def test_an_arm_valued_alone_below_another_can_be_chosen_first_once_that_one_overlaps(self):
-        """Greedy on what each adds: a pick re-ranks the rest."""
-        best = _arm("founder", 0.6, 10)
-        best.sample = {1, 2, 3, 4}
-        shadow = _arm("chief", 0.55, 10)
-        shadow.sample = {1, 2, 3, 5}
-        fresh = _arm("buyer", 0.5, 10)
-        fresh.sample = {9}
+    def test_a_filled_round_holds_nothing_fired_dead_or_drained(self):
+        people = [_lead(verdict=1) for _ in range(3)]
+        roomy = Terms.written(title="purchasing", tag="cannabis")
+        drained = Terms.written(title="manager", tag="cannabis")
+        _fired(roomy, people, found=5000)
+        _fired(drained, people, found=3)
+        dead = Terms.written(title="buyer", tag="cannabis")
+        Search.objects.create(key=dead.key, dead=True, terms=dead.as_json())
 
-        assert self._batch([best, shadow, fresh]) == [best, fresh, shadow]
+        f = Frontier(None)
+        batch = f.batch(f.arms(), 1)
+
+        assert len(batch) == frontier.WALK_CONFIG["batch"]
+        for arm in batch:
+            assert not (arm.number == 1 and arm.terms in (roomy, drained))
+            assert not arm.terms.holds_all_of(dead)
+            assert not arm.terms.holds_all_of(drained)
+
+    def test_a_round_fires_only_while_an_arm_beats_the_floor(self):
+        _fired(Terms.written(title="purchasing", tag="cannabis"),
+               [_lead(verdict=1) for _ in range(3)], found=5000)
+
+        assert frontier.next_round(None, 1, floor=0.0)
+        assert frontier.next_round(None, 1, floor=1.0) == []
 
     def test_an_arms_sample_is_the_people_it_matches(self):
         people = [_lead("Purchasing Manager") for _ in range(2)]

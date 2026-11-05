@@ -17,7 +17,12 @@ from openoutfind.core.errors import ErrorType
 from openoutfind.core.models import PAGE_SIZE, Page, PageLead, Search
 from openoutfind.core.pipeline import walk
 from openoutfind.core.pipeline.discover import discover
-from openoutfind.core.pipeline.icp import InitialPopulation
+from openoutfind.core.pipeline.icp import (
+    ANCHOR_COUNT,
+    Anchor,
+    InitialPopulation,
+    anchor_leads,
+)
 from openoutfind.core.pipeline.query import Terms
 from openoutfind.crm.models import Deal, DealState, Lead, Outcome
 from openoutfind.discovery import Fetched, Page as LeadFinderPage
@@ -82,11 +87,23 @@ def site(db, configure):
     return SiteConfig.load()
 
 
-def _run(site, finder, floor=0.0):
-    with (
-        patch("openoutfind.core.pipeline.icp._population_from_llm", return_value=_population()),
-        patch("openoutfind.discovery.search", side_effect=finder),
-    ):
+ANCHORS = [Anchor(f"head of procurement cannabis {i}",
+                  {"contact_job_title": "head of procurement",
+                   "company_keywords": "cannabis extraction",
+                   "contact_location_country": "united states"})
+           for i in range(ANCHOR_COUNT)]
+
+
+def _cold_start(anchors=ANCHORS):
+    """The model's two cold-start answers: the written population and the anchors."""
+    return (patch("openoutfind.core.pipeline.icp._population_from_llm",
+                  return_value=_population()),
+            patch("openoutfind.core.pipeline.icp.generate_anchors", return_value=anchors))
+
+
+def _run(site, finder, floor=0.0, anchors=ANCHORS):
+    population, anchored = _cold_start(anchors)
+    with population, anchored, patch("openoutfind.discovery.search", side_effect=finder):
         return walk.run_round(site, None, floor)
 
 
@@ -111,10 +128,47 @@ class TestTheFirstRound:
 
     def test_it_values_nothing(self, site):
         """None of its people judged yet: there is nothing to value it on."""
-        with patch.object(walk.frontier, "plan") as plan:
+        with patch.object(walk.frontier, "next_round") as planned:
             _run(site, FakeLeadFinder())
 
-        plan.assert_not_called()
+        planned.assert_not_called()
+
+    def test_it_writes_the_anchors_with_the_population(self, site):
+        """A store seeded with marks starts with fits, so it never ran cold — batch 5
+        had none."""
+        mark = Lead.objects.create(profile_url="https://linkedin.com/in/mark", marked=True)
+        Deal.objects.create(lead=mark, state=DealState.QUALIFIED)
+
+        _run(site, FakeLeadFinder())
+
+        assert [lead.profile_text for lead in anchor_leads()] == [a.profile for a in ANCHORS]
+
+    def test_without_anchors_it_fires_nothing(self, site):
+        finder = FakeLeadFinder()
+
+        with pytest.raises(walk.Unanchored):
+            _run(site, finder, anchors=[])
+
+        assert finder.calls == [] and not Page.objects.exists()
+
+    def test_a_store_with_searches_and_no_anchors_writes_them_before_its_next_round(self, site):
+        _run(site, FakeLeadFinder())
+        Lead.objects.filter(synthetic=True).delete()
+        _judge("founder")
+
+        _run(site, FakeLeadFinder())
+
+        assert len(anchor_leads()) == ANCHOR_COUNT
+        assert Page.objects.filter(round=1).exists()
+
+    def test_a_standing_set_is_never_topped_up(self, site):
+        _run(site, FakeLeadFinder())
+        Lead.objects.filter(synthetic=True).exclude(pk=anchor_leads()[0].pk).delete()
+        _judge("founder")
+
+        _run(site, FakeLeadFinder())
+
+        assert len(anchor_leads()) == 1
 
     def test_every_search_rides_the_customers_shape(self, site):
         _run(site, FakeLeadFinder())
@@ -213,15 +267,17 @@ class TestTheNextRound:
         assert 0 < len(finder.calls) <= WALK_CONFIG["batch"]
         assert set(Page.objects.filter(round=1).values_list("round", flat=True)) == {1}
 
-    def test_the_search_whose_people_fit_pages_deeper(self, site):
-        _run(site, FakeLeadFinder())
+    def test_the_first_search_fired_holds_the_fits(self, site):
+        """Five founders judged fits outnumber the three anchors."""
+        _run(site, FakeLeadFinder(rows=5))
         _judge("founder")
         finder = FakeLeadFinder()
 
-        _run(site, finder)
+        with patch.dict(walk.WALK_CONFIG, {"batch": 1}):
+            _run(site, finder)
 
-        assert ("founder", PAGE_SIZE) in finder.calls
-        assert all(offset == 0 for title, offset in finder.calls if title != "founder")
+        (title, _), = finder.calls
+        assert title == "founder"
 
     def test_a_drained_search_is_neither_paged_nor_narrowed(self, site):
         """Its first page held everyone the provider counts: anything holding all its
@@ -292,11 +348,9 @@ class TestDiscover:
         fired.assert_not_called()
 
     def test_a_fired_round_is_work(self, site):
-        with (
-            patch("openoutfind.core.pipeline.icp._population_from_llm",
-                  return_value=_population()),
-            patch("openoutfind.discovery.search", side_effect=FakeLeadFinder()),
-        ):
+        population, anchored = _cold_start()
+        with population, anchored, patch("openoutfind.discovery.search",
+                                         side_effect=FakeLeadFinder()):
             assert discover(site) is True
 
     def test_the_floor_reaches_the_round(self, site):

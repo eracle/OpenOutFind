@@ -126,7 +126,7 @@ def _decide(*, waiting, batch, verdict=0.05, fired=True, judged=True):
         Page.objects.create(search=search, number=1, round=0, rows=3)
     if judged and not meter.totals(meter.POOL_FIT)[1]:
         meter.record(meter.POOL_FIT, 0)
-    plan = patch("openoutfind.core.pipeline.frontier.plan", return_value=batch)
+    plan = patch("openoutfind.core.pipeline.frontier.arms_beating", return_value=batch)
     with (
         plan as planned,
         patch("openoutfind.core.pipeline.frontier.fit_rate_map", return_value=lambda p: p),

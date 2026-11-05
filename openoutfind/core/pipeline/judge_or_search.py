@@ -12,9 +12,10 @@ sides are a fit rate over a cost, in dollars per fit:
   the store's verdicts (``frontier.fit_rate_map``) — so a lead waiting and the people a
   search would bring are weighed on one scale, never the raw score against a mean of raw
   scores;
-- **the arm** is the frontier's best (``frontier.plan``): a search whose new people are
-  expected to fit more often than the best lead waiting, at ``new`` of them for
-  ``c_arm`` (its ready time and their ingest time);
+- **the arm** is the frontier's best (``frontier.arms_beating``), each valued alone: a
+  search whose new people are expected to fit more often than the best lead waiting, at
+  ``new`` of them for ``c_arm`` (its ready time and their ingest time). This decides
+  *when* a round fires; the round's batch covers the fits (``Frontier.batch``);
 - ``c_verdict`` (``calibration.verdict_cost``) is a verdict's measured time at
   ``run_hour_dollars`` plus its LLM bill, or an agent's fixed cost.
 
@@ -79,15 +80,15 @@ def decide(qualifier, candidates) -> Decision:
                     colored("·", "cyan", attrs=["bold"]), floor,
                     colored("judge", "cyan", attrs=["bold"]))
         return Decision(True, floor)
-    batch = frontier.plan(qualifier, floor)
+    beating = frontier.arms_beating(qualifier, floor)
     verdict = calibration.verdict_cost()
 
     judge = cost_per_fit(verdict, floor)
-    best = min(batch, key=lambda arm: arm.cost_per_fit(verdict), default=None)
+    best = min(beating, key=lambda arm: arm.cost_per_fit(verdict), default=None)
     search = best.cost_per_fit(verdict) if best is not None else math.inf
     pays = judge <= search
 
-    beyond = (f"{len(batch)} search(es) would beat it, the best {best} at "
+    beyond = (f"{len(beating)} search(es) would beat it, the best {best} at "
               f"{best.rate:.2f} × ~{best.new:.0f} new" if best else "no search beats it")
     logger.info("  %s judge %s/fit (best waiting %.2f; %d of %d fit since the last new "
                 "leads) vs search %s/fit (%s) → %s",

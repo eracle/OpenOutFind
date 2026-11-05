@@ -188,8 +188,8 @@ outfind find 10 --agent-qualify --population '{"searches": [
 **Write 10 whole searches, each a person you would want to find** — "a head of procurement at a
 dental clinic in California" is `{"title": "head procurement", "tag": "dental clinic", "state":
 "California"}`. The model knows which titles go with which companies; the walk then fires the
-searches next to them whose people would fit best. Spread them: different titles, different kinds
-of company, some broad and some narrow.
+searches next to them that between them hold the most of the store's fits and your anchors.
+Spread them: different titles, different kinds of company, some broad and some narrow.
 
 - **`title`** — the job title's words. Every word is required, in any order, and small words
   (`of`, `the`) are ignored. **Nothing is stemmed**: write the form titles carry (`founder`, not
@@ -203,7 +203,10 @@ of company, some broad and some narrow.
 
 An anchor's `profile` is one lowercase line shaped like a lead row (headline, industry, title,
 company, seniority, state, country), and its `company_keywords` are the invented company's tags,
-comma separated. It is asked once per store; later runs never see it again.
+comma separated. Every round of the walk counts the anchors as fits to cover, so a store never
+walks without them: a store seeded with `--labels` gets them in the same answer, and an older
+store that has searches but no anchors stops once with `population_pending` before its next
+round (its searches part is not used). It is asked once per store; later runs never see it again.
 
 ## Reading the output
 
@@ -301,6 +304,7 @@ is a stable string worth branching on:
 | `bad_config` | A value is set but unusable (e.g. a negative count). | Read the message; it names the field. |
 | `qualify_pending` | `--agent-qualify` stopped one candidate short of the `AI_MODEL` call it opted out of. | Judge the candidate carried on the error object, then re-run with `--verdict`/`--reason` — see *Answering qualify yourself*. |
 | `population_pending` | `--agent-qualify` on a fresh store: the walk's 10 initial searches and the ideal profiles are needed first. | Write them from the error's `product_docs`/`campaign_target`/`rules` in its `schema`, then re-run with `--population '<json>'`. |
+| `unanchored` | The ideal profiles could not be written (the model failed or wrote none), and the walk does not start without them. Nothing was fired. | Transient on the model path; run again. |
 
 Treat a non-zero exit as *partial success with a stated reason*, not as "nothing happened" — the
 rows are already on stdout. And never report a failed run to the user as "no leads matched": a
