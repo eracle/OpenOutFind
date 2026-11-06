@@ -198,7 +198,8 @@ Spread them: different titles, different kinds of company, some broad and some n
   and in order (`thc vape`, not `vape thc`), or empty for any company. Not stemmed either: a company
   tags itself `vapes` or `vape`, and the two find different companies. A tag is never searched
   without a title, and a word just as common in unrelated industries (`oil`, `brand`) is no tag.
-- **`state`** — a state inside the market `country`, or empty for the whole country.
+- **`state`** — a state inside the market `country`, or empty for the whole country. When all
+  the searches name a state, the walk never goes country-wide.
 - **`seniority`** — one of the allowed values, or `null`.
 
 An anchor's `profile` is one lowercase line shaped like a lead row (headline, industry, title,

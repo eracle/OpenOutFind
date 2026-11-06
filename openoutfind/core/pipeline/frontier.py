@@ -22,7 +22,8 @@ decision of *when* to fire a round, and for the debug log:
 
 - **An arm** is a search at a page: the next page of a fired search (``deepen``), a written
   search not yet fired, or a neighbour of a fired one on the lattice (``lattice``) — never
-  a search already fired, dead, or holding all the terms of one that is.
+  a search already fired, dead, or holding all the terms of one that is, and never a
+  search of the whole country where every written search names a state.
 - **new** is how many people the page would bring that the store does not hold. A person
   already seen adds nothing, so **a search holding all the terms of a drained one** (its
   pages returned everything it counts) is never an arm: the lattice proves it can only
@@ -186,11 +187,13 @@ class People:
         if terms.place:
             state, country = split_place(terms.place)
             keys.append(("country", country))
-            if state:
-                keys.append(("state", state))
         if not keys:
             return set(self.everyone)
-        sets = sorted((self._index.get(key, _EMPTY) for key in keys), key=len)
+        sets = [self._index.get(key, _EMPTY) for key in keys]
+        if terms.place and state:
+            sets.append(self._index.get(("state", state), _EMPTY)
+                        | self._index.get(("no state", country), _EMPTY))
+        sets.sort(key=len)
         return set(sets[0]).intersection(*sets[1:])
 
     def rate_of(self, pks, prior: float) -> float:
@@ -238,6 +241,8 @@ def _index_keys(fields: dict):
         yield ("country", country)
     if state := str(fields.get("contact_location_state") or "").strip().lower():
         yield ("state", state)
+    elif country:
+        yield ("no state", country)
 
 
 # ── the fired searches ───────────────────────────────────────────────
@@ -336,6 +341,8 @@ class Frontier:
         self.promising = People.promising(self.fits)
         self.fired = _fired()
         self.written = list(Search.objects.filter(origin=Search.Origin.WRITTEN))
+        self.market_is_states = bool(self.written) and all(
+            split_place(search.query.place)[0] for search in self.written)
         self.taken = set(Search.objects.filter(pages__isnull=False).values_list("key", flat=True))
         self.taken |= {search.key for search in self.written}
         self.dead = [search.query for search in Search.objects.filter(dead=True)]
@@ -370,7 +377,13 @@ class Frontier:
             near.setdefault(neighbour.key, (neighbour, move))
         arms += [self._first_page(terms, move) for key, (terms, move) in near.items()
                  if key not in self.taken and not self._closed(terms)]
-        return arms
+        return [arm for arm in arms if self._in_market(arm.terms)]
+
+    def _in_market(self, terms: Terms) -> bool:
+        """Whether ``terms`` stay in the market the written searches drew: where every one
+        of them names a state, a search of the whole country is outside it. A store written
+        partly on the country (batch 5: 8 of 10) has no such limit."""
+        return bool(split_place(terms.place)[0]) or not self.market_is_states
 
     def _closed(self, terms: Terms) -> bool:
         """Whether a dead search or a drained one convicts ``terms``: it holds all their

@@ -10,7 +10,7 @@ import pytest
 from openoutfind.core.models import PAGE_SIZE, Page, PageLead, Search
 from openoutfind.core.pipeline import frontier
 from openoutfind.core.pipeline.frontier import Arm, Frontier, People
-from openoutfind.core.pipeline.query import Terms
+from openoutfind.core.pipeline.query import Terms, split_place
 from openoutfind.crm.models import Company, Deal, DealState, Lead, Outcome
 
 US = "United States"
@@ -67,6 +67,18 @@ class TestPeople:
             assert people.match(terms) == {
                 lead.pk for lead in leads if terms.matches(lead.source_fields)}, terms
 
+    def test_a_row_with_no_state_is_matched_by_a_state_of_its_own_country(self):
+        stateless = _lead(state="")
+        Lead.objects.filter(pk=stateless.pk).update(source_fields={
+            "contact_job_title": "Owner", "company_keywords": "restaurant",
+            "contact_location_country": "indonesia"})
+        ohio = _lead(state="Ohio")
+        people = People.load({})
+
+        assert people.match(Terms.written(place="Bali, Indonesia")) == {stateless.pk}
+        assert people.match(Terms.written(place=f"Ohio, {US}")) == {ohio.pk}
+        assert people.match(Terms.written(place=f"Texas, {US}")) == set()
+
     def test_a_region_counts_each_company_once(self):
         acme = _company("acme")
         fits = [_lead(company=acme, verdict=1) for _ in range(5)]
@@ -107,6 +119,29 @@ class TestTheArms:
         arms = Frontier(None).arms()
 
         assert not any(arm.terms.holds_all_of(drained) for arm in arms)
+
+    def test_a_market_written_in_states_never_goes_country_wide(self):
+        """The Bali sample: a fired country search's next page and its neighbours are out
+        with the state's own widening, so neither the cover nor the fill can leave Bali."""
+        people = [_lead(verdict=1) for _ in range(3)]
+        _fired(Terms.written(title="owner", tag="cannabis", place="Bali, Indonesia"),
+               people, found=500)
+        _fired(Terms.written(title="manager", tag="cannabis", place="Indonesia"), people,
+               found=500, origin=Search.Origin.NEIGHBOUR)
+
+        arms = Frontier(None).arms()
+
+        assert arms and all(split_place(arm.terms.place)[0] for arm in arms)
+
+    def test_a_market_written_partly_on_the_country_keeps_it(self):
+        people = [_lead(verdict=1) for _ in range(3)]
+        _fired(Terms.written(title="owner", tag="cannabis", place=f"Ohio, {US}"), people,
+               found=500)
+        _fired(Terms.written(title="manager", tag="cannabis", place=US), people, found=500)
+
+        arms = Frontier(None).arms()
+
+        assert any(not split_place(arm.terms.place)[0] for arm in arms)
 
     def test_a_search_with_more_to_page_offers_both(self):
         people = [_lead(verdict=1) for _ in range(3)]

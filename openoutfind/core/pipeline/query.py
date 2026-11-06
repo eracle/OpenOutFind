@@ -188,7 +188,12 @@ class Terms:
         return True
 
     def matches(self, source_fields: dict | None) -> bool:
-        """Whether a person matches every term, each in its own field."""
+        """Whether a person matches every term, each in its own field.
+
+        A row with no state matches any state of its country: the provider filters on
+        ``Bali, Indonesia`` (15 people against the country's 158) but only returns a state
+        on US rows, so an empty state says nothing about where they are.
+        """
         fields = source_fields or {}
         if self.title and not self.title <= title_words(fields.get("contact_job_title", "")):
             return False
@@ -202,7 +207,8 @@ class Terms:
             state, country = split_place(self.place)
             if str(fields.get("contact_location_country") or "").strip().lower() != country:
                 return False
-            if state and str(fields.get("contact_location_state") or "").strip().lower() != state:
+            own_state = str(fields.get("contact_location_state") or "").strip().lower()
+            if state and own_state and own_state != state:
                 return False
         return True
 

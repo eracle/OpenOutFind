@@ -95,6 +95,15 @@ class TestMatches:
                               place="California, United States", seniority="head")
         assert terms.matches(self.PERSON)
 
+    def test_a_row_with_no_state_matches_a_state_of_its_own_country_only(self):
+        """The provider returns a state on US rows alone."""
+        row = {"contact_location_country": "Indonesia"}
+        assert Terms.written(place="Bali, Indonesia").matches(row)
+        assert not Terms.written(place="Bali, Malaysia").matches(row)
+
+    def test_a_row_with_another_state_does_not_match(self):
+        assert not Terms.written(place="Ohio, United States").matches(self.PERSON)
+
     def test_a_title_word_elsewhere_in_the_profile_does_not_count(self):
         """The regulator with "cannabis" in a tag, not a title, is not a title match."""
         assert not Terms.written(title="cannabis").matches(self.PERSON)
