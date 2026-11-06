@@ -126,7 +126,7 @@ def _decide(*, waiting, batch, verdict=0.05, fired=True, judged=True):
         Page.objects.create(search=search, number=1, round=0, rows=3)
     if judged and not meter.totals(meter.POOL_FIT)[1]:
         meter.record(meter.POOL_FIT, 0)
-    plan = patch("openoutfind.core.pipeline.frontier.arms_beating", return_value=batch)
+    plan = patch("openoutfind.core.pipeline.frontier.next_round", return_value=batch)
     with (
         plan as planned,
         patch("openoutfind.core.pipeline.frontier.fit_rate_map", return_value=lambda p: p),
@@ -166,7 +166,11 @@ class TestTheRule:
 
     def test_the_batch_is_asked_for_people_beating_the_best_waiting(self):
         _, plan = _decide(waiting=0.15, batch=[_arm(0.3)])
-        assert plan.call_args.args[1] == 0.15
+        assert plan.call_args.args[2] == 0.15
+
+    def test_the_batch_asked_for_is_the_next_rounds(self):
+        _, plan = _decide(waiting=0.15, batch=[_arm(0.3)])
+        assert plan.call_args.args[1] == 1
 
     def test_a_best_lead_fitting_like_the_best_search_is_judged(self):
         decision, _ = _decide(waiting=0.3, batch=[_arm(0.3)])
@@ -174,6 +178,22 @@ class TestTheRule:
 
     def test_with_no_search_worth_firing_the_pool_is_judged(self):
         decision, _ = _decide(waiting=0.1, batch=[])
+        assert decision.judge is True
+
+    def test_a_round_bringing_nobody_new_leaves_the_pool_judged(self):
+        decision, _ = _decide(waiting=0.1, batch=[_arm(0.5, new=0.0)])
+        assert decision.judge is True
+
+    def test_a_narrow_arm_does_not_carry_the_round_it_rides_in(self):
+        """Batch 6: 0.32 for 4 new people fired a batch of 347 at 0.10, a round a verdict."""
+        batch = [_arm(0.32, new=4.0), _arm(0.09, new=340.0)]
+        decision, _ = _decide(waiting=0.235, batch=batch)
+        assert decision == judge_or_search.Decision(True, 0.235)
+
+    @pytest.mark.parametrize("verdict", [0.05, 0.006, 0.0004])
+    def test_the_boundary_holds_whoever_judges(self, verdict):
+        batch = [_arm(0.32, new=4.0), _arm(0.09, new=340.0)]
+        decision, _ = _decide(waiting=0.235, batch=batch, verdict=verdict)
         assert decision.judge is True
 
     def test_a_dearer_search_keeps_the_run_on_the_pool_longer(self):
@@ -190,7 +210,7 @@ class TestTheRule:
 
         assert "judge $" in caplog.text
         assert "0 of 2 fit" in caplog.text
-        assert "1 search(es) would beat it" in caplog.text
+        assert "a round of 1 at 0.30" in caplog.text
         assert "→" in caplog.text and "search" in caplog.text
 
 
@@ -198,6 +218,20 @@ class TestArithmetic:
     def test_a_zero_rate_costs_without_bound(self):
         assert judge_or_search.cost_per_fit(0.05, 0.0) == math.inf
         assert judge_or_search.cost_per_fit(0.05, 0.25) == pytest.approx(0.2)
+
+    def test_a_rounds_rate_weighs_each_arm_by_its_new_people(self):
+        batch = [_arm(0.5, new=10.0), _arm(0.1, new=30.0)]
+        assert judge_or_search.round_rate(batch) == pytest.approx(0.2)
+
+    def test_a_round_costs_its_firing_and_a_verdict_on_everyone_new(self):
+        batch = [_arm(0.5, new=10.0, cost=1.0), _arm(0.1, new=30.0, cost=1.0)]
+        fits = 8.0  # 40 new people at 0.2
+        assert judge_or_search.round_cost_per_fit(batch, 0.05) == pytest.approx(
+            (2.0 + 0.05 * 40) / fits)
+
+    def test_a_round_bringing_nobody_costs_without_bound(self):
+        assert judge_or_search.round_rate([]) == 0.0
+        assert judge_or_search.round_cost_per_fit([_arm(0.5, new=0.0)], 0.05) == math.inf
 
     def test_the_best_waiting_lead_is_the_highest_fit_rate(self):
         class Fixed:

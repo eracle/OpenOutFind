@@ -6,21 +6,24 @@ Exploit asks this when no lead clears the bar (``calibration.current_threshold``
 sides are a fit rate over a cost, in dollars per fit:
 
     judge   = c_verdict / rate(best waiting)
-    search  = (c_arm + c_verdict · new) / (new · rate(arm))      for the best arm
+    search  = (c_round + c_verdict · new) / (new · rate(round))  for the round it would fire
 
 - **rate** is a fit rate on both sides — the GP's score through the isotonic map fitted on
   the store's verdicts (``frontier.fit_rate_map``) — so a lead waiting and the people a
   search would bring are weighed on one scale, never the raw score against a mean of raw
   scores;
-- **the arm** is the frontier's best (``frontier.arms_beating``), each valued alone: a
-  search whose new people are expected to fit more often than the best lead waiting, at
-  ``new`` of them for ``c_arm`` (its ready time and their ingest time). This decides
-  *when* a round fires; the round's batch covers the fits (``Frontier.batch``);
+- **the round** is the batch ``frontier.next_round`` would fire next, valued whole: its
+  ``new`` people across every arm, ``rate`` the arms' rates weighted by those people, and
+  ``c_round`` its ready and ingest time. The batch covers the fits, so a narrow search
+  with a high rate says nothing about it: on batch 6 the best single arm read 0.32 for 4
+  new people while the batch held 347 at 0.10, and valuing that arm fired a round after
+  almost every verdict with 8,258 people waiting;
 - ``c_verdict`` (``calibration.verdict_cost``) is a verdict's measured time at
   ``run_hour_dollars`` plus its LLM bill, or an agent's fixed cost.
 
 A search is cheap next to a verdict, so this is close to *judge while the best lead
-waiting fits as often as the people the best search would bring*. Before the first round
+waiting fits as often as the people the next round would bring*, whoever the judge is.
+Before the first round
 there is nothing to weigh, and the pool is judged. **After a round that added leads, the
 pool is judged at least once before the next**: an arm is valued on the GP as the run's
 verdicts leave it, and with no verdict on the new people nothing has tested what the
@@ -54,6 +57,21 @@ def cost_per_fit(cost: float, rate: float) -> float:
     return cost / rate if rate > 0 else math.inf
 
 
+def round_rate(batch) -> float:
+    """The fit rate of the people ``batch`` would bring, each arm weighing by its new
+    people — 0.0 when it would bring nobody new."""
+    new = sum(arm.new for arm in batch)
+    return sum(arm.new * arm.rate for arm in batch) / new if new else 0.0
+
+
+def round_cost_per_fit(batch, verdict: float) -> float:
+    """Dollars per fit to fire ``batch`` and judge every new person it brings."""
+    new = sum(arm.new for arm in batch)
+    if not new:
+        return math.inf
+    return cost_per_fit(sum(arm.cost for arm in batch) / new + verdict, round_rate(batch))
+
+
 def best_waiting(qualifier, candidates, fit_rate) -> float:
     """The fit rate of the best lead in ``candidates`` — 0.0 when the GP cannot score."""
     if not candidates:
@@ -66,6 +84,8 @@ def best_waiting(qualifier, candidates, fit_rate) -> float:
 def decide(qualifier, candidates) -> Decision:
     """Judge the best lead waiting, or search, on dollars per fit. Logs both costs, so a
     run says why it searched or judged."""
+    from django.db.models import Max
+
     from openoutfind.core import meter
     from openoutfind.core.ml import calibration
     from openoutfind.core.models import Page
@@ -80,16 +100,17 @@ def decide(qualifier, candidates) -> Decision:
                     colored("·", "cyan", attrs=["bold"]), floor,
                     colored("judge", "cyan", attrs=["bold"]))
         return Decision(True, floor)
-    beating = frontier.arms_beating(qualifier, floor)
+    number = Page.objects.aggregate(Max("round"))["round__max"] + 1
+    batch = frontier.next_round(qualifier, number, floor)
     verdict = calibration.verdict_cost()
 
     judge = cost_per_fit(verdict, floor)
-    best = min(beating, key=lambda arm: arm.cost_per_fit(verdict), default=None)
-    search = best.cost_per_fit(verdict) if best is not None else math.inf
+    search = round_cost_per_fit(batch, verdict)
     pays = judge <= search
 
-    beyond = (f"{len(beating)} search(es) would beat it, the best {best} at "
-              f"{best.rate:.2f} × ~{best.new:.0f} new" if best else "no search beats it")
+    new = sum(arm.new for arm in batch)
+    beyond = (f"a round of {len(batch)} at {round_rate(batch):.2f} × ~{new:.0f} new"
+              if new else "no round brings anyone")
     logger.info("  %s judge %s/fit (best waiting %.2f; %d of %d fit since the last new "
                 "leads) vs search %s/fit (%s) → %s",
                 colored("·", "cyan", attrs=["bold"]), _dollars(judge), floor,

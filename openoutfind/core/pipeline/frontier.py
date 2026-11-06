@@ -46,13 +46,12 @@ decision of *when* to fire a round, and for the debug log:
   ready time, and each new person's measured ingest time — embedding is most of a
   round's — so a page of 200 strangers pays for every one.
 
-``judge_or_search`` weighs the best of the arms beating the floor against judging the
-pool, and a round fires only while one does.
+``judge_or_search`` weighs the batch ``next_round`` would fire, valued whole, against
+judging the pool, and a round fires only while one of its arms beats the floor.
 """
 from __future__ import annotations
 
 import logging
-import math
 import random
 import statistics
 from collections import defaultdict
@@ -316,11 +315,6 @@ class Arm:
         """Whether its new people are expected to fit more often than ``floor``."""
         return self.new * (self.rate - floor) > 0
 
-    def cost_per_fit(self, verdict_cost: float) -> float:
-        """Dollars per fit to fire it and judge every new person it brings."""
-        fits = self.new * self.rate
-        return (self.cost + verdict_cost * self.new) / fits if fits > 0 else math.inf
-
     def __repr__(self):
         return f"{self.terms.as_text()} @ page {self.number}"
 
@@ -495,12 +489,6 @@ class Frontier:
         drawn = random.Random(round_number).sample(rest, min(len(rest), slots - len(chosen)))
         _log(chosen, drawn, len(arms), len(self.promising.everyone))
         return chosen + drawn
-
-
-def arms_beating(qualifier, floor: float) -> list[Arm]:
-    """Every arm whose new people are expected to fit more often than ``floor``, each
-    valued alone — what ``judge_or_search`` weighs a search on."""
-    return [arm for arm in Frontier(qualifier).arms() if arm.beats(floor)]
 
 
 def next_round(qualifier, round_number: int, floor: float = 0.0) -> list[Arm]:
