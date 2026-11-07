@@ -267,7 +267,7 @@ enrichment on top, never a precondition — so the file can carry rows with a bl
 
 | Feature                            | Description                                                                                                          |
 |------------------------------------|----------------------------------------------------------------------------------------------------------------------|
-| 🧠 **Autonomous Lead Discovery**   | No contact lists needed — an LLM turns your product + objective into the first searches, and the walk fires next whichever nearby search it expects to bring the most new fits. |
+| 🧠 **Autonomous Lead Discovery**   | No contact lists needed — an LLM turns your product + objective into the first searches, and the walk keeps a belief about how many people hold each keyword and how many of them fit. It leaves areas that have gone dry and tries keywords it knows little about. |
 | 📝 **A Reason Per Lead**           | Every qualified lead carries the LLM's written rationale for choosing it. It exports alongside the row, so the tool downstream can merge it — and so you can tell a bad ICP from a bad model. |
 | 🔒 **Licensed Discovery**          | Firmographic profiles come from a licensed provider (BetterContact Lead Finder) — no scraping, no browser, no account. |
 | 🎯 **Pay Only For What Resolves**  | Search against the licensed source is free; a confidence gate rations the paid lookups, billed only on a verified hit. Cost scales with qualified leads, not with how much you searched. |
@@ -294,7 +294,7 @@ Only step 3 costs money, and its only gate is whether you configured a provider.
 
 The run ends when the goal is met, or when **nothing can advance right now** — every lead is waiting on a lookup that is not due yet, or the search has drained. There is no timeout to configure, because each thing being waited on carries its own.
 
-**Discover → qualify → gate → resolve → export.** One LLM pass turns your product description into 4 whole searches; from there the walk looks at every next page and every neighbouring search — a term added, dropped or swapped, drawn from the people already found — and fires the one it expects to bring the most new fits. Qualification runs the GP + LLM loop over the stored firmographic text and writes the `reason`. The GP confidence gate promotes `QUALIFIED → READY_TO_FIND_EMAIL`, **rationing the paid lookup** so only the best-fit leads cost a credit. A miss ends the deal as `NO_EMAIL_FOUND` with a blank outcome (so the labeler skips it — an unfindable address is not a fit signal).
+**Discover → qualify → gate → resolve → export.** One LLM pass turns your product description into 4 whole searches; from there the walk looks at every next page and every neighbouring search — a term added, dropped or swapped, drawn from the people already found — and values each on the fits still out there, from a belief per keyword that every page and verdict updates. It fires the one worth the most on a random draw of that belief (Thompson sampling), so a keyword it knows little about sometimes gets tried and one known to be bad almost never does. Qualification runs the GP + LLM loop over the stored firmographic text and writes the `reason`. The GP confidence gate promotes `QUALIFIED → READY_TO_FIND_EMAIL`, **rationing the paid lookup** so only the best-fit leads cost a credit. A miss ends the deal as `NO_EMAIL_FOUND` with a blank outcome (so the labeler skips it — an unfindable address is not a fit signal).
 
 **The qualification loop in detail:**
 
