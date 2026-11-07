@@ -6,9 +6,10 @@
     value(arm) = new · (F − held) / (N − seen)  ÷  cost
 
 - **An arm** is a search at a page: the next page of a fired search (``deepen``), a written
-  search not yet fired, or a neighbour of a fired one on the lattice (``lattice``) — never
-  a search already fired, dead, or holding all the terms of one that is, and never a
-  search of the whole country where every written search names a state.
+  search not yet fired, or a search composed from every keyword the store holds
+  (``compose``) — the best at the mean belief, and on each draw the best on that draw —
+  never a search already fired, dead, or holding all the terms of one that is, and never
+  a search of the whole country where every written search names a state.
 - **N** is how many people the market holds for the search: the provider's count where it
   fired, otherwise the belief's estimate (``belief``), capped by the count of any fired
   search it narrows and kept above the people the store holds for it. **F** is ``N · θ``,
@@ -17,18 +18,19 @@
   An arm with nobody new values at 0, and so does an area whose fits the store holds.
 - **new** is how many people the page would bring that the store does not hold. A person
   already seen adds nothing, so **a search holding all the terms of a drained one** (its
-  pages returned everything it counts) is never an arm: the lattice proves it can only
-  re-find people. A next page brings as many as its latest page was first to bring in.
+  pages returned everything it counts) is never an arm: it matches a subset of those
+  people, so it can only re-find them. A next page brings as many as its latest page was first to bring in.
 - **the costs** are dollars (``calibration.dollars``): a search's measured ready time, each
   new person's measured ingest time — embedding is most of a round's — and a verdict on
   each of them, so a page of 200 strangers pays for every one.
 
 **The search fired is drawn by Thompson sampling** (``Frontier.pick``): finding the most
 fits while learning is a bandit. One ``θ_t`` is drawn per keyword and one set of sizes for
-the market, seeded by the round's number so a rerun repeats, every arm is valued on the draw,
-and the highest fires. A keyword little is known about sometimes draws high and gets tried;
-a keyword known to be bad almost never does. A search the provider has counted keeps its
-count on every draw.
+the market, seeded by the round's number so a rerun repeats, the searches worth the most
+on that draw are composed from the whole vocabulary and join the arms, every arm is valued
+on the draw, and the highest fires. A keyword little is known about sometimes draws high
+and gets tried, in whatever search it is worth the most; a keyword known to be bad almost
+never does. A search the provider has counted keeps its count on every draw.
 
 ``judge_or_search`` weighs the arm with the highest value at the mean ``θ_t`` against judging
 the pool, and the walk stops when no arm is expected to bring a new fit. In the cold phase
@@ -49,8 +51,10 @@ from dataclasses import dataclass, replace
 import numpy as np
 
 from openoutfind.core.conf import CAMPAIGN_CONFIG
-from openoutfind.core.pipeline import belief, lattice
-from openoutfind.core.pipeline.query import Terms, company_tags, split_place, title_words
+from openoutfind.core.pipeline import belief, compose
+from openoutfind.core.pipeline.query import (
+    Terms, company_tags, is_stopword_phrase, query_title_words, split_place, title_words,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +67,9 @@ NEUTRAL_RATE = 0.5
 SEEN_MARGIN = 1.1
 # The fits a page must be expected to bring for the walk to go on.
 FITS_WORTH_A_SEARCH = 1.0
+# The composed searches valued exactly, at the mean and on each draw: room for the ones
+# the frontier refuses (fired, dead, drained) below the best.
+COMPOSED = 200
 
 
 # ── the fit rate ─────────────────────────────────────────────────────
@@ -155,11 +162,40 @@ class People:
         self.company: dict[int, object] = {}
         self.everyone: set[int] = set()
         self._index: dict[tuple, set[int]] = defaultdict(set)
+        self._title_words: set[str] = set()
+        self._joined: set[str] = set()
+        self._states: dict[str, set[str]] = defaultdict(set)
         for pk, company_id, fields in rows:
             self.everyone.add(pk)
             self.company[pk] = _company_key(pk, company_id, fields)
             for key in _index_keys(fields):
                 self._index[key].add(pk)
+            self._take_vocabulary(fields)
+
+    def _take_vocabulary(self, fields: dict) -> None:
+        title = fields.get("contact_job_title", "")
+        searched = query_title_words(title)
+        self._title_words |= searched
+        self._joined |= title_words(title) - searched
+        country = str(fields.get("contact_location_country") or "").strip().lower()
+        state = str(fields.get("contact_location_state") or "").strip().lower()
+        if country and state:
+            self._states[country].add(state)
+
+    def title_vocabulary(self) -> set[str]:
+        """Every title word a search may hold. A hyphenated title's joined form is left
+        out: the provider counts ``cofounder`` and ``co founder`` as one (161,369), so the
+        split words already reach it."""
+        return self._title_words - self._joined
+
+    def tag_vocabulary(self) -> set[tuple[str, ...]]:
+        """Every phrase inside a tag the store's people hold, never stopwords alone."""
+        return {key[1] for key in self._index if key[0] == "tag"
+                and not is_stopword_phrase(key[1])}
+
+    def states_in(self, country: str) -> set[str]:
+        """The states the store's people live in inside ``country``."""
+        return set(self._states.get(country.lower(), ()))
 
     @classmethod
     def load(cls, rates: dict[int, float]) -> "People":
@@ -349,6 +385,7 @@ class Frontier:
         self.dead = [search.query for search in Search.objects.filter(dead=True)]
         self.taken |= set(Search.objects.filter(dead=True).values_list("key", flat=True))
         self.closed = self.dead + [f.terms for f in self.fired if f.drained]
+        self._vocabulary: compose.Vocabulary | None = None
 
         returned = sum(Page.objects.values_list("rows", flat=True))
         self.kept = PageLead.objects.count() / returned if returned else 1.0
@@ -361,25 +398,74 @@ class Frontier:
     # ── candidates ──
 
     def arms(self) -> list[Arm]:
-        """Every arm, valued at the mean belief."""
+        """Every arm, valued at the mean belief: the next pages, the unfired written
+        searches, and the searches composed at the mean."""
         arms = [self._deepen(f) for f in self.fired if not f.latest.at_bottom]
         fired_keys = {f.search.key for f in self.fired}
         arms += [self._first_page(search.query, "written", search) for search in self.written
                  if not search.dead and search.key not in fired_keys]
-
-        near: dict[str, tuple[Terms, str]] = {}
-        pools = self._pools()
-        live = [f.terms for f in self.fired if not f.search.dead]
-        for terms in live:
-            for neighbour, move in lattice.neighbours(terms, pools):
-                near.setdefault(neighbour.key, (neighbour, move))
-        for neighbour, move in lattice.exchanges(live):
-            near.setdefault(neighbour.key, (neighbour, move))
-        arms += [self._first_page(terms, move) for key, (terms, move) in near.items()
-                 if key not in self.taken and not self._closed(terms)]
         arms = [arm for arm in arms if self._in_market(arm.terms)]
         self._settle(arms)
-        return arms
+        composed = self._composed(self.beliefs.means(), self.beliefs.sizes.mean)
+        self._rate(composed)
+        return _distinct(arms + composed)
+
+    def _composed(self, thetas: dict, sizes: belief.Sizes) -> list[Arm]:
+        """Page 1 of the ``COMPOSED`` searches worth the most on ``thetas`` and ``sizes``
+        that the frontier may fire, valued at the mean belief."""
+        vocabulary = self.vocabulary
+        lift = self.beliefs.lifts(thetas)
+        share = self.beliefs.shares(vocabulary.keywords(), sizes)
+        searches = compose.compose(vocabulary, lift, share, sizes.log_market,
+                                   self._worth(sizes.log_market), COMPOSED)
+        return [self._first_page(terms, "drawn") for terms in searches
+                if terms.key not in self.taken and terms.is_legal
+                and self._in_market(terms) and not self._closed(terms)]
+
+    def _worth(self, log_market: float) -> compose.Worth:
+        """What a page of a search is worth per dollar, from its summed lift and share —
+        ``Arm.value`` with nobody yet seen, for the composition to sort by."""
+        from openoutfind.core.models import PAGE_SIZE
+
+        market = belief._log_odds(self.beliefs.market_rate)
+
+        def worth(lift: np.ndarray, share: np.ndarray) -> np.ndarray:
+            theta = 1.0 / (1.0 + np.exp(-(market + lift)))
+            new = self.kept * np.minimum(PAGE_SIZE, np.exp(log_market + share))
+            return theta * new / (self.fire_cost + self.person_cost * new)
+
+        return worth
+
+    @property
+    def vocabulary(self) -> compose.Vocabulary:
+        """Every keyword a composed search may hold: the store's people's title words and
+        tag phrases, the written searches' terms, every seniority, and the market's places
+        — the country and its states, or only the written states where every written
+        search names one. No written search, no market, nothing composed."""
+        if self._vocabulary is None:
+            self._vocabulary = self._load_vocabulary()
+        return self._vocabulary
+
+    def _load_vocabulary(self) -> compose.Vocabulary:
+        from openoutfind.discovery import LEAD_SENIORITIES
+
+        written = [search.query for search in self.written]
+        country = next((split_place(t.place)[1] for t in written if t.place), "")
+        if not written:
+            return compose.Vocabulary((), (), (), ())
+        titles = self.people.title_vocabulary() | {w for t in written for w in t.title}
+        tags = self.people.tag_vocabulary() | {t.tag for t in written if t.tag}
+        written_states = {split_place(t.place)[0] for t in written} - {""}
+        states = written_states if self.market_is_states else (
+            self.people.states_in(country) | written_states)
+        places = [("state", state, country) for state in sorted(states)] if country else []
+        if country and not self.market_is_states:
+            places.insert(0, ("country", country))
+        return compose.Vocabulary(
+            titles=tuple(("title", word) for word in sorted(titles)),
+            tags=tuple(("tag", tag) for tag in sorted(tags)),
+            seniorities=tuple(("seniority", value) for value in LEAD_SENIORITIES),
+            places=tuple(places))
 
     def _in_market(self, terms: Terms) -> bool:
         """Whether ``terms`` stay in the market the written searches drew: where every one
@@ -391,11 +477,6 @@ class Frontier:
         """Whether a dead search or a drained one convicts ``terms``: it holds all their
         terms, so it matches nobody, or only people the store already holds."""
         return any(terms.holds_all_of(closed) for closed in self.closed)
-
-    def _pools(self) -> lattice.TermPools:
-        written = [search.query for search in self.written]
-        country = next((split_place(t.place)[1] for t in written if t.place), "")
-        return lattice.TermPools.load(self.people.rates, self.people.company, written, country)
 
     # ── valuing ──
 
@@ -456,10 +537,16 @@ class Frontier:
         return sum(rates.get(pk, self.beliefs.market_rate) for pk in people)
 
     def _settle(self, arms: list[Arm]) -> None:
-        """Read every keyword's belief, in one pass, and each arm's rate at its mean."""
-        keywords = sorted({keyword for arm in arms for keyword in arm.keywords})
+        """Read the belief of every keyword — the whole vocabulary's and ``arms``' — in one
+        pass, and each arm's rate at its mean."""
+        keywords = sorted({*self.vocabulary.keywords(),
+                           *(keyword for arm in arms for keyword in arm.keywords)})
         self.beliefs.settle(belief.keyword_priors(keywords, self.qualifier, self.fit_rate,
                                                   self.beliefs.market_rate))
+        self._rate(arms)
+
+    def _rate(self, arms: list[Arm]) -> None:
+        """Each arm's ``θ(q)`` and fit rate at the mean belief."""
         means = self.beliefs.means()
         for arm in arms:
             arm.theta = self.beliefs.rate(arm.keywords, means)
@@ -468,19 +555,30 @@ class Frontier:
     # ── the next search ──
 
     def pick(self, arms: list[Arm], round_number: int) -> Arm:
-        """Thompson sampling: the arm worth the most on one draw of every keyword's ``θ_t``
-        and of the sizes, seeded by ``round_number``."""
+        """Thompson sampling: one draw of every keyword's ``θ_t`` and of the sizes, seeded
+        by ``round_number``; the searches worth the most on it join ``arms``, and the arm
+        worth the most on the draw is returned."""
         thetas = self.beliefs.draw(round_number)
         sizes = self.beliefs.draw_sizes(round_number)
+        drawn = [arm for arm in self._composed(thetas, sizes) if arm.new > 0]
+        self._rate(drawn)
 
         def drawn_value(arm: Arm) -> float:
             return self._resized(arm, sizes).value(self.beliefs.rate(arm.keywords, thetas))
 
-        return max(_in_one_order(arms), key=drawn_value)
+        return max(_in_one_order(_distinct(arms + drawn)), key=drawn_value)
+
+
+def _distinct(arms: list[Arm]) -> list[Arm]:
+    """``arms`` with one arm per search and page, the first kept."""
+    seen: dict[tuple[str, int], Arm] = {}
+    for arm in arms:
+        seen.setdefault((arm.terms.key, arm.number), arm)
+    return list(seen.values())
 
 
 def _in_one_order(arms: list[Arm]) -> list[Arm]:
-    """The arms however the lattice enumerated them, so a rerun breaks a tie the same way."""
+    """The arms in one order whatever made them, so a rerun breaks a tie the same way."""
     return sorted(arms, key=lambda arm: (arm.terms.key, arm.number))
 
 

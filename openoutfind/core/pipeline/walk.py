@@ -1,5 +1,5 @@
 # openoutfind/core/pipeline/walk.py
-"""The walk — a best-first search over the lattice of searches, one search at a time.
+"""The walk — a best-first search, one search at a time.
 
 The initial population is written whole by the LLM (``icp.write_initial_population``), and
 the first round fires it whole: nothing is known yet to choose among its searches by.
@@ -7,7 +7,7 @@ Every later round is one search, one blocking step of the run:
 
 1. **Read the frontier** (``frontier``) as the store stands now, after the run has judged
    what the last round brought in: every fired search's next page, every unfired written
-   search, and every neighbour of a fired search on the lattice (``lattice``).
+   search, and the searches composed from every keyword the store holds (``compose``).
 2. **Fire the search worth the most on one draw of the belief** (``Frontier.pick``). The
    worker thread only makes the API call.
 3. **Wait for it**, then, in the main thread, record its page and take the page's people
@@ -27,8 +27,8 @@ next round. When none can be written the walk does not start (``Unanchored``).
 
 A search whose page 1 comes back empty is **dead**, and so is every search holding all its
 terms. A search at the **bottom** — the page past its count, or page 50, where the
-provider's 10,000-row reach ends — no longer pages, but its neighbours stay on the
-frontier, since a narrower or sibling search opens a fresh window. A search whose pages
+provider's 10,000-row reach ends — no longer pages, but a narrower or sibling search can
+still be composed, since it opens a fresh window. A search whose pages
 returned everything it counts is **drained**, and every search holding all its terms can
 only re-find people the store holds: the frontier never offers one.
 """

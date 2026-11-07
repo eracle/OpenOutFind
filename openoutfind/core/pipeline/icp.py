@@ -104,8 +104,8 @@ def as_terms(written: WrittenSearch, country: str):
 def write_initial_population(site_config) -> int:
     """Write the initial population as ``Search`` rows. Returns how many were new.
 
-    The cold start, and the **only** LLM call the walk makes: every later search is a
-    neighbour of a fired one on the lattice, with no model in the loop. Under ``--agent-qualify`` the
+    The cold start, and the **only** LLM call the walk makes: every later search is
+    composed from the store's keywords (``compose``), with no model in the loop. Under ``--agent-qualify`` the
     population is the calling agent's ``--population`` answer instead, or the run stops
     with ``population_pending``.
 

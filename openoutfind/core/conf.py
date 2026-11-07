@@ -150,15 +150,12 @@ CAMPAIGN_CONFIG = {
     "embedding_model": "BAAI/bge-small-en-v1.5",
 }
 
-# The walk (core/pipeline/walk.py): a best-first search over the lattice of searches, one
-# at a time. `population` is how many searches the LLM writes to start it, fired whole as
-# round 0; every later round fires the one arm of the frontier worth the most on one draw
-# of the belief (core/pipeline/frontier.py, core/pipeline/belief.py).
+# The walk (core/pipeline/walk.py): one search at a time. `population` is how many searches
+# the LLM writes to start it, fired whole as round 0; every later round fires the arm of the
+# frontier worth the most on one draw of the belief, the searches composed from every
+# keyword the store holds among them (core/pipeline/frontier.py, compose.py, belief.py).
 WALK_CONFIG = {
     "population": 4,
-    # The heaviest terms each field offers a neighbour (core/pipeline/lattice.py): ~100
-    # neighbours a fired search, each valued from the store in microseconds.
-    "terms_per_field": 15,
     # Pseudo-companies a keyword's prior is worth (core/pipeline/belief.py): the prior comes
     # from a GP trained on the verdicts the counts hold, so a few real companies overtake it.
     "prior_companies": 3,

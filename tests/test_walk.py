@@ -327,7 +327,7 @@ class TestTheNextRound:
         _run(site, finder)
 
         (title, _), = finder.calls
-        assert title == "founder"
+        assert "founder" in title.split()
 
     def test_a_drained_search_is_neither_paged_nor_narrowed(self, site):
         """Its first page held everyone the provider counts: anything holding all its
@@ -341,7 +341,7 @@ class TestTheNextRound:
         assert all(offset == 0 for _, offset in finder.calls)
         founder = Terms.written(title="founder")
         assert not any(search.query.holds_all_of(founder)
-                       for search in Search.objects.filter(origin=Search.Origin.NEIGHBOUR))
+                       for search in Search.objects.filter(origin=Search.Origin.DRAWN))
 
     def test_no_arm_repeats_a_fired_search_or_holds_a_dead_ones_terms(self, site):
         _run(site, FakeLeadFinder(dead={"purchasing"}))
@@ -349,7 +349,7 @@ class TestTheNextRound:
         _run(site, FakeLeadFinder())
 
         dead = Terms.written(title="purchasing")
-        for search in Search.objects.filter(origin=Search.Origin.NEIGHBOUR):
+        for search in Search.objects.filter(origin=Search.Origin.DRAWN):
             assert not search.query.holds_all_of(dead)
         assert Search.objects.filter(pages__number=1).count() == Page.objects.filter(
             number=1).count()

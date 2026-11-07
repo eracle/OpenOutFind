@@ -34,6 +34,7 @@ search are drawn together. With one count there are no residuals, so the sizes s
 """
 from __future__ import annotations
 
+import logging
 import math
 import statistics
 from collections import defaultdict
@@ -45,6 +46,7 @@ import numpy as np
 from openoutfind.core.conf import WALK_CONFIG
 from openoutfind.core.pipeline.query import Terms, split_place
 
+logger = logging.getLogger(__name__)
 # What an unjudged person's fit rate weighs against a verdict.
 SCORE_WEIGHT = 0.25
 # How hard a keyword's count is held to its share of the store, on a log scale.
@@ -96,18 +98,42 @@ def evidence(pks, people, judged: set[int]) -> tuple[float, float]:
 
 # ── the prior ────────────────────────────────────────────────────────
 
-# A keyword's vector under its text: the frontier is read before every search, and the
-# same few hundred keywords come back each time.
+# A keyword's vector under its text, for this process: the frontier is read twice a
+# step, and the store's copy (``core.KeywordVector``) is read once.
 _VECTORS: dict[str, np.ndarray] = {}
 
 
 def _vectors(texts: list[str]) -> np.ndarray:
-    from openoutfind.core.ml.embeddings import embed_texts
-
+    """Each text's vector: from this process, else the store, else embedded and kept."""
     missing = [text for text in dict.fromkeys(texts) if text not in _VECTORS]
     if missing:
-        _VECTORS.update(zip(missing, embed_texts(missing)))
+        _VECTORS.update(_stored_or_embedded(missing))
     return np.array([_VECTORS[text] for text in texts], dtype=np.float64)
+
+
+def _stored_or_embedded(texts: list[str]) -> dict[str, np.ndarray]:
+    """``texts``' vectors, embedding and storing only those the store does not hold."""
+    from openoutfind.core.conf import CAMPAIGN_CONFIG
+    from openoutfind.core.ml.embeddings import embed_texts
+    from openoutfind.core.models import KeywordVector
+
+    model = CAMPAIGN_CONFIG["embedding_model"]
+    found: dict[str, np.ndarray] = {}
+    wanted = set(texts)
+    for text, vector in (KeywordVector.objects.filter(model=model)
+                         .values_list("text", "vector").iterator(chunk_size=5000)):
+        if text in wanted:
+            found[text] = np.frombuffer(bytes(vector), dtype=np.float32)
+    new = [text for text in texts if text not in found]
+    if new:
+        logger.info("  embedding %d new keyword(s), once for this store", len(new))
+        vectors = np.asarray(embed_texts(new), dtype=np.float32)
+        KeywordVector.objects.bulk_create(
+            [KeywordVector(text=text, model=model, vector=vector.tobytes())
+             for text, vector in zip(new, vectors)],
+            batch_size=1000, ignore_conflicts=True)
+        found.update(zip(new, vectors))
+    return found
 
 
 def keyword_priors(keywords: list[Keyword], qualifier, fit_rate,
@@ -254,6 +280,18 @@ class Beliefs:
                 drawn.log_keywords[keyword] = min(
                     _log_share(keyword, self.people) + spread * rng.standard_normal(), 0.0)
         return drawn
+
+    def lifts(self, thetas: dict[Keyword, float]) -> dict[Keyword, float]:
+        """Each keyword's lift on ``thetas``: ``logit θ_t − logit π``, what ``rate`` adds up."""
+        market = _log_odds(self.market_rate)
+        return {keyword: _log_odds(_clip(theta)) - market for keyword, theta in thetas.items()}
+
+    def shares(self, keywords, sizes: Sizes | None = None) -> dict[Keyword, float]:
+        """Each keyword's ``log(N_t / N₀)`` on the fit's mean or on ``sizes``, what
+        ``count`` adds up."""
+        sizes = sizes or self.sizes.mean
+        return {keyword: sizes.log_keywords.get(keyword, _log_share(keyword, self.people))
+                for keyword in keywords}
 
     def rate(self, keywords, thetas: dict[Keyword, float]) -> float:
         """``θ(q)`` for a query of ``keywords``, given a ``θ_t`` for each."""

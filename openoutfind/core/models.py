@@ -27,14 +27,15 @@ class Search(models.Model):
     class Origin(models.TextChoices):
         # Written whole by the LLM (or the calling agent) — the initial population.
         WRITTEN = "written", "written"
-        # A neighbour of a fired search on the lattice, fired from the frontier.
-        NEIGHBOUR = "neighbour", "neighbour"
+        # Composed from the store's keywords on a draw of the belief, fired from the frontier.
+        DRAWN = "drawn", "drawn"
 
     terms = models.JSONField()
     key = models.CharField(max_length=64, unique=True)
     origin = models.CharField(max_length=9, choices=Origin.choices,
-                              default=Origin.NEIGHBOUR)
-    # The move that reached it (``lattice.MOVES``), blank for a written search.
+                              default=Origin.DRAWN)
+    # How the frontier reached it (``drawn``; a store from before keeps its lattice move),
+    # blank for a written search.
     move = models.CharField(max_length=16, blank=True, default="")
     # The provider's exact count, read from page 1 — the only offset whose count is an
     # answer. ``None`` until page 1 has been fetched.
@@ -189,6 +190,28 @@ class RunningMean(models.Model):
         if not self.count:
             return f"{self.name}: no measurement"
         return f"{self.name}: {self.total / self.count:.3f} over {self.count}"
+
+
+class KeywordVector(models.Model):
+    """A keyword's embedding, kept so a store embeds each keyword once.
+
+    Every keyword the store's people hold is valued on every draw, and its prior is the
+    GP's score of this vector (``belief.keyword_priors``). A store of 10,000 people holds
+    about 100,000 tag phrases, 14 minutes of embedding: a process holding them in memory
+    alone paid that on every ``find``. ``model`` is the embedding model that wrote it, so
+    a change of model re-embeds rather than mixing two spaces.
+    """
+
+    text = models.TextField()
+    model = models.CharField(max_length=100)
+    vector = models.BinaryField()
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["text", "model"],
+                                               name="one_vector_per_keyword_and_model")]
+
+    def __str__(self):
+        return self.text
 
 
 class Brief(models.Model):

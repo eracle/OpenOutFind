@@ -87,6 +87,17 @@ class TestPeople:
         assert people.holding(("state", "ohio", "united states")) == {ohio.pk, stateless.pk}
         assert texas.pk not in people.holding(("state", "ohio", "united states"))
 
+    def test_a_hyphenated_title_offers_its_words_and_not_their_joined_form(self):
+        """The provider counts `cofounder` and `co founder` as one: two searches for 1,828."""
+        _lead("Co-Founder & CEO", "cannabis edibles, food & beverage", "Ohio")
+
+        people = People.load({})
+
+        assert people.title_vocabulary() == {"co", "founder", "ceo"}
+        assert {("cannabis",), ("cannabis", "edibles"), ("food", "beverage")} <= (
+            people.tag_vocabulary())
+        assert people.states_in("United States") == {"ohio"}
+
     def test_a_store_with_nobody_scored_reads_as_neutral(self):
         _lead()
         assert People.load({}).base_rate() == frontier.NEUTRAL_RATE
@@ -111,7 +122,7 @@ class TestTheArms:
         _fired(Terms.written(title="owner", tag="cannabis", place="Bali, Indonesia"),
                people, found=500)
         _fired(Terms.written(title="manager", tag="cannabis", place="Indonesia"), people,
-               found=500, origin=Search.Origin.NEIGHBOUR)
+               found=500, origin=Search.Origin.DRAWN)
 
         arms = Frontier(None).arms()
 
@@ -127,7 +138,7 @@ class TestTheArms:
 
         assert any(not split_place(arm.terms.place)[0] for arm in arms)
 
-    def test_a_search_with_more_to_page_offers_both(self):
+    def test_a_search_with_more_to_page_offers_its_next_page_beside_the_composed(self):
         people = [_lead(verdict=1) for _ in range(3)]
         roomy = Terms.written(title="purchasing", tag="cannabis")
         _fired(roomy, people, found=5000)
@@ -135,8 +146,25 @@ class TestTheArms:
         arms = Frontier(None).arms()
 
         assert any(arm.move == "deepen" and arm.number == 2 for arm in arms)
-        assert any(arm.number == 1 and arm.terms != roomy and arm.terms.holds_all_of(roomy)
+        assert any(arm.move == "drawn" and arm.number == 1 and arm.terms != roomy
                    for arm in arms)
+
+    def test_a_composed_search_holds_a_title_and_a_tag_from_the_store(self):
+        _lead("Extraction Lead", tags="cannabis extraction, live resin", verdict=1)
+        _fired(Terms.written(title="purchasing", tag="cannabis", place=f"Ohio, {US}"),
+               [_lead(verdict=1)], found=5000)
+
+        composed = [arm.terms for arm in Frontier(None).arms() if arm.move == "drawn"]
+
+        assert composed
+        vocabulary = {"extraction", "lead", "purchasing", "manager"}
+        assert all(t.title and t.title <= vocabulary and t.tag for t in composed)
+        assert any(t.tag == ("live", "resin") for t in composed)
+
+    def test_a_store_with_no_written_search_composes_nothing(self):
+        _lead(verdict=1)
+
+        assert not any(arm.move == "drawn" for arm in Frontier(None).arms())
 
     def test_a_dead_searchs_terms_are_never_an_arm(self):
         _fired(Terms.written(title="purchasing"), [_lead(verdict=1)], found=5000)
@@ -324,7 +352,7 @@ class TestTheNextSearch:
         people = [_lead("Purchasing Manager") for _ in range(3)]
         _fired(Terms.written(title="purchasing"), people, found=40)
         _fired(Terms.written(title="founder"), [_lead("Founder")], found=9000,
-               origin=Search.Origin.NEIGHBOUR)
+               origin=Search.Origin.DRAWN)
         f = Frontier(None)
         narrower = Arm(Terms.written(title="purchasing manager"), 1, "stricter", seen=3,
                        keywords=belief.query_keywords(Terms.written(title="purchasing manager")))
@@ -483,7 +511,7 @@ class TestTheBelief:
         people = [_lead("Purchasing Manager") for _ in range(4)] + [_lead("Founder")]
         _fired(Terms.written(title="purchasing"), people[:2], found=3000)
         _fired(Terms.written(title="manager"), people[2:4], found=900,
-               origin=Search.Origin.NEIGHBOUR)
+               origin=Search.Origin.DRAWN)
         beliefs = self._beliefs({}, fired=frontier._fired())
         beliefs.settle({("title", "founder"): 0.5, ("title", "purchasing"): 0.5})
         return beliefs
@@ -507,7 +535,7 @@ class TestTheBelief:
             people = [_lead("Purchasing Manager") for _ in range(4)]
             _fired(Terms.written(title="purchasing"), people[:2], found=first)
             _fired(Terms.written(title="manager"), people[2:], found=second,
-                   origin=Search.Origin.NEIGHBOUR)
+                   origin=Search.Origin.DRAWN)
             return self._beliefs({}, fired=frontier._fired()).sizes.sigma
 
         assert sigma(3000, 2_000_000) > sigma(3000, 3000)
@@ -553,6 +581,35 @@ class TestTheBelief:
                                            lambda p: np.asarray(p) / 2, 0.3)
 
         assert priors == {("title", "a"): 0.4, ("title", "b"): 0.1}
+
+    def test_a_keyword_is_embedded_once_and_read_back_from_the_store(self):
+        embedded = []
+
+        def embed(texts):
+            embedded.extend(texts)
+            return np.ones((len(texts), 384))
+
+        with patch("openoutfind.core.ml.embeddings.embed_texts", side_effect=embed):
+            belief._VECTORS.clear()
+            first = belief._vectors(["founder", "cannabis"])
+            belief._VECTORS.clear()
+            second = belief._vectors(["founder", "cannabis", "owner"])
+
+        assert embedded == ["founder", "cannabis", "owner"]
+        assert np.array_equal(first, second[:2])
+
+    def test_a_new_embedding_model_embeds_again(self):
+        from openoutfind.core.conf import CAMPAIGN_CONFIG
+
+        with patch("openoutfind.core.ml.embeddings.embed_texts",
+                   side_effect=lambda texts: np.ones((len(texts), 384))) as embed:
+            belief._VECTORS.clear()
+            belief._vectors(["founder"])
+            belief._VECTORS.clear()
+            with patch.dict(CAMPAIGN_CONFIG, {"embedding_model": "another"}):
+                belief._vectors(["founder"])
+
+        assert embed.call_count == 2
 
     def test_a_gp_that_cannot_score_leaves_the_market_rate(self):
         class Unfitted:
