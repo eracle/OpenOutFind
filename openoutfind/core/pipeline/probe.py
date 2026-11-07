@@ -1,8 +1,8 @@
 # openoutfind/core/pipeline/probe.py
 """The probe: a few verdicts at random on what each search brought, so its page is measured.
 
-A fired search's next page is valued on its own Beta (``belief``), whose counts are the
-people its pages brought — and nothing else judges them. Exploit takes the best-scored
+A fired search's next page is valued on its own effect in the fit-rate model (``belief``),
+fitted on the people its pages brought — and nothing else judges them. Exploit takes the best-scored
 lead, BALD the one the GP is least sure of, calibrate one from the thinnest score band;
 none of them reaches a page of strangers far from every verdict, where the GP reads the
 base rate whoever they are. On batch 6, founder · ``food`` brought 186 people and not one

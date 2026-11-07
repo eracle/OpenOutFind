@@ -157,8 +157,9 @@ CAMPAIGN_CONFIG = {
 # belief.py).
 WALK_CONFIG = {
     "population": 4,
-    # Pseudo-companies a keyword's prior is worth (core/pipeline/belief.py): the prior comes
-    # from a GP trained on the verdicts the counts hold, so a few real companies overtake it.
+    # Pseudo-companies the GP's score of a keyword is worth against the store's people holding
+    # it, in the keyword's prior lift (core/pipeline/belief.py): the GP is trained on those
+    # same verdicts, so a few real companies overtake it.
     "prior_companies": 3,
 }
 

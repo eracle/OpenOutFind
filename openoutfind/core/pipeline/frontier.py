@@ -422,15 +422,14 @@ class Frontier:
                  if not search.dead and search.key not in fired_keys]
         arms = [arm for arm in arms if self._in_market(arm.terms)]
         self._settle(arms)
-        composed = self._composed(self.beliefs.means(), self.beliefs.sizes.mean)
+        composed = self._composed(self.beliefs.lifts(), self.beliefs.sizes.mean())
         self._rate(composed)
         return _distinct(arms + composed)
 
-    def _composed(self, thetas: dict, sizes: belief.Sizes) -> list[Arm]:
-        """Page 1 of the ``COMPOSED`` searches worth the most on ``thetas`` and ``sizes``
+    def _composed(self, lift: dict, sizes: belief.Sizes) -> list[Arm]:
+        """Page 1 of the ``COMPOSED`` searches worth the most on ``lift`` and ``sizes``
         that the frontier may fire, valued at the mean belief."""
         vocabulary = self.vocabulary
-        lift = self.beliefs.lifts(thetas)
         share = self.beliefs.shares(vocabulary.keywords(), sizes)
         searches = compose.compose(vocabulary, lift, share, sizes.log_market,
                                    self._worth(sizes.log_market), COMPOSED)
@@ -551,7 +550,7 @@ class Frontier:
         the judged left an unjudged person's share of ``F`` on those still out there, and
         36 of 515's 202 arms read a density of 1 and tied."""
         rates = self.people.rates
-        return sum(rates.get(pk, self.beliefs.market_rate) for pk in people)
+        return sum(rates.get(pk, self.beliefs.store_rate) for pk in people)
 
     def _settle(self, arms: list[Arm]) -> None:
         """Read the belief of every keyword — the whole vocabulary's and ``arms``' — in one
@@ -559,22 +558,23 @@ class Frontier:
         keywords = sorted({*self.vocabulary.keywords(),
                            *(keyword for arm in arms for keyword in arm.keywords)})
         self.beliefs.settle(belief.keyword_priors(keywords, self.qualifier, self.fit_rate,
-                                                  self.beliefs.market_rate))
+                                                  self.beliefs.store_rate))
         self._rate(arms)
 
     def _rate(self, arms: list[Arm]) -> None:
         """Each arm's ``θ(q)`` and fit rate at the mean belief."""
-        means = self.beliefs.means()
+        lifts = self.beliefs.lifts()
         for arm in arms:
             arm.theta = (self.beliefs.search_mean(arm.search.key) if _is_next_page(arm)
-                         else self.beliefs.rate(arm.keywords, means))
+                         else self.beliefs.rate(arm.keywords, lifts))
             arm.rate = arm.density(arm.theta)
 
-    def _theta_on(self, arm: Arm, thetas: dict, searches: dict) -> float:
+    def _theta_on(self, arm: Arm, drawn: tuple, searches: dict) -> float:
         """``θ(q)`` on one draw: a fired search's own, else its keywords'."""
         if _is_next_page(arm):
             return searches[arm.search.key]
-        return self.beliefs.rate(arm.keywords, thetas)
+        alpha, lifts = drawn
+        return self.beliefs.rate(arm.keywords, lifts, alpha)
 
     # ── the next search ──
 
@@ -595,12 +595,12 @@ class Frontier:
         fits = np.zeros((DRAWS, len(arms)))
         for n in range(DRAWS):
             seed = (round_number, n)
-            thetas = self.beliefs.draw(seed, keywords)
+            lifts = self.beliefs.draw(seed, keywords)
             searches = self.beliefs.draw_searches(seed)
             sizes = self.beliefs.draw_sizes(seed, keywords)
             for i, arm in enumerate(arms):
                 drawn = self._resized(arm, sizes)
-                fits[n, i] = drawn.new * drawn.density(self._theta_on(arm, thetas, searches))
+                fits[n, i] = drawn.new * drawn.density(self._theta_on(arm, lifts, searches))
         return fits
 
 

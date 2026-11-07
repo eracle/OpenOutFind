@@ -435,10 +435,10 @@ class TestTheNextSearch:
 
 @pytest.mark.django_db
 class TestTheBelief:
-    def _beliefs(self, rates, judged=(), fired=(), market_rate=0.5):
-        return belief.Beliefs(People.load(rates), list(fired), set(judged), market_rate)
+    def _beliefs(self, rates, judged=(), fired=(), store_rate=0.5):
+        return belief.Beliefs(People.load(rates), list(fired), set(judged), store_rate)
 
-    def test_a_judged_person_a_search_brought_adds_to_each_of_its_keywords(self):
+    def test_a_judged_fit_a_search_brought_lifts_each_of_its_keywords_alike(self):
         fit = _lead("Founder", tags="cannabis", company=_company("acme"), verdict=1)
         _fired(Terms.written(title="founder", tag="cannabis"), [fit], found=500)
         beliefs = self._beliefs({fit.pk: 1.0}, judged=[fit.pk],
@@ -447,7 +447,9 @@ class TestTheBelief:
 
         beliefs.settle({title: 0.5, tag: 0.5})
 
-        assert beliefs.posterior[title] == beliefs.posterior[tag] == (2.5, 1.5)
+        lifts = beliefs.lifts()
+        assert lifts[title] == pytest.approx(lifts[tag])
+        assert lifts[title] > 0.0
 
     def test_a_person_only_holding_a_keyword_moves_its_prior_and_never_its_strength(self):
         """The store is not the market: a mark is evidence about the customer's corner."""
@@ -457,9 +459,8 @@ class TestTheBelief:
 
         beliefs.settle({keyword: 0.5})
 
-        a, b = beliefs.posterior[keyword]
-        assert a + b == pytest.approx(3.0)
-        assert a / (a + b) == pytest.approx((1.5 + 30) / (3 + 30))
+        assert beliefs.prior[keyword] == pytest.approx((1.5 + 30) / (3 + 30))
+        assert keyword not in beliefs.rates.column
 
     def test_a_fired_searchs_own_rate_reads_its_pages_people(self):
         page = [_lead("Founder", company=_company(f"c{i}"), verdict=0) for i in range(5)]
@@ -470,8 +471,23 @@ class TestTheBelief:
 
         beliefs.settle({("title", "founder"): 0.5})
 
-        assert beliefs.searches[terms.key] == (1.5, 1.5 + 5)
-        assert beliefs.search_mean(terms.key) == pytest.approx(1.5 / 8)
+        assert beliefs.search_mean(terms.key) < beliefs.means()[("title", "founder")]
+        assert beliefs.search_mean(terms.key) < 0.2
+
+    def test_the_markets_rate_is_learned_from_what_searches_brought_never_the_store(self):
+        """Batch 6 read every unknown keyword at the store's 0.21, its marks' rate; the pages
+        it brought held 2 fits in 16 verdicts."""
+        page = [_lead("Founder", company=_company(f"c{i}"), verdict=0) for i in range(16)]
+        _fired(Terms.written(title="founder"), page, found=5000)
+        beliefs = self._beliefs({lead.pk: 0.0 for lead in page}, judged=[p.pk for p in page],
+                                fired=frontier.fired_searches(), store_rate=0.21)
+        unknown = ("tag", ("food",))
+
+        assert beliefs.market_rate == pytest.approx(0.21)
+        beliefs.settle({("title", "founder"): 0.21, unknown: 0.21})
+
+        assert beliefs.market_rate < 0.15
+        assert beliefs.means()[unknown] == pytest.approx(beliefs.market_rate)
 
     def test_an_unjudged_person_counts_by_the_gps_confidence_at_them(self):
         """Batch 6: 780 strangers at confidence ~0.05 read the market's rate whoever they were."""
@@ -533,8 +549,8 @@ class TestTheBelief:
         beliefs = self._beliefs({lead.pk: 0.05 for lead in page}, fired=frontier.fired_searches())
         beliefs.settle({keyword: 0.5})
 
-        # 8 companies at 0.05, a quarter of a verdict each, on a prior of 1.5 against 1.5.
-        assert beliefs.means()[keyword] == pytest.approx((1.5 + 0.1) / (3 + 2))
+        assert beliefs.lifts()[keyword] < 0.0
+        assert beliefs.means()[keyword] < 0.5
 
     def test_a_state_and_its_country_are_one_keyword(self):
         assert belief.query_keywords(Terms.written(title="owner", place=f"Ohio, {US}")) == (
@@ -542,12 +558,14 @@ class TestTheBelief:
         assert belief.query_keywords(Terms.written(title="owner", place=US)) == (
             ("title", "owner"), ("country", "united states"))
 
-    def test_a_query_multiplies_its_keywords_odds_against_the_market(self):
-        beliefs = self._beliefs({}, market_rate=0.5)
+    def test_a_query_adds_its_keywords_lifts_to_the_markets_log_odds(self):
+        beliefs = self._beliefs({})
         first, second = ("title", "a"), ("title", "b")
+        lift = math.log(3)  # odds ×3
 
-        assert beliefs.rate([first], {first: 0.5}) == pytest.approx(0.5)
-        assert beliefs.rate([first, second], {first: 0.75, second: 0.75}) == pytest.approx(0.9)
+        assert beliefs.rate([first], {first: 0.0}, alpha=0.0) == pytest.approx(0.5)
+        assert beliefs.rate([first, second], {first: lift, second: lift},
+                            alpha=0.0) == pytest.approx(0.9)
 
     def test_a_fired_searchs_own_count_is_recovered(self):
         people = [_lead("Purchasing Manager") for _ in range(4)]
@@ -556,12 +574,12 @@ class TestTheBelief:
         beliefs = self._beliefs({}, fired=frontier.fired_searches())
 
         assert beliefs.count(belief.query_keywords(
-            Terms.written(title="purchasing manager"))) == pytest.approx(3000, rel=0.01)
+            Terms.written(title="purchasing manager"))) == pytest.approx(3000, rel=0.15)
 
-    def test_with_no_count_the_market_is_the_store(self):
-        for _ in range(4):
-            _lead()
-        assert self._beliefs({}).count(()) == pytest.approx(4)
+    def test_with_no_count_the_market_is_its_anchor(self):
+        _lead()
+        assert self._beliefs({}).sizes.mean().log_market == pytest.approx(
+            math.log(belief.MARKET_PEOPLE))
 
     def _counted(self):
         people = [_lead("Purchasing Manager") for _ in range(4)] + [_lead("Founder")]
@@ -575,56 +593,55 @@ class TestTheBelief:
     def test_the_sizes_draw_repeats_on_a_round_and_moves_between_rounds(self):
         beliefs = self._counted()
 
-        assert beliefs.draw_sizes(3) == beliefs.draw_sizes(3)
-        assert beliefs.draw_sizes(3) != beliefs.draw_sizes(4)
+        assert np.array_equal(beliefs.draw_sizes(3).params, beliefs.draw_sizes(3).params)
+        assert not np.array_equal(beliefs.draw_sizes(3).params, beliefs.draw_sizes(4).params)
 
     def test_the_sizes_draw_centres_on_the_fit(self):
         beliefs = self._counted()
+        query = [("title", "purchasing")]
 
-        drawn = [beliefs.draw_sizes(n).log_market for n in range(2000)]
+        drawn = [math.log(beliefs.count(query, beliefs.draw_sizes(n))) for n in range(2000)]
 
-        assert np.mean(drawn) == pytest.approx(beliefs.sizes.mean.log_market, abs=0.2)
+        assert np.mean(drawn) == pytest.approx(math.log(beliefs.count(query)), abs=0.1)
 
-    def test_the_variance_is_the_fits_own_counts_that_disagree_spread_wider(self):
-        def sigma(first, second):
+    def test_a_large_count_is_held_tighter_than_a_small_one(self):
+        """A Poisson count of 2 says little; one of 20,000 says its size to a few percent."""
+        def spread(found):
             Search.objects.all().delete()
-            people = [_lead("Purchasing Manager") for _ in range(4)]
-            _fired(Terms.written(title="purchasing"), people[:2], found=first)
-            _fired(Terms.written(title="manager"), people[2:], found=second,
-                   origin=Search.Origin.DRAWN)
-            return self._beliefs({}, fired=frontier.fired_searches()).sizes.sigma
+            _fired(Terms.written(title="purchasing"), [_lead("Purchasing Manager")],
+                   found=found)
+            beliefs = self._beliefs({}, fired=frontier.fired_searches())
+            query = [("title", "purchasing")]
+            return np.std([math.log(beliefs.count(query, beliefs.draw_sizes(n)))
+                           for n in range(500)])
 
-        assert sigma(3000, 2_000_000) > sigma(3000, 3000)
+        assert spread(2) > spread(20_000)
 
-    def test_one_count_has_no_residuals_and_draws_the_fit(self):
-        _fired(Terms.written(title="purchasing"), [_lead("Purchasing Manager")], found=3000)
-        beliefs = self._beliefs({}, fired=frontier.fired_searches())
-
-        assert beliefs.sizes.sigma == 0.0
-        assert beliefs.draw_sizes(1).log_market == pytest.approx(beliefs.sizes.mean.log_market)
-
-    def test_a_keyword_no_count_held_draws_around_its_share_at_the_fits_spread(self):
+    def test_a_keyword_no_count_held_draws_wider_than_one_a_count_held(self):
         beliefs = self._counted()
-        keyword = ("title", "founder")
-        share = belief._log_share(keyword, beliefs.people)
+        counted, uncounted = ("title", "purchasing"), ("title", "founder")
 
-        drawn = [beliefs.draw_sizes(n, [keyword]).log_keywords[keyword] for n in range(2000)]
+        def spread(keyword):
+            return np.std([beliefs.draw_sizes(n, [keyword]).share(keyword, beliefs.people)
+                           for n in range(1000)])
 
-        # Capped at the market, so only the side below the share is whole.
-        below = np.array([x - share for x in drawn if x < share])
-        assert np.sqrt(np.mean(below ** 2)) == pytest.approx(beliefs.sizes.sigma, rel=0.15)
+        assert spread(uncounted) > spread(counted)
+
+    def test_a_keyword_the_store_holds_more_reads_larger(self):
+        """The store's share is evidence, weighed by γ: only its weight is learned."""
+        beliefs = self._counted()
+
+        shares = beliefs.shares([("title", "manager"), ("title", "nobody")])
+
+        assert shares[("title", "manager")] > shares[("title", "nobody")]
 
     def test_no_keyword_draws_more_than_the_market(self):
         beliefs = self._counted()
+        keywords = [("title", "purchasing"), ("title", "founder"), ("tag", ("thc", "vape"))]
 
         for number in range(200):
-            assert max(beliefs.draw_sizes(number, beliefs.posterior).log_keywords.values()) <= 0.0
-
-    def test_with_no_count_the_sizes_draw_leaves_the_market_at_the_store(self):
-        _lead()
-        beliefs = self._beliefs({})
-
-        assert beliefs.draw_sizes(1).log_market == beliefs.sizes.mean.log_market
+            assert max(beliefs.shares(keywords, beliefs.draw_sizes(number, keywords))
+                       .values()) <= 0.0
 
     def test_a_keywords_prior_is_the_gps_score_through_the_fit_rate_map(self):
         class Fixed:
