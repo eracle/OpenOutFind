@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from openoutfind.core.models import PAGE_SIZE, Page, PageLead, Search
-from openoutfind.core.pipeline import frontier
+from openoutfind.core.pipeline import belief, frontier
 from openoutfind.core.pipeline.frontier import Arm, Frontier, People
 from openoutfind.core.pipeline.query import Terms, split_place
 from openoutfind.crm.models import Company, Deal, DealState, Lead, Outcome
@@ -79,33 +79,16 @@ class TestPeople:
         assert people.match(Terms.written(place=f"Ohio, {US}")) == {ohio.pk}
         assert people.match(Terms.written(place=f"Texas, {US}")) == set()
 
-    def test_a_region_counts_each_company_once(self):
-        acme = _company("acme")
-        fits = [_lead(company=acme, verdict=1) for _ in range(5)]
-        miss = _lead(company=_company("other"), verdict=0)
-        people = People.load({lead.pk: float(v) for lead, v in
-                              [(f, 1) for f in fits] + [(miss, 0)]})
+    def test_a_state_is_held_by_its_rows_and_its_countrys_rows_with_no_state(self):
+        ohio, texas, stateless = _lead(state="Ohio"), _lead(state="Texas"), _lead(state="")
+        people = People.load({})
 
-        with patch.dict(frontier.WALK_CONFIG, {"prior_companies": 0}):
-            assert people.rate_of({lead.pk for lead in fits + [miss]}, 0.0) == 0.5
+        assert people.holding(("state", "ohio", "united states")) == {ohio.pk, stateless.pk}
+        assert texas.pk not in people.holding(("state", "ohio", "united states"))
 
-    def test_a_region_is_shrunk_toward_the_store(self):
-        fit = _lead(company=_company("acme"), verdict=1)
-        people = People.load({fit.pk: 1.0})
-
-        with patch.dict(frontier.WALK_CONFIG, {"prior_companies": 3}):
-            assert people.rate_of({fit.pk}, 0.2) == pytest.approx((1.0 + 3 * 0.2) / 4)
-            assert people.rate_of(set(), 0.2) == pytest.approx(0.2)
-
-    def test_people_with_no_company_but_one_tag_list_are_one_company(self):
-        """The provider's "Self employed" row staples one list onto hundreds."""
-        placeholder = "finacial services, private investigations, dive master"
-        alone = [_lead(tags=placeholder) for _ in range(4)]
-        fit = _lead(company=_company("acme"))
-        people = People.load({**{lead.pk: 0.4 for lead in alone}, fit.pk: 1.0})
-
-        with patch.dict(frontier.WALK_CONFIG, {"prior_companies": 0}):
-            assert people.rate_of({lead.pk for lead in alone + [fit]}, 0.0) == 0.7
+    def test_a_store_with_nobody_scored_reads_as_neutral(self):
+        _lead()
+        assert People.load({}).base_rate() == frontier.NEUTRAL_RATE
 
 
 @pytest.mark.django_db
@@ -162,46 +145,39 @@ class TestTheArms:
 
         assert not any(arm.terms.holds_all_of(dead) for arm in Frontier(None).arms())
 
-    def test_a_stricter_search_is_counted_from_the_one_it_narrows(self):
-        """Its count is the fired search's count times the share of its people it holds."""
-        managers = [_lead("Purchasing Manager") for _ in range(3)]
-        others = [_lead("Purchasing Director") for _ in range(5)]
-        _fired(Terms.written(title="purchasing"), managers + others, found=8000)
-
-        arm = Frontier(None)._first_page(Terms.written(title="purchasing manager"), "stricter")
-
-        assert arm.size == PAGE_SIZE  # 8000 × 3/8 = 3,000 counted, one page of them
-        assert arm.new == pytest.approx(PAGE_SIZE * (1 - 3 / 3000))
-
-    def test_a_search_none_of_whose_people_were_seen_is_counted_as_the_stores_typical(self):
-        """Batch 5: a famous-company page of 49,004 `production`s said nothing about
-        `production × cannabis` in Maine."""
-        _fired(Terms.written(title="production"), [_lead("Production Lead")], found=49_004)
-        for title in ("founder", "owner"):
-            _fired(Terms.written(title=title, tag="cannabis"),
-                   [_lead(title.title()) for _ in range(3)], found=9)
+    def test_an_unfired_count_stays_within_what_it_narrows_and_above_the_store(self):
+        people = [_lead("Purchasing Manager") for _ in range(3)]
+        _fired(Terms.written(title="purchasing"), people, found=8000)
+        stricter = Terms.written(title="purchasing manager")
 
         f = Frontier(None)
-        narrow = Terms.written(title="production manager", tag="cannabis", place=US)
-        wider = [fired for fired in f.fired if narrow.holds_all_of(fired.terms)]
+        with patch.object(f.beliefs, "count", return_value=1e9):
+            high = f._first_page(stricter, "stricter")
+        with patch.object(f.beliefs, "count", return_value=1.0):
+            low = f._first_page(stricter, "stricter")
 
-        assert f._count(narrow, f.people.match(narrow), wider) == 9
+        assert high.count == 8000
+        assert low.count == pytest.approx(3 * frontier.SEEN_MARGIN)
+        assert low.new > 0  # a low estimate does not close the search for good
 
-    def test_a_search_is_rated_on_the_pages_of_the_search_it_narrows(self):
-        """Batch 5: the store's founders were cannabis founders, the tag-less `founder`
-        page's were not — that page is the provider's sample of `founder officer`."""
-        fit = _company("fit")
-        for _ in range(3):
-            _lead("Founder Officer", company=fit, verdict=1)
-        stranger = _lead("Founder Officer", tags="banking", company=_company("bank"),
-                         verdict=0)
-        _fired(Terms.written(title="founder"), [stranger], found=474_609)
+    def test_a_known_count_replaces_the_estimate(self):
+        _fired(Terms.written(title="purchasing"), [_lead()], found=5000)
 
-        arm = Frontier(None)._first_page(Terms.written(title="founder officer"), "stricter")
+        f = Frontier(None)
+        with patch.object(f.beliefs, "count", return_value=7.0):
+            (deepen,) = [f._deepen(fired) for fired in f.fired]
 
-        # The stranger's 0, shrunk toward the store's 0.5 — the cannabis founders, also
-        # matched, would have pulled it to 0.5.
-        assert arm.rate == pytest.approx(3 * 0.5 / 4)
+        assert deepen.count == 5000
+
+    def test_a_page_is_valued_at_no_more_than_a_page_however_large_the_search(self):
+        _fired(Terms.written(title="purchasing"), [_lead()], found=10_000_000)
+
+        f = Frontier(None)
+        (deepen,) = [f._deepen(fired) for fired in f.fired]
+        with patch.object(f.beliefs, "count", return_value=10_000_000.0):
+            unfired = f._first_page(Terms.written(title="founder"), "swap")
+
+        assert deepen.new <= PAGE_SIZE and unfired.new <= PAGE_SIZE
 
     def test_a_page_that_brought_nobody_new_is_not_worth_its_next(self):
         known = [_lead(verdict=1) for _ in range(3)]
@@ -215,69 +191,76 @@ class TestTheArms:
         assert by_title["purchasing"] > 0 and by_title["manager"] == 0
 
 
-def _arm(title, tag="cannabis", rate=0.2, new=10.0, number=1, move="swap", sample=()):
-    return Arm(Terms.written(title=title, tag=tag), number, move, new=new, rate=rate,
-               sample=set(sample))
+def _arm(title, count=1000.0, new=100.0, seen=0, held_fits=0, rate=0.0):
+    terms = Terms.written(title=title)
+    return Arm(terms, 1, "swap", keywords=belief.query_keywords(terms), count=count, seen=seen,
+               held_fits=held_fits, new=new, rate=rate, cost=1.0)
 
 
-def _anchor(title="Head of Procurement", tags="cannabis extraction"):
-    return Lead.objects.create(synthetic=True, profile_text=title.lower(), source_fields={
-        "contact_job_title": title.lower(), "company_keywords": tags,
-        "contact_location_country": "united states"})
+def _settled(arms):
+    f = Frontier(None)
+    f._settle(arms)
+    return f
+
+
+def _companies(title, verdict, how_many):
+    for i in range(how_many):
+        _lead(title, company=_company(f"{title}-{verdict}-{Lead.objects.count()}-{i}"),
+              verdict=verdict)
+
+
+class TestAnArmsValue:
+    def test_an_area_whose_fits_the_store_holds_is_worth_nothing_however_large(self):
+        arm = _arm("founder", count=100_000.0, seen=5000, held_fits=5000)
+
+        assert arm.density(0.05) == 0.0 and arm.value(0.05) == 0.0
+
+    def test_a_search_with_nobody_out_there_is_worth_nothing(self):
+        assert _arm("founder", count=50.0, seen=50).density(0.9) == 0.0
+
+    def test_the_rate_is_of_the_people_still_out_there(self):
+        """300 in the market at 0.4 is 120 fits: 100 held leaves 20 among the last 100."""
+        assert _arm("founder", count=300.0, seen=200, held_fits=100).density(0.4) == (
+            pytest.approx(0.2))
 
 
 @pytest.mark.django_db
 class TestTheNextSearch:
-    def test_it_takes_the_arm_holding_the_most_fits(self):
-        for _ in range(3):
-            _lead("Founder", verdict=1)
-        _lead("Buyer", verdict=1)
-        buyer, founder = _arm("buyer"), _arm("founder")
+    def test_an_arm_with_nobody_new_is_never_fired_while_another_has_people(self):
+        dry, live = _arm("buyer", new=0.0, rate=0.9), _arm("founder", new=50.0, rate=0.5)
 
-        assert Frontier(None).best([buyer, founder], 1) is founder
-        assert founder.held == 3
+        assert frontier._worth_firing([dry, live], None) == [live]
 
-    def test_a_no_fit_is_not_counted(self):
-        _lead("Founder", verdict=0)
-        _lead("Buyer", verdict=1)
-        founder, buyer = _arm("founder"), _arm("buyer")
-
-        assert Frontier(None).best([founder, buyer], 1) is buyer
-
-    def test_an_anchors_fields_count_as_a_promising_person(self):
-        anchor = _anchor()
-        f = Frontier(None)
-
-        assert f.holds(_arm("procurement head", tag="cannabis")) == {anchor.pk}
-        assert f.holds(_arm("procurement", tag="banking")) == set()
-
-    def test_a_next_page_counts_the_fits_on_its_latest_page(self):
-        fit, miss, elsewhere = _lead(verdict=1), _lead(verdict=0), _lead(verdict=1)
-        _fired(Terms.written(title="purchasing"), [fit, miss], found=5000)
-
-        f = Frontier(None)
-        (deepen,) = [arm for arm in f.arms() if arm.move == "deepen"]
-
-        assert f.holds(deepen) == {fit.pk}
-        assert elsewhere.pk in f.fits
-
-    def test_a_tie_goes_to_the_narrower_search(self):
-        _lead("Founder", verdict=1)
-        wide = _arm("founder", sample=range(50))
-        narrow = _arm("founder", tag="thc vape", sample=range(5))
-
-        assert Frontier(None).best([wide, narrow], 1) is narrow
-
-    def test_with_no_fit_held_one_is_drawn_the_same_way_twice(self):
+    def test_the_same_round_draws_the_same_search_twice(self):
         arms = [_arm(f"title{i}") for i in range(30)]
+        f = _settled(arms)
 
-        first = Frontier(None).best(list(arms), 4)
-        again = Frontier(None).best(list(reversed(arms)), 4)
-        others = {Frontier(None).best(list(arms), number).terms.key for number in range(20)}
+        assert f.pick(list(arms), 4) is f.pick(list(reversed(arms)), 4)
+        assert len({f.pick(arms, number).terms.key for number in range(20)}) > 1
 
-        assert first.held == 0
-        assert first is again
-        assert len(others) > 1
+    def test_a_keyword_known_to_be_bad_is_almost_never_drawn_and_an_unknown_one_sometimes(self):
+        _companies("Founder", 1, 20)
+        _companies("Clerk", 0, 20)
+        good, bad, unknown = _arm("founder"), _arm("clerk"), _arm("buyer")
+        f = _settled([good, bad, unknown])
+
+        picked = [f.pick([good, bad, unknown], number) for number in range(300)]
+
+        assert picked.count(bad) == 0
+        assert picked.count(unknown) > 0
+        assert picked.count(good) > picked.count(unknown)
+
+    def test_with_fits_unchanged_and_no_fits_arriving_a_second_region_is_reached(self):
+        """The third failure on the card: `bc12f36` took 11 searches to leave a region."""
+        _companies("Purchasing", 1, 3)
+        _companies("Clerk", 0, 3)
+
+        for number in range(1, 7):
+            first, second = _arm("purchasing"), _arm("founder")
+            if _settled([first, second]).pick([first, second], number) is second:
+                return
+            _companies("Purchasing", 0, 3)
+        pytest.fail("the walk never left its first region")
 
     def test_the_next_search_is_nothing_fired_dead_or_drained(self):
         people = [_lead(verdict=1) for _ in range(3)]
@@ -289,28 +272,169 @@ class TestTheNextSearch:
         Search.objects.create(key=dead.key, dead=True, terms=dead.as_json())
 
         f = Frontier(None)
-        arm = f.best(f.arms(), 1)
+        arm = f.pick(f.arms(), 1)
 
         assert not (arm.number == 1 and arm.terms in (roomy, drained))
         assert not arm.terms.holds_all_of(dead)
         assert not arm.terms.holds_all_of(drained)
 
-    def test_a_round_fires_one_search_only_while_an_arm_beats_the_floor(self):
+    def test_a_round_fires_one_search_only_while_one_is_expected_to_bring_a_fit(self):
         _fired(Terms.written(title="purchasing", tag="cannabis"),
                [_lead(verdict=1) for _ in range(3)], found=5000)
 
-        assert len(frontier.next_round(None, 1, floor=0.0)) == 1
-        assert frontier.next_round(None, 1, floor=1.0) == []
+        assert len(frontier.next_round(None, 1)) == 1
+        with patch.object(frontier, "FITS_WORTH_A_SEARCH", 1e9):
+            assert frontier.next_round(None, 1) == []
+            assert frontier.best_expected(None) is None
 
-    def test_an_arms_sample_is_the_people_it_matches(self):
-        people = [_lead("Purchasing Manager") for _ in range(2)]
-        _fired(Terms.written(title="purchasing"), people, found=5000)
+    def test_the_cold_phase_fires_while_an_arm_brings_somebody_new(self):
+        """Nothing is known yet to stop on: the card's second failure."""
+        class Cold:
+            is_cold = True
+
+            def predict_probs(self, X):
+                return None
+
+        _fired(Terms.written(title="purchasing", tag="cannabis"), [_lead()], found=5000)
+
+        with (
+            patch.object(frontier, "FITS_WORTH_A_SEARCH", 1e9),
+            patch("openoutfind.core.ml.embeddings.embed_texts",
+                  side_effect=lambda texts: np.zeros((len(texts), 384))),
+        ):
+            assert len(frontier.next_round(Cold(), 1)) == 1
+
+    def test_the_arm_weighed_against_the_pool_is_the_best_at_the_mean(self):
+        for _ in range(3):
+            _lead("Founder", verdict=1)
+        _fired(Terms.written(title="purchasing", tag="cannabis"),
+               [_lead(verdict=1) for _ in range(3)], found=5000)
 
         f = Frontier(None)
-        unfired = f._first_page(Terms.written(title="purchasing manager"), "stricter")
-        (deepen,) = [arm for arm in f.arms() if arm.move == "deepen"]
+        best = frontier.best_expected(None)
 
-        assert unfired.sample == deepen.sample == {lead.pk for lead in people}
+        assert best.expected_fits / best.cost == pytest.approx(
+            max(arm.expected_fits / arm.cost for arm in f.arms() if arm.new > 0))
+
+
+@pytest.mark.django_db
+class TestTheBelief:
+    def _beliefs(self, rates, judged=(), fired=(), market_rate=0.5):
+        return belief.Beliefs(People.load(rates), list(fired), set(judged), market_rate)
+
+    def test_a_judged_person_adds_to_each_of_their_keywords(self):
+        fit = _lead("Founder", tags="cannabis", company=_company("acme"), verdict=1)
+        beliefs = self._beliefs({fit.pk: 1.0}, judged=[fit.pk])
+        title, tag = ("title", "founder"), ("tag", ("cannabis",))
+
+        beliefs.settle({title: 0.5, tag: 0.5})
+
+        assert beliefs.posterior[title] == beliefs.posterior[tag] == (2.5, 1.5)
+
+    def test_a_company_adds_once_at_the_mean_of_its_people(self):
+        acme = _company("acme")
+        leads = [_lead(company=acme, verdict=v) for v in (1, 0, 0, 0)]
+        rates = {lead.pk: float(v) for lead, v in zip(leads, (1, 0, 0, 0))}
+        people = People.load(rates)
+
+        assert belief.evidence(set(rates), people, set(rates)) == (0.25, 0.75)
+
+    def test_an_unjudged_person_adds_their_fit_rate_at_a_quarter_of_a_verdict(self):
+        lead = _lead(company=_company("acme"))
+        people = People.load({lead.pk: 0.8})
+
+        assert belief.evidence({lead.pk}, people, set()) == pytest.approx((0.2, 0.05))
+
+    def test_a_companys_verdicts_stand_over_its_scores(self):
+        acme = _company("acme")
+        judged, scored = _lead(company=acme, verdict=1), _lead(company=acme)
+        people = People.load({judged.pk: 1.0, scored.pk: 0.1})
+
+        assert belief.evidence({judged.pk, scored.pk}, people, {judged.pk}) == (1.0, 0.0)
+
+    def test_people_with_no_company_but_one_tag_list_are_one_company(self):
+        """The provider's "Self employed" row staples one list onto hundreds."""
+        placeholder = "finacial services, private investigations, dive master"
+        alone = [_lead(tags=placeholder) for _ in range(4)]
+        people = People.load({lead.pk: 0.4 for lead in alone})
+
+        fits, misses = belief.evidence({lead.pk for lead in alone}, people, set())
+
+        assert fits + misses == pytest.approx(belief.SCORE_WEIGHT)
+
+    def test_a_keywords_prior_follows_its_score_and_counts_overtake_it(self):
+        keyword = ("title", "clerk")
+        empty = self._beliefs({})
+        empty.settle({keyword: 0.8})
+        assert empty.means()[keyword] == pytest.approx(0.8)
+
+        _companies("Clerk", 0, 30)
+        rates = dict.fromkeys(Lead.objects.values_list("pk", flat=True), 0.0)
+        beliefs = self._beliefs(rates, judged=rates)
+        beliefs.settle({keyword: 0.8})
+        assert beliefs.means()[keyword] < 0.1
+
+    def test_a_searchs_keywords_fall_after_a_page_of_low_scored_people_nobody_judged(self):
+        """They hold no `purchasing` of their own: the search that brought them counts."""
+        page = [_lead("Clerk", company=_company(f"c{i}")) for i in range(8)]
+        _fired(Terms.written(title="purchasing"), page, found=5000)
+        keyword = ("title", "purchasing")
+
+        beliefs = self._beliefs({lead.pk: 0.05 for lead in page}, fired=frontier._fired())
+        beliefs.settle({keyword: 0.5})
+
+        # 8 companies at 0.05, a quarter of a verdict each, on a prior of 1.5 against 1.5.
+        assert beliefs.means()[keyword] == pytest.approx((1.5 + 0.1) / (3 + 2))
+
+    def test_a_state_and_its_country_are_one_keyword(self):
+        assert belief.query_keywords(Terms.written(title="owner", place=f"Ohio, {US}")) == (
+            ("title", "owner"), ("state", "ohio", "united states"))
+        assert belief.query_keywords(Terms.written(title="owner", place=US)) == (
+            ("title", "owner"), ("country", "united states"))
+
+    def test_a_query_multiplies_its_keywords_odds_against_the_market(self):
+        beliefs = self._beliefs({}, market_rate=0.5)
+        first, second = ("title", "a"), ("title", "b")
+
+        assert beliefs.rate([first], {first: 0.5}) == pytest.approx(0.5)
+        assert beliefs.rate([first, second], {first: 0.75, second: 0.75}) == pytest.approx(0.9)
+
+    def test_a_fired_searchs_own_count_is_recovered(self):
+        people = [_lead("Purchasing Manager") for _ in range(4)]
+        _fired(Terms.written(title="purchasing manager"), people, found=3000)
+
+        beliefs = self._beliefs({}, fired=frontier._fired())
+
+        assert beliefs.count(belief.query_keywords(
+            Terms.written(title="purchasing manager"))) == pytest.approx(3000, rel=0.01)
+
+    def test_with_no_count_the_market_is_the_store(self):
+        for _ in range(4):
+            _lead()
+        assert self._beliefs({}).count(()) == pytest.approx(4)
+
+    def test_a_keywords_prior_is_the_gps_score_through_the_fit_rate_map(self):
+        class Fixed:
+            def predict_probs(self, X):
+                return np.array([0.8, 0.2])
+
+        with patch("openoutfind.core.ml.embeddings.embed_texts",
+                   side_effect=lambda texts: np.zeros((len(texts), 384))):
+            priors = belief.keyword_priors([("title", "a"), ("title", "b")], Fixed(),
+                                           lambda p: np.asarray(p) / 2, 0.3)
+
+        assert priors == {("title", "a"): 0.4, ("title", "b"): 0.1}
+
+    def test_a_gp_that_cannot_score_leaves_the_market_rate(self):
+        class Unfitted:
+            def predict_probs(self, X):
+                return None
+
+        with patch("openoutfind.core.ml.embeddings.embed_texts",
+                   side_effect=lambda texts: np.zeros((len(texts), 384))):
+            assert belief.keyword_priors([("title", "c")], Unfitted(), None, 0.3) == {
+                ("title", "c"): 0.3}
+        assert belief.keyword_priors([("title", "c")], None, None, 0.3) == {("title", "c"): 0.3}
 
 
 @pytest.mark.django_db

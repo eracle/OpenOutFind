@@ -152,16 +152,15 @@ CAMPAIGN_CONFIG = {
 
 # The walk (core/pipeline/walk.py): a best-first search over the lattice of searches, one
 # at a time. `population` is how many searches the LLM writes to start it, fired whole as
-# round 0; every later round fires the one arm of the frontier holding the most fits
-# (core/pipeline/frontier.py).
+# round 0; every later round fires the one arm of the frontier worth the most on one draw
+# of the belief (core/pipeline/frontier.py, core/pipeline/belief.py).
 WALK_CONFIG = {
     "population": 4,
     # The heaviest terms each field offers a neighbour (core/pipeline/lattice.py): ~100
     # neighbours a fired search, each valued from the store in microseconds.
     "terms_per_field": 15,
-    # Pseudo-companies at the store's base rate that a search's rate is shrunk toward:
-    # batch 5's first pages held 4–21 people from about 3 companies, and an unshrunk
-    # ranking keeps whichever page got lucky.
+    # Pseudo-companies a keyword's prior is worth (core/pipeline/belief.py): the prior comes
+    # from a GP trained on the verdicts the counts hold, so a few real companies overtake it.
     "prior_companies": 3,
 }
 

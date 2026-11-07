@@ -8,8 +8,8 @@ Every later round is one search, one blocking step of the run:
 1. **Read the frontier** (``frontier``) as the store stands now, after the run has judged
    what the last round brought in: every fired search's next page, every unfired written
    search, and every neighbour of a fired search on the lattice (``lattice``).
-2. **Fire the search holding the most fits** (anchors counted as fits). The worker thread
-   only makes the API call.
+2. **Fire the search worth the most on one draw of the belief** (``Frontier.pick``). The
+   worker thread only makes the API call.
 3. **Wait for it**, then, in the main thread, record its page and take the page's people
    into the store (``discover.harvest``): one embedding pass, shortest profile first,
    since embedding is most of its time.
@@ -150,6 +150,9 @@ def _take_in(arm, result, round_number: int):
     if arm.number == 1:
         arm.search.leads_found = fetched.leads_found
         arm.search.save(update_fields=["leads_found"])
+        if arm.count:
+            logger.debug("  N(q): estimated ~%.0f, the provider counts %s  %s", arm.count,
+                         fetched.leads_found, arm)
 
     page = Page.objects.create(search=arm.search, number=arm.number, round=round_number,
                                rows=len(fetched.leads))
@@ -180,10 +183,9 @@ def _anchor(site_config) -> None:
         raise Unanchored()
 
 
-def run_round(site_config, qualifier, floor: float = 0.0) -> Round | None:
-    """Read the frontier, fire its batch, take the pages in. ``None`` when no arm is
-    worth firing — every one would bring nobody beating ``floor``, the fit rate of the
-    best lead waiting.
+def run_round(site_config, qualifier) -> Round | None:
+    """Read the frontier, fire its search, take the page in. ``None`` when no arm is worth
+    firing.
 
     The first call writes the initial population and the anchors (an LLM call each, or
     the one ``population_pending`` under ``--agent-qualify``) and fires the population
@@ -207,7 +209,7 @@ def run_round(site_config, qualifier, floor: float = 0.0) -> Round | None:
     number = 0 if last is None else last + 1
 
     arms = (frontier.written_arms() if last is None
-            else frontier.next_round(qualifier, number, floor))
+            else frontier.next_round(qualifier, number))
     if not arms:
         return None
     results = _fire_all(arms, site_config.bettercontact_api_key)

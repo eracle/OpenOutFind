@@ -101,10 +101,10 @@ def _cold_start(anchors=ANCHORS):
             patch("openoutfind.core.pipeline.icp.generate_anchors", return_value=anchors))
 
 
-def _run(site, finder, floor=0.0, anchors=ANCHORS):
+def _run(site, finder, anchors=ANCHORS):
     population, anchored = _cold_start(anchors)
     with population, anchored, patch("openoutfind.discovery.search", side_effect=finder):
-        return walk.run_round(site, None, floor)
+        return walk.run_round(site, None)
 
 
 def _judge(title_fits: str):
@@ -325,12 +325,13 @@ class TestTheNextRound:
         assert Search.objects.filter(pages__number=1).count() == Page.objects.filter(
             number=1).count()
 
-    def test_nothing_is_fired_when_no_arm_beats_the_floor(self, site):
+    def test_nothing_is_fired_when_no_arm_is_expected_to_bring_a_fit(self, site):
         _run(site, FakeLeadFinder())
         _judge("founder")
         finder = FakeLeadFinder()
 
-        assert _run(site, finder, floor=1.0) is None
+        with patch.object(walk.frontier, "FITS_WORTH_A_SEARCH", 1e9):
+            assert _run(site, finder) is None
         assert finder.calls == []
 
     def test_a_walk_with_nothing_left_to_fire_says_so(self, site):
@@ -373,8 +374,3 @@ class TestDiscover:
         with population, anchored, patch("openoutfind.discovery.search",
                                          side_effect=FakeLeadFinder()):
             assert discover(site) is True
-
-    def test_the_floor_reaches_the_round(self, site):
-        with patch.object(walk, "run_round", return_value=None) as fired:
-            discover(site, None, 0.4)
-        assert fired.call_args.args[2] == 0.4

@@ -20,7 +20,7 @@ crown jewel and it is ported verbatim:
   the pool is empty. The first round is 4 pages, up to 800 people, so it fills the
   pool for many verdicts; ranking still leans on the anchors' *guess* at the ICP, so
   nothing observed says a second round beats judging what the first brought. A round
-  adding nobody is still a move: only a walk with nothing left to fire stalls.
+  adding nobody is still a move: only a frontier with nobody new left stalls.
 - **explore** (``neg ≤ pos``) — label the most *informative* lead (max BALD), with no
   confidence gate: a low-confidence lead is exactly the label that teaches the GP
   most, so filtering by confidence would throw away the point of exploring.
@@ -32,8 +32,7 @@ crown jewel and it is ported verbatim:
   measured), the one whose qualification will buy an email rather than
   park at QUALIFIED. When none clears it, **judge or search, whichever is cheaper per
   fit** on this run's measured costs (``judge_or_search``): judging takes the best lead
-  by P from the whole pool, searching fires the walk's next round, whose searches must
-  each bring people fitting more often than that lead. The bar itself
+  by P from the whole pool, searching fires the walk's next round. The bar itself
   never moves here — a pass that discovers leaves the class balance untouched, and when
   the walk has nothing left to fire the pool is judged to its end.
 
@@ -108,18 +107,13 @@ def top_up(site_config, qualifier: BayesianQualifier) -> bool:
         # Falling straight to discovery here cost a live install 14h33m with 3 real
         # positives and a pool that topped out at P=0.37, so the rule judges a fresh
         # pool before its first verdict is in.
-        floor = 0.0
-        if candidates:
-            decision = decide(qualifier, candidates)
-            if decision.judge:
-                return run_qualification(site_config, qualifier,
-                                         candidates=candidates) is not None
-            floor = decision.floor
+        if candidates and decide(qualifier, candidates):
+            return run_qualification(site_config, qualifier, candidates=candidates) is not None
         # A fired round is the work, however much of it we had already seen. Reading
         # *new leads* here is what once stopped a live run with 100 rows in hand: the page
         # was all familiar profiles, so discovery reported nothing and the whole job
         # ended `goal_unreached` with the walk untouched.
-        if discover(site_config, qualifier, floor):
+        if discover(site_config, qualifier):
             return True
         # Nothing left to search, so the pool is all there is.
         return bool(candidates) and run_qualification(

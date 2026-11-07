@@ -79,11 +79,10 @@ def _leads_of(rows: list[dict], by_url: dict) -> list:
     return [by_url[url] for url in urls if url in by_url]
 
 
-def discover(site_config, qualifier=None, floor: float = 0.0) -> bool:
+def discover(site_config, qualifier=None) -> bool:
     """Run one round of the walk. Returns whether one was fired.
 
-    ``False`` means no search on the frontier is worth firing — none would bring people
-    fitting more often than ``floor``, the best lead waiting — or a gate is shut. A
+    ``False`` means no search on the frontier is worth firing, or a gate is shut. A
     provider *refusal* propagates (``walk._take_in``): a rejected key must never be read as
     a search that matches nobody. ``qualifier`` scores the store's people, which is what
     the frontier is valued on; without one, only judged people count.
@@ -100,8 +99,8 @@ def discover(site_config, qualifier=None, floor: float = 0.0) -> bool:
         return False
 
     logger.info(colored("▶ discover", "blue", attrs=["bold"]))
-    if run_round(site_config, qualifier, floor) is None:
-        logger.info(colored("■ no search left worth firing — the frontier holds none that "
-                            "beats the pool", "blue"))
+    if run_round(site_config, qualifier) is None:
+        logger.info(colored("■ no search left worth firing — none is expected to bring a "
+                            "new fit", "blue"))
         return False
     return True

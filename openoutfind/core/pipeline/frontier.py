@@ -1,69 +1,67 @@
 # openoutfind/core/pipeline/frontier.py
 """The frontier — every search the walk could fire next, and the one it fires.
 
-**Fire the search holding the most fits** (``Frontier.best``). The fits are every lead
-judged one — the customer's marked fits among them — and the anchors, the ICP written as
-profiles. An unfired search holds those whose own fields match all its terms; a next page
-holds the fits on its search's latest page. A tie goes to the narrower search, the one
-matching fewer of the store's people, and when no arm holds a fit one is drawn at random,
-seeded by the round's number so a replay repeats. No rate, floor or cost picks it, and the
-GP reaches it only through the term weights that decide which arms exist
-(``lattice.TermPools``): an offline replay of seven ways to pick searches on four stores
-found counting fits reached the most later fits by far — on batch 5, 55 over 15 rounds
-against the walk's 0 — where the rate below picked small areas and found none
-(openoutreach-docs card ``p2-e3-the-round-fires-searches-that-pay-or-teach``, finding 8).
+**An arm is valued on the one page it would bring, from what is still out there:**
 
-**What each arm is expected to bring** is still valued, for ``judge_or_search``'s
-decision of *when* to fire a round, and for the debug log:
-
-    value(arm) = new(arm) · max(0, rate(arm) − floor)  ÷  (c_fire + c_ingest · new(arm))
+    value(arm) = new · (F − held) / (N − seen)  ÷  cost
 
 - **An arm** is a search at a page: the next page of a fired search (``deepen``), a written
   search not yet fired, or a neighbour of a fired one on the lattice (``lattice``) — never
   a search already fired, dead, or holding all the terms of one that is, and never a
   search of the whole country where every written search names a state.
+- **N** is how many people the market holds for the search: the provider's count where it
+  fired, otherwise the belief's estimate (``belief``), capped by the count of any fired
+  search it narrows and kept above the people the store holds for it. **F** is ``N · θ``,
+  with ``θ`` the share of them expected to fit.
+- **seen** and **held** are the store's people the search matches, and the fits among them.
+  An arm with nobody new values at 0, and so does an area whose fits the store holds.
 - **new** is how many people the page would bring that the store does not hold. A person
   already seen adds nothing, so **a search holding all the terms of a drained one** (its
   pages returned everything it counts) is never an arm: the lattice proves it can only
-  re-find people. For an unfired search the count is estimated from the fired searches it
-  is stricter than — their count times the share of their people it matches — or, with
-  none, from the fired searches stricter than it, or the store's typical search; the
-  people of the store it already matches are taken off as seen.
-- **rate** is the fit rate expected of those people: the store's people the search matches
-  locally (``query.Terms.matches``, through ``People``'s per-field index), each their
-  verdict if judged, else their fit rate, averaged per company, then shrunk toward the
-  store's base rate by ``prior_companies`` pseudo-companies, so a search matching two
-  companies does not rank on their luck. A next page's rate is its latest page's people.
-- **the fit rate** is the GP's score through an isotonic map fitted on the store's
-  verdicts at their out-of-fold scores (``fit_rate_map``): the GP ranks well but is not
-  calibrated (0.15 where the truth was 0.28), and a fit rate is what can be weighed
-  against a cost. With one class of verdicts the score stands in.
-- **floor** is the fit rate of the best lead waiting: a new person adds to the top of the
-  pool only by beating it. With nothing waiting it is 0.
-- **the costs** are run time in dollars (``calibration.dollars``): a search's measured
-  ready time, and each new person's measured ingest time — embedding is most of a
-  round's — so a page of 200 strangers pays for every one.
+  re-find people. A next page brings as many as its latest page was first to bring in.
+- **the costs** are dollars (``calibration.dollars``): a search's measured ready time, each
+  new person's measured ingest time — embedding is most of a round's — and a verdict on
+  each of them, so a page of 200 strangers pays for every one.
 
-``judge_or_search`` weighs the search ``next_round`` would fire against judging the pool,
-and a search fires only while some arm beats the floor.
+**The search fired is drawn by Thompson sampling** (``Frontier.pick``): finding the most
+fits while learning is a bandit. One ``θ_t`` is drawn per keyword, seeded by the round's
+number so a rerun repeats, every arm is valued on the draw, and the highest fires. A keyword
+little is known about sometimes draws high and gets tried; a keyword known to be bad almost
+never does.
+
+``judge_or_search`` weighs the arm with the highest value at the mean ``θ_t`` against judging
+the pool, and the walk stops when no arm is expected to bring a new fit. In the cold phase
+nothing is yet known to stop on, so it fires while an arm brings somebody new.
+
+**The fit rate** is the GP's score through an isotonic map fitted on the store's verdicts
+at their out-of-fold scores (``fit_rate_map``): the GP ranks well but is not calibrated
+(0.15 where the truth was 0.28), and a fit rate is what can be weighed against a cost. With
+one class of verdicts the score stands in.
 """
 from __future__ import annotations
 
 import logging
-import random
 import statistics
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 
-from openoutfind.core.conf import CAMPAIGN_CONFIG, WALK_CONFIG
-from openoutfind.core.pipeline import lattice
+from openoutfind.core.conf import CAMPAIGN_CONFIG
+from openoutfind.core.pipeline import belief, lattice
 from openoutfind.core.pipeline.query import Terms, company_tags, split_place, title_words
 
 logger = logging.getLogger(__name__)
 
 _EMPTY: frozenset = frozenset()
+
+# What a market reads as with nobody scored: nothing is known either way.
+NEUTRAL_RATE = 0.5
+# An estimate below the people the store holds for a search is disproved, and how far is
+# unknown: the search is taken to hold a tenth more, so it stays worth a look.
+SEEN_MARGIN = 1.1
+# The fits a page must be expected to bring for the walk to go on.
+FITS_WORTH_A_SEARCH = 1.0
 
 
 # ── the fit rate ─────────────────────────────────────────────────────
@@ -125,6 +123,13 @@ def lead_rates(qualifier, fit_rate) -> dict[int, float]:
     return rates
 
 
+def judged_leads() -> set[int]:
+    """Every lead holding a verdict, marks included."""
+    from openoutfind.crm.models import Deal
+
+    return set(Deal.objects.filter(lead_id__isnull=False).values_list("lead_id", flat=True))
+
+
 def judged_fits() -> set[int]:
     """Every lead judged a fit: any deal but the ``wrong_fit`` rejection, marks included."""
     from openoutfind.crm.models import Deal, DealState, Outcome
@@ -162,18 +167,6 @@ class People:
         return cls(Lead.objects.filter(synthetic=False).exclude(source_fields={})
                    .values_list("pk", "company_id", "source_fields"), rates)
 
-    @classmethod
-    def promising(cls, fits: set[int]) -> "People":
-        """The people an arm is counted on: the ``fits`` and the anchors, each matched on its own
-        fields — an anchor's are the model's own assignment of value to field."""
-        from django.db.models import Q
-
-        from openoutfind.crm.models import Lead
-
-        return cls(Lead.objects.filter(Q(pk__in=fits) | Q(synthetic=True))
-                   .exclude(source_fields={})
-                   .values_list("pk", "company_id", "source_fields"), {})
-
     def match(self, terms: Terms) -> set[int]:
         """Every stored person matching every term of ``terms``, each in its own field."""
         keys = [("title", word) for word in terms.title]
@@ -193,16 +186,14 @@ class People:
         sets.sort(key=len)
         return set(sets[0]).intersection(*sets[1:])
 
-    def rate_of(self, pks, prior: float) -> float:
-        """The fit rate of ``pks``' region: per company, then over companies, shrunk
-        toward ``prior`` by ``prior_companies`` pseudo-companies."""
-        by_company: dict = defaultdict(list)
-        for pk in pks:
-            if pk in self.rates:
-                by_company[self.company[pk]].append(self.rates[pk])
-        strength = WALK_CONFIG["prior_companies"]
-        total = sum(statistics.fmean(rates) for rates in by_company.values())
-        return (total + strength * prior) / (len(by_company) + strength)
+    def holding(self, keyword: tuple) -> set[int]:
+        """Everyone holding ``keyword`` (``belief.query_keywords``); a state is held by its
+        own rows and by the rows of its country that carry no state."""
+        if keyword[0] == "state":
+            _, state, country = keyword
+            return set(self._index.get(("state", state), _EMPTY)
+                       | self._index.get(("no state", country), _EMPTY))
+        return set(self._index.get(keyword, _EMPTY))
 
     def base_rate(self) -> float:
         """The store's own rate: every scored person, per company, then over companies."""
@@ -211,7 +202,7 @@ class People:
             if pk in self.company:
                 by_company[self.company[pk]].append(rate)
         if not by_company:
-            return 0.0
+            return NEUTRAL_RATE
         return statistics.fmean(statistics.fmean(rates) for rates in by_company.values())
 
 
@@ -260,6 +251,10 @@ class Fired:
         return self.search.query
 
     @property
+    def keywords(self) -> tuple:
+        return belief.query_keywords(self.terms)
+
+    @property
     def found(self) -> int | None:
         return self.search.leads_found
 
@@ -300,38 +295,50 @@ class Arm:
     number: int
     move: str
     search: object | None = None
-    size: float = 0.0        # people the provider would return on this page
-    new: float = 0.0         # of them, people the store does not hold, after drops
-    rate: float = 0.0        # the fit rate expected of them
-    cost: float = 0.0        # dollars to fire it and take its new people in
-    held: int = 0            # fits and anchors it holds, the count that picked it
-    # The store's people that stand for its region: a next page's latest page, an
-    # unfired search's matched people.
-    sample: set[int] = field(default_factory=set, repr=False)
+    keywords: tuple = ()
+    count: float = 0.0       # N: the people the market holds for it
+    seen: int = 0            # the store's people it matches
+    held_fits: int = 0       # the fits among them
+    new: float = 0.0         # people the page would bring that the store does not hold
+    rate: float = 0.0        # the fit rate expected of them, at the mean belief
+    cost: float = 0.0        # dollars to fire it, take its new people in and judge them
 
-    def beats(self, floor: float) -> bool:
-        """Whether its new people are expected to fit more often than ``floor``."""
-        return self.new * (self.rate - floor) > 0
+    def density(self, theta: float) -> float:
+        """The fit rate of the people still out there, were ``theta`` of the market's to fit."""
+        out_there = self.count - self.seen
+        if out_there <= 0:
+            return 0.0
+        return min(max((self.count * theta - self.held_fits) / out_there, 0.0), 1.0)
+
+    def value(self, theta: float) -> float:
+        """Fits per dollar on this page, were ``theta`` of the market's to fit."""
+        return self.new * self.density(theta) / self.cost
+
+    @property
+    def expected_fits(self) -> float:
+        return self.new * self.rate
 
     def __repr__(self):
         return f"{self.terms.as_text()} @ page {self.number}"
 
 
 class Frontier:
-    """Everything the next batch is chosen from, read from the store once."""
+    """Everything the next search is chosen from, read from the store once."""
 
     def __init__(self, qualifier):
         from openoutfind.core import meter
-        from openoutfind.core.ml.calibration import dollars
-        from openoutfind.core.models import PAGE_SIZE, Page, PageLead, Search
+        from openoutfind.core.ml import calibration
+        from openoutfind.core.models import Page, PageLead, Search
         from openoutfind.core.pipeline.walk import FIRST_POLL_SECONDS
 
+        self.qualifier = qualifier
         self.fit_rate = fit_rate_map()
         self.people = People.load(lead_rates(qualifier, self.fit_rate))
-        self.prior = self.people.base_rate()
+        self.judged = judged_leads()
         self.fits = judged_fits()
-        self.promising = People.promising(self.fits)
         self.fired = _fired()
+        self.beliefs = belief.Beliefs(self.people, self.fired, self.judged,
+                                      self.people.base_rate())
         self.written = list(Search.objects.filter(origin=Search.Origin.WRITTEN))
         self.market_is_states = bool(self.written) and all(
             split_place(search.query.place)[0] for search in self.written)
@@ -343,17 +350,16 @@ class Frontier:
 
         returned = sum(Page.objects.values_list("rows", flat=True))
         self.kept = PageLead.objects.count() / returned if returned else 1.0
-        counts = [f.found for f in self.fired if f.found]
-        self.typical = statistics.median(counts) if counts else float(PAGE_SIZE)
 
-        self.fire_cost = dollars(meter.mean(meter.SEARCH_READY_SECONDS, FIRST_POLL_SECONDS))
-        self.ingest_cost = dollars(meter.mean(meter.INGEST_SECONDS_PER_LEAD,
-                                              CAMPAIGN_CONFIG["ingest_seconds_per_lead"]))
+        self.fire_cost = calibration.dollars(meter.mean(meter.SEARCH_READY_SECONDS,
+                                                        FIRST_POLL_SECONDS))
+        self.person_cost = calibration.verdict_cost() + calibration.dollars(
+            meter.mean(meter.INGEST_SECONDS_PER_LEAD, CAMPAIGN_CONFIG["ingest_seconds_per_lead"]))
 
     # ── candidates ──
 
     def arms(self) -> list[Arm]:
-        """Every arm, each valued alone."""
+        """Every arm, valued at the mean belief."""
         arms = [self._deepen(f) for f in self.fired if not f.latest.at_bottom]
         fired_keys = {f.search.key for f in self.fired}
         arms += [self._first_page(search.query, "written", search) for search in self.written
@@ -369,7 +375,9 @@ class Frontier:
             near.setdefault(neighbour.key, (neighbour, move))
         arms += [self._first_page(terms, move) for key, (terms, move) in near.items()
                  if key not in self.taken and not self._closed(terms)]
-        return [arm for arm in arms if self._in_market(arm.terms)]
+        arms = [arm for arm in arms if self._in_market(arm.terms)]
+        self._settle(arms)
+        return arms
 
     def _in_market(self, terms: Terms) -> bool:
         """Whether ``terms`` stay in the market the written searches drew: where every one
@@ -390,101 +398,95 @@ class Frontier:
     # ── valuing ──
 
     def _deepen(self, fired: Fired) -> Arm:
-        """The next page of a fired search, like its latest one: as fresh, as good."""
+        """The next page of a fired search: as fresh as its latest one."""
         from openoutfind.core.models import PAGE_SIZE
 
-        remaining = (fired.found - fired.latest.number * PAGE_SIZE
-                     if fired.found is not None else PAGE_SIZE)
-        size = max(0, min(PAGE_SIZE, remaining))
+        keywords = fired.keywords
+        count = fired.found if fired.found is not None else self.beliefs.count(keywords)
+        remaining = count - fired.latest.number * PAGE_SIZE
         novelty = len(fired.fresh) / fired.latest.rows if fired.latest.rows else 0.0
-        return self._priced(Arm(fired.terms, fired.latest.number + 1, "deepen", fired.search,
-                                size=size, new=size * novelty,
-                                rate=self.people.rate_of(fired.latest_people, self.prior),
-                                sample=fired.latest_people))
+        page = max(0.0, min(PAGE_SIZE, remaining)) * novelty
+        return self._valued(fired.terms, fired.latest.number + 1, "deepen", fired.search,
+                            count, self.people.match(fired.terms) | fired.people, page)
 
     def _first_page(self, terms: Terms, move: str, search=None) -> Arm:
-        """Page 1 of an unfired search: its count estimated from the fired searches next
-        to it, less the people of the store it already matches."""
+        """Page 1 of an unfired search, its count estimated."""
         from openoutfind.core.models import PAGE_SIZE
 
         matched = self.people.match(terms)
-        wider = [f for f in self.fired if f.found is not None and terms.holds_all_of(f.terms)]
-        count = self._count(terms, matched, wider)
-        size = min(PAGE_SIZE, count)
-        novelty = max(0.0, 1.0 - len(matched) / count) if count > 0 else 0.0
-        return self._priced(Arm(terms, 1, move, search, size=size,
-                                new=size * self.kept * novelty,
-                                rate=self.people.rate_of(self._evidence(matched, wider),
-                                                         self.prior),
-                                sample=matched))
+        count = self._count(terms, len(matched))
+        page = min(PAGE_SIZE, max(0.0, count - len(matched))) * self.kept
+        return self._valued(terms, 1, move, search, count, matched, page)
 
-    @staticmethod
-    def _evidence(matched: set[int], wider: list[Fired]) -> set[int]:
-        """Whose rates say what a search's people are like.
+    def _count(self, terms: Terms, seen: int) -> float:
+        """``N(q)`` for an unfired search: the belief's estimate, kept above the people the
+        store holds for it and within the count of every fired search it narrows."""
+        estimate = max(self.beliefs.count(belief.query_keywords(terms)), seen * SEEN_MARGIN)
+        return min([estimate] + [f.found for f in self.fired
+                                 if f.found is not None and terms.holds_all_of(f.terms)])
 
-        The pages of the fired searches it narrows, where they hold any of its people:
-        those are the provider's own sample of it. Otherwise everyone the store holds that
-        it matches — a sample leaning toward the searches the store came from, which is
-        why a tag-less ``founder officer`` read 0.26 on batch 5's cannabis founders while
-        the tag-less ``founder`` page it narrows held none in the industry.
-        """
-        sampled = set().union(*(f.people & matched for f in wider))
-        return sampled or matched
+    def _valued(self, terms: Terms, number: int, move: str, search, count: float,
+                seen: set[int], page: float) -> Arm:
+        new = min(page, max(0.0, count - len(seen)))
+        return Arm(terms, number, move, search, keywords=belief.query_keywords(terms),
+                   count=count, seen=len(seen), held_fits=len(seen & self.fits), new=new,
+                   cost=self.fire_cost + self.person_cost * new)
 
-    def _count(self, terms: Terms, matched: set[int], wider: list[Fired]) -> float:
-        """How many people the provider would count for ``terms``, given the fired
-        searches it narrows (``wider``).
-
-        Where their pages hold some of its people: a search's count times their share,
-        the tightest such. Otherwise the store's typical count, raised to the largest
-        fired search stricter than it and capped at the smallest it narrows. A share of
-        none is no estimate: a page of a 49,004-person search is that search's
-        famous-company head, and holding none of a narrow search's people says nothing
-        about how many it has.
-        """
-        shares = [f.found * len(f.people & matched) / len(f.people)
-                  for f in wider if f.people & matched]
-        if shares:
-            return min(shares)
-        narrower = [f.found for f in self.fired
-                    if f.found is not None and f.terms.holds_all_of(terms)]
-        return min([max([self.typical] + narrower)] + [f.found for f in wider])
-
-    def _priced(self, arm: Arm) -> Arm:
-        arm.cost = self.fire_cost + self.ingest_cost * arm.new
-        return arm
+    def _settle(self, arms: list[Arm]) -> None:
+        """Read every keyword's belief, in one pass, and each arm's rate at its mean."""
+        keywords = sorted({keyword for arm in arms for keyword in arm.keywords})
+        self.beliefs.settle(belief.keyword_priors(keywords, self.qualifier, self.fit_rate,
+                                                  self.beliefs.market_rate))
+        means = self.beliefs.means()
+        for arm in arms:
+            arm.rate = arm.density(self.beliefs.rate(arm.keywords, means))
 
     # ── the next search ──
 
-    def holds(self, arm: Arm) -> set[int]:
-        """The promising people ``arm`` holds: for a next page, the fits on its search's
-        latest page; for an unfired search, the fits and anchors matching all its terms."""
-        if arm.move == "deepen":
-            return arm.sample & self.fits
-        return self.promising.match(arm.terms)
-
-    def best(self, arms: list[Arm], round_number: int) -> Arm:
-        """The arm holding the most fits, ties to the narrower; with none holding any, one
-        drawn at random, seeded by ``round_number``."""
-        # One order however the lattice enumerated them, so a replay draws the same arm.
-        ordered = sorted(arms, key=lambda arm: (arm.terms.key, arm.number))
-        for arm in ordered:
-            arm.held = len(self.holds(arm))
-        top = max(ordered, key=lambda arm: (arm.held, -len(arm.sample)))
-        chosen = top if top.held else random.Random(round_number).choice(ordered)
-        _log(chosen, len(arms), len(self.promising.everyone))
-        return chosen
+    def pick(self, arms: list[Arm], round_number: int) -> Arm:
+        """Thompson sampling: the arm worth the most on one draw of every keyword, seeded
+        by ``round_number``."""
+        draws = self.beliefs.draw(round_number)
+        return max(_in_one_order(arms),
+                   key=lambda arm: arm.value(self.beliefs.rate(arm.keywords, draws)))
 
 
-def next_round(qualifier, round_number: int, floor: float = 0.0) -> list[Arm]:
-    """The one search to fire next, or ``[]`` when no arm beats ``floor``, the fit rate of
-    the best lead waiting: ``judge_or_search`` decides *when* a search fires, ``best``
-    *which*."""
+def _in_one_order(arms: list[Arm]) -> list[Arm]:
+    """The arms however the lattice enumerated them, so a rerun breaks a tie the same way."""
+    return sorted(arms, key=lambda arm: (arm.terms.key, arm.number))
+
+
+def _worth_firing(arms: list[Arm], qualifier) -> list[Arm]:
+    """The arms bringing somebody new, or none once no arm is expected to bring a fit. The
+    cold phase has nothing yet to stop on: only a frontier with nobody new ends it."""
+    bringing = [arm for arm in arms if arm.new > 0]
+    if qualifier is not None and qualifier.is_cold:
+        return bringing
+    if any(arm.expected_fits >= FITS_WORTH_A_SEARCH for arm in bringing):
+        return bringing
+    return []
+
+
+def next_round(qualifier, round_number: int) -> list[Arm]:
+    """The one search to fire next, or ``[]`` when none is worth firing."""
     f = Frontier(qualifier)
-    arms = f.arms()
-    if not any(arm.beats(floor) for arm in arms):
+    arms = _worth_firing(f.arms(), qualifier)
+    _log_last_page(f)
+    if not arms:
         return []
-    return [f.best(arms, round_number)]
+    chosen = f.pick(arms, round_number)
+    _log(chosen, len(arms))
+    return [chosen]
+
+
+def best_expected(qualifier) -> Arm | None:
+    """The arm worth the most at the mean belief, what ``judge_or_search`` weighs against
+    the pool — ``None`` when none is worth firing."""
+    f = Frontier(qualifier)
+    arms = _worth_firing(f.arms(), qualifier)
+    if not arms:
+        return None
+    return max(_in_one_order(arms), key=lambda arm: arm.expected_fits / arm.cost)
 
 
 def written_arms() -> list[Arm]:
@@ -497,7 +499,20 @@ def written_arms() -> list[Arm]:
                                                 pages__isnull=True)]
 
 
-def _log(chosen: Arm, candidates: int, promising: int) -> None:
-    how = f"holds {chosen.held} of {promising}" if chosen.held else "drawn, none holds a fit"
-    logger.debug("  frontier: %d arm(s) · %-9s %s · rate %.2f · ~%.0f new  %s", candidates,
-                 chosen.move, how, chosen.rate, chosen.new, chosen)
+def _log(chosen: Arm, candidates: int) -> None:
+    logger.debug("  frontier: %d arm(s) · %-9s θ %.2f · N ~%.0f · seen %d · ~%.0f new  %s",
+                 candidates, chosen.move, chosen.rate, chosen.count, chosen.seen, chosen.new,
+                 chosen)
+
+
+def _log_last_page(f: Frontier) -> None:
+    """What became of the last fired page: the first runs read θ against this, and watch
+    for pages nobody judges."""
+    if not f.fired:
+        return
+    last = max(f.fired, key=lambda fired: fired.latest.round)
+    people = last.latest_people
+    rates = [f.people.rates[pk] for pk in people if pk in f.people.rates]
+    logger.debug("  last page: %s · %d verdict(s), %d fit(s) of %d · observed rate %.2f",
+                 last.terms.as_text(), len(people & f.judged), len(people & f.fits), len(people),
+                 statistics.fmean(rates) if rates else 0.0)
