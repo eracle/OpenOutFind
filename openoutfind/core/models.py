@@ -27,7 +27,7 @@ class Search(models.Model):
     class Origin(models.TextChoices):
         # Written whole by the LLM (or the calling agent) — the initial population.
         WRITTEN = "written", "written"
-        # Composed from the store's keywords on a draw of the belief, fired from the frontier.
+        # Composed from the store's keywords at the mean belief, fired from the frontier.
         DRAWN = "drawn", "drawn"
 
     terms = models.JSONField()

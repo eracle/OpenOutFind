@@ -24,6 +24,9 @@ crown jewel and it is ported verbatim:
 - **explore** (``neg ≤ pos``) — label the most *informative* lead (max BALD), with no
   confidence gate: a low-confidence lead is exactly the label that teaches the GP
   most, so filtering by confidence would throw away the point of exploring.
+- **probe** (a fired search whose people hold fewer than ``PROBE_VERDICTS`` verdicts) —
+  judge one person drawn at random from what it brought, ahead of everything below: the
+  walk values the search's next page on those verdicts. See ``core/pipeline/probe.py``.
 - **calibrate** (fewer than √N calibration verdicts, N the unjudged pool) — judge one
   lead drawn at random from the thinnest score band, ahead of explore and exploit, and
   once √N are in, measure the bar exploit reads. See ``core/ml/calibration.py``.
@@ -49,6 +52,7 @@ from termcolor import colored
 
 from openoutfind.core.ml import calibration
 from openoutfind.core.ml.qualifier import BayesianQualifier
+from openoutfind.core.pipeline import probe
 from openoutfind.core.pipeline.discover import discover
 from openoutfind.core.pipeline.icp import ANCHOR_COUNT
 from openoutfind.core.pipeline.judge_or_search import decide
@@ -74,6 +78,14 @@ def top_up(site_config, qualifier: BayesianQualifier) -> bool:
         return _judge_or_page_one_in(site_config, qualifier, fetch_qualification_candidates())
 
     candidates = fetch_qualification_candidates()
+
+    # Probe — a few random verdicts on what each search brought, ahead of everything: the
+    # walk values a search's next page on them, and no other move reaches those people.
+    # See `core/pipeline/probe.py`.
+    lead = probe.next_lead(candidates)
+    if lead is not None:
+        return run_qualification(site_config, qualifier, candidates=[lead],
+                                 preselected=True) is not None
 
     # Calibrate — ahead of both, because what exploit can judge depends on the bar this
     # measures. It waits on neither the balance nor the bar, so it cannot stall the way

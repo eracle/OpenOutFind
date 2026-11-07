@@ -8,8 +8,8 @@ Every later round is one search, one blocking step of the run:
 1. **Read the frontier** (``frontier``) as the store stands now, after the run has judged
    what the last round brought in: every fired search's next page, every unfired written
    search, and the searches composed from every keyword the store holds (``compose``).
-2. **Fire the search worth the most on one draw of the belief** (``Frontier.pick``). The
-   worker thread only makes the API call.
+2. **Fire the search whose page brings the most fits at its mean plus one σ**
+   (``Frontier.pick``). The worker thread only makes the API call.
 3. **Wait for it**, then, in the main thread, record its page and take the page's people
    into the store (``discover.harvest``): one embedding pass, shortest profile first,
    since embedding is most of its time.

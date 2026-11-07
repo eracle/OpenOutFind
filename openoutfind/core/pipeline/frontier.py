@@ -1,19 +1,21 @@
 # openoutfind/core/pipeline/frontier.py
 """The frontier — every search the walk could fire next, and the one it fires.
 
-**An arm is valued on the one page it would bring, from what is still out there:**
+**An arm is valued on the fits the one page it would bring holds, from what is still out
+there:**
 
-    value(arm) = new · (F − held) / (N − seen)  ÷  cost
+    fits(arm) = new · (F − held) / (N − seen)
 
 - **An arm** is a search at a page: the next page of a fired search (``deepen``), a written
-  search not yet fired, or a search composed from every keyword the store holds
-  (``compose``) — the best at the mean belief, and on each draw the best on that draw —
-  never a search already fired, dead, or holding all the terms of one that is, and never
-  a search of the whole country where every written search names a state.
+  search not yet fired, or one of the ``COMPOSED`` searches worth the most at the mean
+  belief, composed from every keyword the store holds (``compose``) — never a search
+  already fired, dead, or holding all the terms of one that is, and never a search of the
+  whole country where every written search names a state.
 - **N** is how many people the market holds for the search: the provider's count where it
   fired, otherwise the belief's estimate (``belief``), capped by the count of any fired
   search it narrows and kept above the people the store holds for it. **F** is ``N · θ``,
-  with ``θ`` the share of them expected to fit.
+  with ``θ`` the share of them expected to fit: a fired search's own (its pages' people),
+  otherwise the product of its keywords'.
 - **seen** and **held** are the store's people the search matches, and the fits among them.
   An arm with nobody new values at 0, and so does an area whose fits the store holds.
 - **new** is how many people the page would bring that the store does not hold. A person
@@ -24,13 +26,14 @@
   new person's measured ingest time — embedding is most of a round's — and a verdict on
   each of them, so a page of 200 strangers pays for every one.
 
-**The search fired is drawn by Thompson sampling** (``Frontier.pick``): finding the most
-fits while learning is a bandit. One ``θ_t`` is drawn per keyword and one set of sizes for
-the market, seeded by the round's number so a rerun repeats, the searches worth the most
-on that draw are composed from the whole vocabulary and join the arms, every arm is valued
-on the draw, and the highest fires. A keyword little is known about sometimes draws high
-and gets tried, in whatever search it is worth the most; a keyword known to be bad almost
-never does. A search the provider has counted keeps its count on every draw.
+**The search fired is the best at its mean plus one σ** (``Frontier.pick``): each arm's
+fits are read on ``DRAWS`` draws of the belief — every ``θ_t``, every fired search's own
+``θ``, the sizes — seeded by the round's number so a rerun repeats, and the arm with the
+highest mean plus ``OPTIMISM`` σ fires. A search little is known about is worth trying
+once; the five random verdicts ``probe`` takes from its page then settle it. It replaced
+Thompson sampling over searches composed on each draw: across 10,000 keywords near their
+prior one always drew high, and only 9 of 50 draws stayed in the customer's market. A
+search the provider has counted keeps its count on every draw.
 
 ``judge_or_search`` weighs the arm with the highest value at the mean ``θ_t`` against judging
 the pool, and the walk stops when no arm is expected to bring a new fit. In the cold phase
@@ -67,9 +70,14 @@ NEUTRAL_RATE = 0.5
 SEEN_MARGIN = 1.1
 # The fits a page must be expected to bring for the walk to go on.
 FITS_WORTH_A_SEARCH = 1.0
-# The composed searches valued exactly, at the mean and on each draw: room for the ones
-# the frontier refuses (fired, dead, drained) below the best.
+# The composed searches valued exactly, at the mean: room for the ones the frontier
+# refuses (fired, dead, drained) below the best.
 COMPOSED = 200
+# The draws of the belief an arm's mean and σ are read off.
+DRAWS = 200
+# How many σ above its mean an arm's fits are taken at: a search little is known about is
+# worth trying once, and a page that came back bad stops being worth it.
+OPTIMISM = 1.0
 
 
 # ── the fit rate ─────────────────────────────────────────────────────
@@ -109,9 +117,10 @@ def fit_rate_map():
     return curve.predict
 
 
-def lead_rates(qualifier, fit_rate) -> dict[int, float]:
-    """``lead_id → rate`` for every stored person: their verdict if judged, else the GP's
-    score through ``fit_rate``. A person the GP cannot score is left out."""
+def lead_rates(qualifier, fit_rate) -> tuple[dict[int, float], dict[int, float]]:
+    """``(lead_id → rate, lead_id → confidence)`` for every stored person: their verdict
+    if judged, else the GP's score through ``fit_rate`` and the GP's confidence there
+    (``BayesianQualifier.confidence``). A person the GP cannot score is left out."""
     from openoutfind.crm.models import Deal, DealState, Lead, Outcome
 
     rates: dict[int, float] = {
@@ -122,13 +131,15 @@ def lead_rates(qualifier, fit_rate) -> dict[int, float]:
     unjudged = list(Lead.objects.filter(synthetic=False, embedding__isnull=False)
                     .exclude(pk__in=list(rates)).values_list("pk", "embedding"))
     if qualifier is None or not unjudged:
-        return rates
+        return rates, {}
     X = np.array([np.frombuffer(bytes(emb), dtype=np.float32) for _, emb in unjudged],
                  dtype=np.float64)
     probs = qualifier.predict_probs(X)
-    if probs is not None:
-        rates.update((pk, float(r)) for (pk, _), r in zip(unjudged, fit_rate(probs)))
-    return rates
+    if probs is None:
+        return rates, {}
+    pks = [pk for pk, _ in unjudged]
+    rates.update(zip(pks, map(float, fit_rate(probs))))
+    return rates, dict(zip(pks, map(float, qualifier.confidence(X))))
 
 
 def judged_leads() -> set[int]:
@@ -157,8 +168,9 @@ class People:
     a seniority.
     """
 
-    def __init__(self, rows, rates: dict[int, float]):
+    def __init__(self, rows, rates: dict[int, float], confidence: dict[int, float] | None = None):
         self.rates = rates
+        self.confidence = confidence or {}
         self.company: dict[int, object] = {}
         self.everyone: set[int] = set()
         self._index: dict[tuple, set[int]] = defaultdict(set)
@@ -198,11 +210,17 @@ class People:
         return set(self._states.get(country.lower(), ()))
 
     @classmethod
-    def load(cls, rates: dict[int, float]) -> "People":
+    def load(cls, rates: dict[int, float],
+             confidence: dict[int, float] | None = None) -> "People":
         from openoutfind.crm.models import Lead
 
         return cls(Lead.objects.filter(synthetic=False).exclude(source_fields={})
-                   .values_list("pk", "company_id", "source_fields"), rates)
+                   .values_list("pk", "company_id", "source_fields"), rates, confidence)
+
+    def sureness(self, pk: int) -> float:
+        """How far a person's rate is to be believed: the GP's confidence at them, or 1
+        for a rate given with none (a verdict, or a rate set by hand)."""
+        return self.confidence.get(pk, 1.0)
 
     def match(self, terms: Terms) -> set[int]:
         """Every stored person matching every term of ``terms``, each in its own field."""
@@ -303,7 +321,8 @@ class Fired:
         return self.found is not None and self.latest.number * PAGE_SIZE >= self.found
 
 
-def _fired() -> list[Fired]:
+def fired_searches() -> list[Fired]:
+    """Every search with pages, as of its latest."""
     from openoutfind.core.models import Page, PageLead
 
     latest: dict[int, object] = {}
@@ -340,6 +359,7 @@ class Arm:
     theta: float | None = None  # θ(q) at the mean belief, None on an arm chosen unvalued
     rate: float = 0.0        # the fit rate expected of them, at the mean belief
     cost: float = 0.0        # dollars to fire it, take its new people in and judge them
+    score: float | None = None  # fits on its page at mean + OPTIMISM σ, set when picked
 
     def density(self, theta: float) -> float:
         """The fit rate of the people still out there, were ``theta`` of the market's to fit."""
@@ -347,10 +367,6 @@ class Arm:
         if out_there <= 0:
             return 0.0
         return min(max((self.count * theta - self.held_fits) / out_there, 0.0), 1.0)
-
-    def value(self, theta: float) -> float:
-        """Fits per dollar on this page, were ``theta`` of the market's to fit."""
-        return self.new * self.density(theta) / self.cost
 
     @property
     def expected_fits(self) -> float:
@@ -371,10 +387,10 @@ class Frontier:
 
         self.qualifier = qualifier
         self.fit_rate = fit_rate_map()
-        self.people = People.load(lead_rates(qualifier, self.fit_rate))
+        self.people = People.load(*lead_rates(qualifier, self.fit_rate))
         self.judged = judged_leads()
         self.fits = judged_fits()
-        self.fired = _fired()
+        self.fired = fired_searches()
         self.beliefs = belief.Beliefs(self.people, self.fired, self.judged,
                                       self.people.base_rate())
         self.written = list(Search.objects.filter(origin=Search.Origin.WRITTEN))
@@ -423,16 +439,17 @@ class Frontier:
                 and self._in_market(terms) and not self._closed(terms)]
 
     def _worth(self, log_market: float) -> compose.Worth:
-        """What a page of a search is worth per dollar, from its summed lift and share —
-        ``Arm.value`` with nobody yet seen, for the composition to sort by."""
+        """The fits a page of a search brings, from its summed lift and share, with nobody
+        yet seen — what ``pick`` ranks on, for the composition to sort by. Per dollar it
+        ranked on the rate alone, since a verdict a person is most of a page's cost, and
+        its best were searches of 1 to 6 people."""
         from openoutfind.core.models import PAGE_SIZE
 
         market = belief._log_odds(self.beliefs.market_rate)
 
         def worth(lift: np.ndarray, share: np.ndarray) -> np.ndarray:
             theta = 1.0 / (1.0 + np.exp(-(market + lift)))
-            new = self.kept * np.minimum(PAGE_SIZE, np.exp(log_market + share))
-            return theta * new / (self.fire_cost + self.person_cost * new)
+            return theta * self.kept * np.minimum(PAGE_SIZE, np.exp(log_market + share))
 
         return worth
 
@@ -549,24 +566,46 @@ class Frontier:
         """Each arm's ``θ(q)`` and fit rate at the mean belief."""
         means = self.beliefs.means()
         for arm in arms:
-            arm.theta = self.beliefs.rate(arm.keywords, means)
+            arm.theta = (self.beliefs.search_mean(arm.search.key) if _is_next_page(arm)
+                         else self.beliefs.rate(arm.keywords, means))
             arm.rate = arm.density(arm.theta)
+
+    def _theta_on(self, arm: Arm, thetas: dict, searches: dict) -> float:
+        """``θ(q)`` on one draw: a fired search's own, else its keywords'."""
+        if _is_next_page(arm):
+            return searches[arm.search.key]
+        return self.beliefs.rate(arm.keywords, thetas)
 
     # ── the next search ──
 
     def pick(self, arms: list[Arm], round_number: int) -> Arm:
-        """Thompson sampling: one draw of every keyword's ``θ_t`` and of the sizes, seeded
-        by ``round_number``; the searches worth the most on it join ``arms``, and the arm
-        worth the most on the draw is returned."""
-        thetas = self.beliefs.draw(round_number)
-        sizes = self.beliefs.draw_sizes(round_number)
-        drawn = [arm for arm in self._composed(thetas, sizes) if arm.new > 0]
-        self._rate(drawn)
+        """The arm whose page brings the most fits at its mean plus ``OPTIMISM`` σ, both
+        read off ``DRAWS`` draws of the belief seeded by ``round_number``. Sets the arm's
+        ``score``."""
+        arms = _in_one_order(_distinct(arms))
+        fits = self._fits_on_draws(arms, round_number)
+        scores = fits.mean(axis=0) + OPTIMISM * fits.std(axis=0)
+        chosen = arms[int(np.argmax(scores))]
+        chosen.score = float(scores.max())
+        return chosen
 
-        def drawn_value(arm: Arm) -> float:
-            return self._resized(arm, sizes).value(self.beliefs.rate(arm.keywords, thetas))
+    def _fits_on_draws(self, arms: list[Arm], round_number: int) -> np.ndarray:
+        """``(DRAWS, arms)``: the fits each arm's page brings on each draw."""
+        keywords = {keyword for arm in arms for keyword in arm.keywords}
+        fits = np.zeros((DRAWS, len(arms)))
+        for n in range(DRAWS):
+            seed = (round_number, n)
+            thetas = self.beliefs.draw(seed, keywords)
+            searches = self.beliefs.draw_searches(seed)
+            sizes = self.beliefs.draw_sizes(seed, keywords)
+            for i, arm in enumerate(arms):
+                drawn = self._resized(arm, sizes)
+                fits[n, i] = drawn.new * drawn.density(self._theta_on(arm, thetas, searches))
+        return fits
 
-        return max(_in_one_order(_distinct(arms + drawn)), key=drawn_value)
+
+def _is_next_page(arm: Arm) -> bool:
+    return arm.move == "deepen"
 
 
 def _distinct(arms: list[Arm]) -> list[Arm]:
@@ -627,8 +666,9 @@ def written_arms() -> list[Arm]:
 
 def _log(chosen: Arm, candidates: int) -> None:
     logger.debug("  frontier: %d arm(s) · %-9s θ %.2f · density %.2f · N ~%.0f · seen %d · "
-                 "~%.0f new  %s", candidates, chosen.move, chosen.theta, chosen.rate,
-                 chosen.count, chosen.seen, chosen.new, chosen)
+                 "~%.0f new · %.1f fits at +%gσ  %s", candidates, chosen.move, chosen.theta,
+                 chosen.rate, chosen.count, chosen.seen, chosen.new, chosen.score, OPTIMISM,
+                 chosen)
 
 
 def _log_last_page(f: Frontier) -> None:

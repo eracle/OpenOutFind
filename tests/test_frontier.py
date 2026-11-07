@@ -242,7 +242,7 @@ class TestAnArmsValue:
     def test_an_area_whose_fits_the_store_holds_is_worth_nothing_however_large(self):
         arm = _arm("founder", count=100_000.0, seen=5000, held_fits=5000)
 
-        assert arm.density(0.05) == 0.0 and arm.value(0.05) == 0.0
+        assert arm.density(0.05) == 0.0
 
     def test_a_search_with_nobody_out_there_is_worth_nothing(self):
         assert _arm("founder", count=50.0, seen=50).density(0.9) == 0.0
@@ -293,36 +293,57 @@ class TestTheNextSearch:
 
         assert frontier._worth_firing([dry, live], None) == [live]
 
-    def test_the_same_round_draws_the_same_search_twice(self):
+    def test_the_same_round_picks_the_same_search_whatever_the_order(self):
         arms = [_arm(f"title{i}") for i in range(30)]
         f = _settled(arms)
 
         assert f.pick(list(arms), 4) is f.pick(list(reversed(arms)), 4)
-        assert len({f.pick(arms, number).terms.key for number in range(20)}) > 1
 
-    def test_a_keyword_known_to_be_bad_is_almost_never_drawn_and_an_unknown_one_sometimes(self):
+    def test_a_known_good_keyword_beats_an_unknown_one_and_an_unknown_one_a_known_bad(self):
         _companies("Founder", 1, 20)
         _companies("Clerk", 0, 20)
+        for i in range(20):
+            _lead("Buyer", company=_company(f"unjudged-{i}"))
         good, bad, unknown = _arm("founder"), _arm("clerk"), _arm("buyer")
         f = _settled([good, bad, unknown])
 
-        picked = [f.pick([good, bad, unknown], number) for number in range(300)]
+        assert f.pick([good, bad, unknown], 1) is good
+        assert f.pick([bad, unknown], 1) is unknown
+        assert good.score is not None
 
-        assert picked.count(bad) == 0
-        assert picked.count(unknown) > 0
-        assert picked.count(good) > picked.count(unknown)
+    def test_a_page_whose_probe_came_back_without_fits_loses_its_next_page(self):
+        """Batch 6: founder · `wholesale` brought 170 people and 0 fits, and the keywords'
+        marks still read its next page at 0.35. Its own verdicts are what it is valued on."""
+        for i in range(10):
+            _lead("Owner", tags="wholesale", company=_company(f"mark{i}"), verdict=1)
+        page = [_lead("Founder", tags="wholesale", company=_company(f"w{i}"), verdict=0)
+                for i in range(5)]
+        fired = Terms.written(title="founder", tag="wholesale")
+        _fired(fired, page, found=5000)
+        untried = Terms.written(title="owner", tag="wholesale")
 
-    def test_with_fits_unchanged_and_no_fits_arriving_a_second_region_is_reached(self):
-        """The third failure on the card: `bc12f36` took 11 searches to leave a region."""
-        _companies("Purchasing", 1, 3)
-        _companies("Clerk", 0, 3)
+        f = Frontier(None)
+        (deepen,) = [f._deepen(fired) for fired in f.fired]
+        fresh = f._first_page(untried, "drawn")
+        f._settle([deepen, fresh])
 
-        for number in range(1, 7):
-            first, second = _arm("purchasing"), _arm("founder")
-            if _settled([first, second]).pick([first, second], number) is second:
-                return
-            _companies("Purchasing", 0, 3)
-        pytest.fail("the walk never left its first region")
+        assert f.beliefs.search_mean(fired.key) < f.beliefs.market_rate
+        assert f.pick([deepen, fresh], 1) is fresh
+
+    def test_a_page_whose_probe_came_back_fits_is_paged_again(self):
+        for i in range(10):
+            _lead("Owner", tags="wholesale", company=_company(f"mark{i}"), verdict=0)
+        page = [_lead("Founder", tags="wholesale", company=_company(f"w{i}"), verdict=1)
+                for i in range(5)]
+        fired = Terms.written(title="founder", tag="wholesale")
+        _fired(fired, page, found=5000)
+
+        f = Frontier(None)
+        (deepen,) = [f._deepen(fired) for fired in f.fired]
+        fresh = f._first_page(Terms.written(title="owner", tag="wholesale"), "drawn")
+        f._settle([deepen, fresh])
+
+        assert f.pick([deepen, fresh], 1) is deepen
 
     def test_the_next_search_is_nothing_fired_dead_or_drained(self):
         people = [_lead(verdict=1) for _ in range(3)]
@@ -358,7 +379,8 @@ class TestTheNextSearch:
                        keywords=belief.query_keywords(Terms.written(title="purchasing manager")))
         f._settle([narrower])
 
-        counts = [f._resized(narrower, f.beliefs.draw_sizes(n)).count for n in range(200)]
+        counts = [f._resized(narrower, f.beliefs.draw_sizes(n, narrower.keywords)).count
+                  for n in range(200)]
 
         assert max(counts) <= 40
         assert min(counts) >= 3 * frontier.SEEN_MARGIN
@@ -416,14 +438,48 @@ class TestTheBelief:
     def _beliefs(self, rates, judged=(), fired=(), market_rate=0.5):
         return belief.Beliefs(People.load(rates), list(fired), set(judged), market_rate)
 
-    def test_a_judged_person_adds_to_each_of_their_keywords(self):
+    def test_a_judged_person_a_search_brought_adds_to_each_of_its_keywords(self):
         fit = _lead("Founder", tags="cannabis", company=_company("acme"), verdict=1)
-        beliefs = self._beliefs({fit.pk: 1.0}, judged=[fit.pk])
+        _fired(Terms.written(title="founder", tag="cannabis"), [fit], found=500)
+        beliefs = self._beliefs({fit.pk: 1.0}, judged=[fit.pk],
+                                fired=frontier.fired_searches())
         title, tag = ("title", "founder"), ("tag", ("cannabis",))
 
         beliefs.settle({title: 0.5, tag: 0.5})
 
         assert beliefs.posterior[title] == beliefs.posterior[tag] == (2.5, 1.5)
+
+    def test_a_person_only_holding_a_keyword_moves_its_prior_and_never_its_strength(self):
+        """The store is not the market: a mark is evidence about the customer's corner."""
+        fits = [_lead("Founder", company=_company(f"m{i}"), verdict=1) for i in range(30)]
+        beliefs = self._beliefs({lead.pk: 1.0 for lead in fits}, judged=[f.pk for f in fits])
+        keyword = ("title", "founder")
+
+        beliefs.settle({keyword: 0.5})
+
+        a, b = beliefs.posterior[keyword]
+        assert a + b == pytest.approx(3.0)
+        assert a / (a + b) == pytest.approx((1.5 + 30) / (3 + 30))
+
+    def test_a_fired_searchs_own_rate_reads_its_pages_people(self):
+        page = [_lead("Founder", company=_company(f"c{i}"), verdict=0) for i in range(5)]
+        terms = Terms.written(title="founder")
+        _fired(terms, page, found=5000)
+        beliefs = self._beliefs({lead.pk: 0.0 for lead in page}, judged=[p.pk for p in page],
+                                fired=frontier.fired_searches())
+
+        beliefs.settle({("title", "founder"): 0.5})
+
+        assert beliefs.searches[terms.key] == (1.5, 1.5 + 5)
+        assert beliefs.search_mean(terms.key) == pytest.approx(1.5 / 8)
+
+    def test_an_unjudged_person_counts_by_the_gps_confidence_at_them(self):
+        """Batch 6: 780 strangers at confidence ~0.05 read the market's rate whoever they were."""
+        sure, unsure = _lead(company=_company("a")), _lead(company=_company("b"))
+        people = People.load({sure.pk: 0.8, unsure.pk: 0.8}, {sure.pk: 1.0, unsure.pk: 0.0})
+
+        assert belief.evidence({unsure.pk}, people, set()) == (0.0, 0.0)
+        assert belief.evidence({sure.pk}, people, set()) == pytest.approx((0.2, 0.05))
 
     def test_a_company_adds_once_at_the_mean_of_its_people(self):
         acme = _company("acme")
@@ -474,7 +530,7 @@ class TestTheBelief:
         _fired(Terms.written(title="purchasing"), page, found=5000)
         keyword = ("title", "purchasing")
 
-        beliefs = self._beliefs({lead.pk: 0.05 for lead in page}, fired=frontier._fired())
+        beliefs = self._beliefs({lead.pk: 0.05 for lead in page}, fired=frontier.fired_searches())
         beliefs.settle({keyword: 0.5})
 
         # 8 companies at 0.05, a quarter of a verdict each, on a prior of 1.5 against 1.5.
@@ -497,7 +553,7 @@ class TestTheBelief:
         people = [_lead("Purchasing Manager") for _ in range(4)]
         _fired(Terms.written(title="purchasing manager"), people, found=3000)
 
-        beliefs = self._beliefs({}, fired=frontier._fired())
+        beliefs = self._beliefs({}, fired=frontier.fired_searches())
 
         assert beliefs.count(belief.query_keywords(
             Terms.written(title="purchasing manager"))) == pytest.approx(3000, rel=0.01)
@@ -512,7 +568,7 @@ class TestTheBelief:
         _fired(Terms.written(title="purchasing"), people[:2], found=3000)
         _fired(Terms.written(title="manager"), people[2:4], found=900,
                origin=Search.Origin.DRAWN)
-        beliefs = self._beliefs({}, fired=frontier._fired())
+        beliefs = self._beliefs({}, fired=frontier.fired_searches())
         beliefs.settle({("title", "founder"): 0.5, ("title", "purchasing"): 0.5})
         return beliefs
 
@@ -536,13 +592,13 @@ class TestTheBelief:
             _fired(Terms.written(title="purchasing"), people[:2], found=first)
             _fired(Terms.written(title="manager"), people[2:], found=second,
                    origin=Search.Origin.DRAWN)
-            return self._beliefs({}, fired=frontier._fired()).sizes.sigma
+            return self._beliefs({}, fired=frontier.fired_searches()).sizes.sigma
 
         assert sigma(3000, 2_000_000) > sigma(3000, 3000)
 
     def test_one_count_has_no_residuals_and_draws_the_fit(self):
         _fired(Terms.written(title="purchasing"), [_lead("Purchasing Manager")], found=3000)
-        beliefs = self._beliefs({}, fired=frontier._fired())
+        beliefs = self._beliefs({}, fired=frontier.fired_searches())
 
         assert beliefs.sizes.sigma == 0.0
         assert beliefs.draw_sizes(1).log_market == pytest.approx(beliefs.sizes.mean.log_market)
@@ -552,7 +608,7 @@ class TestTheBelief:
         keyword = ("title", "founder")
         share = belief._log_share(keyword, beliefs.people)
 
-        drawn = [beliefs.draw_sizes(n).log_keywords[keyword] for n in range(2000)]
+        drawn = [beliefs.draw_sizes(n, [keyword]).log_keywords[keyword] for n in range(2000)]
 
         # Capped at the market, so only the side below the share is whole.
         below = np.array([x - share for x in drawn if x < share])
@@ -562,7 +618,7 @@ class TestTheBelief:
         beliefs = self._counted()
 
         for number in range(200):
-            assert max(beliefs.draw_sizes(number).log_keywords.values()) <= 0.0
+            assert max(beliefs.draw_sizes(number, beliefs.posterior).log_keywords.values()) <= 0.0
 
     def test_with_no_count_the_sizes_draw_leaves_the_market_at_the_store(self):
         _lead()

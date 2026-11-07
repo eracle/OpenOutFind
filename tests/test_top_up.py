@@ -92,6 +92,39 @@ def test_exploit_qualifies_only_a_lead_clearing_the_spend_gate(site_config):
 
 
 @pytest.mark.django_db
+def test_a_probe_draw_is_judged_ahead_of_every_other_move(site_config):
+    qualifier = _exploiting_qualifier()
+    drawn = _Candidate()
+
+    with (
+        patch("openoutfind.core.pipeline.top_up.fetch_qualification_candidates",
+              return_value=[_Candidate(), drawn]),
+        patch("openoutfind.core.pipeline.top_up.probe.next_lead", return_value=drawn),
+        patch("openoutfind.core.pipeline.top_up.calibration.should_calibrate") as calibrate,
+        patch("openoutfind.core.pipeline.top_up.run_qualification",
+              return_value="https://example.com/in/alice/") as qualify,
+        patch("openoutfind.core.pipeline.top_up.discover") as discover,
+    ):
+        assert top_up(site_config, qualifier) is True
+
+    assert qualify.call_args.kwargs == {"candidates": [drawn], "preselected": True}
+    assert not calibrate.called and not discover.called
+
+
+@pytest.mark.django_db
+def test_the_cold_phase_never_probes(site_config):
+    with (
+        patch("openoutfind.core.pipeline.top_up.probe.next_lead") as probe_draw,
+        patch("openoutfind.core.pipeline.top_up.discover", return_value=False),
+        patch("openoutfind.core.pipeline.top_up.fetch_qualification_candidates",
+              return_value=[]),
+    ):
+        top_up(site_config, _cold_qualifier())
+
+    assert not probe_draw.called
+
+
+@pytest.mark.django_db
 def test_below_the_bar_exploit_judges_the_whole_pool_when_judging_is_cheaper(site_config):
     """Below the bar is not "nothing to do": when a verdict on the pool buys a fit for
     less than a search would, the best lead by P is judged, from every candidate.

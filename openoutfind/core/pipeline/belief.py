@@ -7,17 +7,26 @@ Two numbers per keyword, a title word, a tag phrase, a seniority or a place:
 - ``N_t``, the people in the market holding it;
 - ``θ_t``, the share of them who fit.
 
-**``θ_t`` is a Beta, so an update is a count.** A person is a sample of every keyword they
-hold, and of the keywords of every search that brought them. A judged person adds their
-verdict; an unjudged one adds their fit rate at ``SCORE_WEIGHT`` of a verdict, since every
-score comes from the same few verdicts: a page of bad people lowers its keywords with
-nobody judged, and 200 scores do not pass for 200 verdicts. A company adds the mean of its
-people once, because colleagues share tags.
+**``θ_t`` is a Beta, so an update is a count, and the counts are what searches brought.** A
+search returns people from the market, so only the people a search brought measure the
+market's share for its keywords. A judged person adds their verdict; an unjudged one adds
+their fit rate at ``SCORE_WEIGHT`` of a verdict times the GP's **confidence** at them (how
+much of its prior uncertainty the verdicts have removed there): a person far from every
+verdict reads near the GP's prior mean, the market's rate, whatever they are, and
+batch 6's 780 strangers at confidence ~0.05 had held every keyword at the market. A company
+adds the mean of its people once, because colleagues share tags.
 
 **The prior** is the GP's score of the keyword's own embedding, through the fit-rate map,
-at a fixed ``prior_companies`` pseudo-companies: the GP was trained on the verdicts the
-counts hold, so it is kept weak enough for them to overtake it. The anchors reach a keyword
-through the GP alone.
+moved by the store's other people holding the keyword (the customer's marks above all), and
+held at a fixed ``prior_companies`` pseudo-companies however many there are. The store is
+not the market: among Bill's marks ``wholesale`` meant cannabis wholesalers, 11 fits in 40,
+and counted as evidence they read founder · ``wholesale`` across the US at 0.35 ± 0.08 —
+its first page brought 170 people and 0 fits. The anchors reach a keyword through the GP.
+
+**A fired search has a Beta of its own**: its prior is the product below on the keywords'
+priors, at ``prior_companies``, and its counts are everyone its pages brought. Its next
+page reads that, not the product of its keywords, so a page that came back bad says so
+about the search that brought it.
 
 **A query is an AND of keywords**, taken as independent, with ``π`` the market's fit rate:
 
@@ -51,8 +60,8 @@ logger = logging.getLogger(__name__)
 SCORE_WEIGHT = 0.25
 # How hard a keyword's count is held to its share of the store, on a log scale.
 RIDGE = 1.0
-# Keeps the sizes' draw apart from the θ draw of the same round.
-_SIZE_STREAM = 1
+# Keep the draws of one seed apart: the keywords' θ, the fired searches' θ, the sizes.
+_THETA_STREAM, _SEARCH_STREAM, _SIZE_STREAM = 0, 2, 1
 # A rate is kept off 0 and 1, where its odds would end the product.
 _MIN_RATE = 0.001
 
@@ -81,7 +90,8 @@ def keyword_text(keyword: Keyword) -> str:
 
 def evidence(pks, people, judged: set[int]) -> tuple[float, float]:
     """``(fits, no-fits)`` that ``pks`` add to a keyword, each company once: the mean of its
-    verdicts at full weight, or with none judged the mean of its fit rates at ``SCORE_WEIGHT``."""
+    verdicts at full weight, or with none judged the mean of its fit rates at
+    ``SCORE_WEIGHT`` times the GP's mean confidence at them."""
     by_company: dict = defaultdict(list)
     for pk in pks:
         if pk in people.rates and pk in people.company:
@@ -89,8 +99,11 @@ def evidence(pks, people, judged: set[int]) -> tuple[float, float]:
     fits = misses = 0.0
     for members in by_company.values():
         verdicts = [people.rates[pk] for pk in members if pk in judged]
-        rate = statistics.fmean(verdicts or [people.rates[pk] for pk in members])
-        weight = 1.0 if verdicts else SCORE_WEIGHT
+        if verdicts:
+            rate, weight = statistics.fmean(verdicts), 1.0
+        else:
+            rate = statistics.fmean(people.rates[pk] for pk in members)
+            weight = SCORE_WEIGHT * statistics.fmean(people.sureness(pk) for pk in members)
         fits += weight * rate
         misses += weight * (1.0 - rate)
     return fits, misses
@@ -231,13 +244,16 @@ class Beliefs:
     def __init__(self, people, fired, judged: set[int], market_rate: float):
         self.people = people
         self.judged = judged
+        self.fired = list(fired)
         self.market_rate = _clip(market_rate)
         self.sizes = fit_sizes(fired, people)
         self.brought: dict[Keyword, set[int]] = defaultdict(set)
         for f in fired:
             for keyword in f.keywords:
                 self.brought[keyword] |= f.people
+        self.prior: dict[Keyword, float] = {}
         self.posterior: dict[Keyword, tuple[float, float]] = {}
+        self.searches: dict[str, tuple[float, float]] = {}
 
     def count(self, keywords, sizes: Sizes | None = None) -> float:
         """``N(q)``: the people the market holds with every one of ``keywords``, on the
@@ -249,33 +265,46 @@ class Beliefs:
         return math.exp(log_size)
 
     def settle(self, priors: dict[Keyword, float]) -> None:
-        """Each keyword's Beta: ``priors`` at ``prior_companies``, plus the counts."""
-        strength = WALK_CONFIG["prior_companies"]
-        for keyword, prior in priors.items():
-            held = self.people.holding(keyword) | self.brought.get(keyword, set())
-            fits, misses = evidence(held, self.people, self.judged)
-            prior = _clip(prior)
-            self.posterior[keyword] = (strength * prior + fits,
-                                       strength * (1.0 - prior) + misses)
+        """Each keyword's Beta — ``priors`` moved by the store's people holding it, at
+        ``prior_companies``, plus what the searches holding it brought — and each fired
+        search's own."""
+        for keyword, score in priors.items():
+            brought = self.brought.get(keyword, set())
+            prior = _held_to_strength(score, *evidence(
+                self.people.holding(keyword) - brought, self.people, self.judged))
+            self.prior[keyword] = prior
+            self.posterior[keyword] = _beta(prior, *evidence(brought, self.people, self.judged))
+        for f in self.fired:
+            prior = self.rate(f.keywords, {k: self.prior.get(k, self.market_rate)
+                                           for k in f.keywords})
+            self.searches[f.search.key] = _beta(prior, *evidence(f.people, self.people,
+                                                                  self.judged))
 
     def means(self) -> dict[Keyword, float]:
         """Each keyword's expected ``θ_t``."""
         return {keyword: a / (a + b) for keyword, (a, b) in self.posterior.items()}
 
-    def draw(self, round_number: int) -> dict[Keyword, float]:
-        """One ``θ_t`` per keyword from its Beta, seeded by ``round_number`` so a rerun
-        repeats. A keyword shared by two arms has one draw."""
-        rng = np.random.default_rng(round_number)
-        return {keyword: float(rng.beta(*self.posterior[keyword]))
-                for keyword in sorted(self.posterior)}
+    def search_mean(self, key: str) -> float:
+        """A fired search's expected share of fits."""
+        a, b = self.searches[key]
+        return a / (a + b)
 
-    def draw_sizes(self, round_number: int) -> Sizes:
-        """One draw of the sizes, seeded by ``round_number``. A keyword no count held
+    def draw(self, seed, keywords) -> dict[Keyword, float]:
+        """One ``θ_t`` for each of ``keywords`` from its Beta, seeded by ``seed`` so a rerun
+        repeats. A keyword shared by two arms has one draw."""
+        return _draw_betas(self.posterior, sorted(keywords), _rng(seed, _THETA_STREAM))
+
+    def draw_searches(self, seed) -> dict[str, float]:
+        """One share of fits for each fired search from its own Beta, seeded by ``seed``."""
+        return _draw_betas(self.searches, sorted(self.searches), _rng(seed, _SEARCH_STREAM))
+
+    def draw_sizes(self, seed, keywords=()) -> Sizes:
+        """One draw of the sizes, seeded by ``seed``. Each of ``keywords`` no count held
         draws from its prior, around its share of the store."""
-        rng = np.random.default_rng([round_number, _SIZE_STREAM])
+        rng = _rng(seed, _SIZE_STREAM)
         drawn = self.sizes.draw(rng)
         spread = self.sizes.sigma / math.sqrt(RIDGE)
-        for keyword in sorted(self.posterior):
+        for keyword in sorted(keywords):
             if keyword not in drawn.log_keywords:
                 drawn.log_keywords[keyword] = min(
                     _log_share(keyword, self.people) + spread * rng.standard_normal(), 0.0)
@@ -299,6 +328,33 @@ class Beliefs:
         for keyword in keywords:
             log_odds += _log_odds(_clip(thetas[keyword])) - _log_odds(self.market_rate)
         return 1.0 / (1.0 + math.exp(-log_odds))
+
+
+def _rng(seed, stream: int):
+    """A generator for one stream of ``seed`` — a round's number, or a round and a draw."""
+    return np.random.default_rng([*np.atleast_1d(seed).tolist(), stream])
+
+
+def _draw_betas(betas: dict, keys: list, rng) -> dict:
+    """One draw from each of ``keys``' Betas, in one call."""
+    if not keys:
+        return {}
+    a = np.array([betas[key][0] for key in keys])
+    b = np.array([betas[key][1] for key in keys])
+    return dict(zip(keys, map(float, rng.beta(a, b))))
+
+
+def _held_to_strength(score: float, fits: float, misses: float) -> float:
+    """The prior's mean: ``score`` at ``prior_companies``, moved by ``fits`` and ``misses``."""
+    strength = WALK_CONFIG["prior_companies"]
+    return (strength * _clip(score) + fits) / (strength + fits + misses)
+
+
+def _beta(prior: float, fits: float, misses: float) -> tuple[float, float]:
+    """A Beta at ``prior`` worth ``prior_companies``, plus the counts."""
+    strength = WALK_CONFIG["prior_companies"]
+    prior = _clip(prior)
+    return strength * prior + fits, strength * (1.0 - prior) + misses
 
 
 def _clip(rate: float) -> float:

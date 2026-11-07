@@ -417,6 +417,25 @@ class BayesianQualifier(GPBaldQualifier):
         _, std = _gpr_predict(self._pipeline, embeddings)
         return std
 
+    def confidence(self, embeddings: np.ndarray) -> np.ndarray | None:
+        """How much of the GP's prior variance the verdicts have removed at each embedding:
+        about 0.9 on a verdict (``alpha`` keeps the rest), 0 far from every one.
+
+        Far from its verdicts the GP's score falls back to its prior mean, the base rate,
+        whoever the person is: on batch 6 the 780 people the walk brought sat at 0.05 and
+        the judged at 0.90. Returns None when the model cannot be fitted yet.
+        """
+        from sklearn.pipeline import Pipeline
+
+        if not self._fit_if_needed():
+            return None
+        X = np.asarray(embeddings, dtype=np.float64).reshape(len(embeddings), -1)
+        X = Pipeline(self._pipeline.steps[:-1]).transform(X)
+        gpr = self._pipeline.named_steps["gpr"]
+        _, std = gpr.predict(X, return_std=True)
+        prior = np.sqrt(gpr.kernel_.diag(X)) * gpr._y_train_std  # normalize_y scales both
+        return np.clip(1.0 - (std / prior) ** 2, 0.0, 1.0)
+
     def acquisition_mode(self, embeddings: np.ndarray | None = None) -> str | None:
         """The live acquisition axis: ``"exploit (p)"``, ``"explore (BALD)"``, or None.
 

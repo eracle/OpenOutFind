@@ -1,22 +1,21 @@
 # openoutfind/core/pipeline/compose.py
-"""The searches worth the most on one draw of the belief, composed from every keyword the
-store holds.
+"""The searches worth the most at the mean belief, composed from every keyword the store
+holds.
 
-An LLM scores its whole vocabulary at every step and samples from all of it. The walk
-does the same: no term is cut before it is valued. A search is title words (any number,
-ANDed), one tag phrase, at most one seniority and one place (``query``), and on a draw of
-the belief (``belief``) each keyword brings two numbers, both adding up over a search's
-keywords:
+An LLM scores its whole vocabulary at every step. The walk does the same: no term is cut
+before it is valued. A search is title words (any number, ANDed), one tag phrase, at most
+one seniority and one place (``query``), and at the mean belief (``belief``) each keyword
+brings two numbers, both adding up over a search's keywords:
 
     lift   logit θ_t − logit π     what it does to the share of people who fit
     share  log(N_t / N₀)           what it does to the people matched, never above 0
 
-So a search's rate and size are sums, and the best searches on a draw are found without
-listing every one. At one size — a bin of the summed share — only the highest summed lift
-can be worth the most, so the fields are added one at a time, keeping the best per bin:
-title words (any subset of those that lift, plus every word alone), then a seniority or
-none, then the place, then every tag. Each finished search is valued at what a page of it
-would bring per dollar (``worth``, from the frontier), and the best go back to the
+So a search's rate and size are sums, and the best searches are found without listing
+every one. At one size — a bin of the summed share — only the highest summed lift can be
+worth the most, so the fields are added one at a time, keeping the best per bin: title
+words (any subset of those that lift, plus every word alone), then a seniority or none,
+then the place, then every tag. Each finished search is valued at the fits a page of it
+would bring (``worth``, from the frontier), and the best go back to the
 frontier, which values them exactly — the store's people they match, the counts of fired
 searches they narrow. A search the frontier refuses (fired, dead, drained) is what
 ``limit`` leaves room for.
@@ -153,8 +152,8 @@ def _titles(options, floor: float) -> _Best:
 
 def compose(vocabulary: Vocabulary, lift: dict, share: dict, log_market: float,
             worth: Worth, limit: int) -> list[Terms]:
-    """The ``limit`` searches worth the most on one draw — ``lift`` and ``share`` per
-    keyword — each holding title words and a tag; ``[]`` with no title or tag to hold."""
+    """The ``limit`` searches worth the most on ``lift`` and ``share`` per keyword, each
+    holding title words and a tag; ``[]`` with no title or tag to hold."""
     if not vocabulary.titles or not vocabulary.tags:
         return []
     floor = math.log(MIN_PEOPLE) - log_market
