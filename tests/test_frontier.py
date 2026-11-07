@@ -225,6 +225,39 @@ class TestAnArmsValue:
 
 
 @pytest.mark.django_db
+class TestThePeopleHeld:
+    TERMS = Terms.written(title="founder")
+
+    def test_a_person_counts_as_their_verdict_or_their_fit_rate(self):
+        fit, miss = _lead(verdict=1), _lead(verdict=0)
+        scored = _lead()
+        f = Frontier(None)
+        f.people.rates[scored.pk] = 0.25
+
+        arm = f._valued(self.TERMS, 1, "swap", None, 100.0, {fit.pk, miss.pk, scored.pk}, 10.0)
+
+        assert arm.held_fits == pytest.approx(1.25)
+
+    def test_a_person_the_gp_cannot_score_counts_at_the_market_rate(self):
+        _lead(verdict=1), _lead(verdict=0)
+        unscored = _lead()
+
+        arm = Frontier(None)._valued(self.TERMS, 1, "swap", None, 100.0, {unscored.pk}, 10.0)
+
+        assert arm.held_fits == pytest.approx(0.5)
+
+    def test_unjudged_people_leave_the_density_at_the_markets_rate(self):
+        """515: 141 of `president` x `insurance` held, 1 judged a fit, read 1.11 and capped."""
+        people = [_lead() for _ in range(20)]
+        f = Frontier(None)
+        f.people.rates.update({lead.pk: 0.8 for lead in people})
+
+        arm = f._valued(self.TERMS, 1, "swap", None, 100.0, {p.pk for p in people}, 10.0)
+
+        assert arm.density(0.8) == pytest.approx(0.8)
+
+
+@pytest.mark.django_db
 class TestTheNextSearch:
     def test_an_arm_with_nobody_new_is_never_fired_while_another_has_people(self):
         dry, live = _arm("buyer", new=0.0, rate=0.9), _arm("founder", new=50.0, rate=0.5)

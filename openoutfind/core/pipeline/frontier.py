@@ -298,7 +298,7 @@ class Arm:
     keywords: tuple = ()
     count: float = 0.0       # N: the people the market holds for it
     seen: int = 0            # the store's people it matches
-    held_fits: int = 0       # the fits among them
+    held_fits: float = 0.0   # the fits expected among them, each at their rate
     new: float = 0.0         # people the page would bring that the store does not hold
     rate: float = 0.0        # the fit rate expected of them, at the mean belief
     cost: float = 0.0        # dollars to fire it, take its new people in and judge them
@@ -429,8 +429,15 @@ class Frontier:
                 seen: set[int], page: float) -> Arm:
         new = min(page, max(0.0, count - len(seen)))
         return Arm(terms, number, move, search, keywords=belief.query_keywords(terms),
-                   count=count, seen=len(seen), held_fits=len(seen & self.fits), new=new,
+                   count=count, seen=len(seen), held_fits=self._expected_fits(seen), new=new,
                    cost=self.fire_cost + self.person_cost * new)
+
+    def _expected_fits(self, people: set[int]) -> float:
+        """The fits among ``people``: a verdict where judged, else a fit rate. Counting only
+        the judged left an unjudged person's share of ``F`` on those still out there, and
+        36 of 515's 202 arms read a density of 1 and tied."""
+        rates = self.people.rates
+        return sum(rates.get(pk, self.beliefs.market_rate) for pk in people)
 
     def _settle(self, arms: list[Arm]) -> None:
         """Read every keyword's belief, in one pass, and each arm's rate at its mean."""
@@ -500,7 +507,7 @@ def written_arms() -> list[Arm]:
 
 
 def _log(chosen: Arm, candidates: int) -> None:
-    logger.debug("  frontier: %d arm(s) · %-9s θ %.2f · N ~%.0f · seen %d · ~%.0f new  %s",
+    logger.debug("  frontier: %d arm(s) · %-9s density %.2f · N ~%.0f · seen %d · ~%.0f new  %s",
                  candidates, chosen.move, chosen.rate, chosen.count, chosen.seen, chosen.new,
                  chosen)
 
