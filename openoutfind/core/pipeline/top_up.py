@@ -19,8 +19,8 @@ crown jewel and it is ported verbatim:
   class) — judge the strongest lead every pass, and fire a round of the walk only when
   the pool is empty. The first round is 4 pages, up to 800 people, so it fills the
   pool for many verdicts; ranking still leans on the anchors' *guess* at the ICP, so
-  nothing observed says a second round beats judging what the first brought. Only an
-  empty pool after a round stalls.
+  nothing observed says a second round beats judging what the first brought. A round
+  adding nobody is still a move: only a walk with nothing left to fire stalls.
 - **explore** (``neg ≤ pos``) — label the most *informative* lead (max BALD), with no
   confidence gate: a low-confidence lead is exactly the label that teaches the GP
   most, so filtering by confidence would throw away the point of exploring.
@@ -72,13 +72,7 @@ def top_up(site_config, qualifier: BayesianQualifier) -> bool:
         logger.info("  %s cold phase — %d/%d real positive(s), exploiting the anchors' guess",
                    colored("·", "cyan", attrs=["bold"]),
                    qualifier.n_real_positives, ANCHOR_COUNT)
-        candidates = fetch_qualification_candidates()
-        if not candidates:
-            discover(site_config, qualifier)
-            candidates = fetch_qualification_candidates()
-        if not candidates:
-            return False
-        return run_qualification(site_config, qualifier, candidates=candidates) is not None
+        return _judge_or_page_one_in(site_config, qualifier, fetch_qualification_candidates())
 
     candidates = fetch_qualification_candidates()
 
@@ -134,6 +128,12 @@ def top_up(site_config, qualifier: BayesianQualifier) -> bool:
     # Explore — label the most informative lead we have. The GP is fitted here, so it
     # ranks the pool and there is a best lead to pick; an empty pool is the one case
     # with no lead to label, so page one in first.
+    return _judge_or_page_one_in(site_config, qualifier, candidates)
+
+
+def _judge_or_page_one_in(site_config, qualifier: BayesianQualifier, candidates: list) -> bool:
+    """Judge the pool, firing a round first if it is empty. False only when the pool is
+    empty and the walk has nothing left to fire."""
     if not candidates:
         if not discover(site_config, qualifier):
             return False

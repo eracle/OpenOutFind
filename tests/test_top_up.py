@@ -28,6 +28,38 @@ def test_the_cold_phase_names_itself_and_the_anchor_progress(site_config, caplog
     assert "0/3 real positive" in caplog.text
 
 
+def _cold_qualifier():
+    qualifier = BayesianQualifier(embedding_dim=8)
+    qualifier.set_anchors(np.random.RandomState(0).rand(3, 8))
+    return qualifier
+
+
+@pytest.mark.django_db
+def test_a_cold_round_adding_nobody_is_still_a_move(site_config):
+    with (
+        patch("openoutfind.core.pipeline.top_up.discover", return_value=True),
+        patch("openoutfind.core.pipeline.top_up.fetch_qualification_candidates",
+              return_value=[]),
+        patch("openoutfind.core.pipeline.top_up.run_qualification") as qualify,
+    ):
+        assert top_up(site_config, _cold_qualifier()) is True
+
+    qualify.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_a_cold_empty_pool_with_nothing_to_fire_is_the_end(site_config):
+    with (
+        patch("openoutfind.core.pipeline.top_up.discover", return_value=False),
+        patch("openoutfind.core.pipeline.top_up.fetch_qualification_candidates",
+              return_value=[]),
+        patch("openoutfind.core.pipeline.top_up.run_qualification") as qualify,
+    ):
+        assert top_up(site_config, _cold_qualifier()) is False
+
+    qualify.assert_not_called()
+
+
 def _exploiting_qualifier():
     """A fitted, anchor-free qualifier whose negatives outnumber its positives."""
     qualifier = BayesianQualifier(embedding_dim=8)
