@@ -2,6 +2,7 @@
 """The frontier — every search the walk could fire next, valued from the store."""
 from __future__ import annotations
 
+import math
 from unittest.mock import patch
 
 import numpy as np
@@ -311,6 +312,38 @@ class TestTheNextSearch:
         assert not arm.terms.holds_all_of(dead)
         assert not arm.terms.holds_all_of(drained)
 
+    def test_a_next_page_keeps_the_providers_count_on_any_draw(self):
+        people = [_lead("Purchasing Manager") for _ in range(3)]
+        _fired(Terms.written(title="purchasing", tag="cannabis"), people, found=5000)
+        f = Frontier(None)
+        next_page = next(arm for arm in f.arms() if arm.move == "deepen")
+
+        assert f._resized(next_page, f.beliefs.draw_sizes(1)) is next_page
+
+    def test_a_drawn_size_stays_within_the_fired_search_it_narrows_and_above_the_store(self):
+        people = [_lead("Purchasing Manager") for _ in range(3)]
+        _fired(Terms.written(title="purchasing"), people, found=40)
+        _fired(Terms.written(title="founder"), [_lead("Founder")], found=9000,
+               origin=Search.Origin.NEIGHBOUR)
+        f = Frontier(None)
+        narrower = Arm(Terms.written(title="purchasing manager"), 1, "stricter", seen=3,
+                       keywords=belief.query_keywords(Terms.written(title="purchasing manager")))
+        f._settle([narrower])
+
+        counts = [f._resized(narrower, f.beliefs.draw_sizes(n)).count for n in range(200)]
+
+        assert max(counts) <= 40
+        assert min(counts) >= 3 * frontier.SEEN_MARGIN
+        assert len(set(counts)) > 1
+
+    def test_the_pick_returns_the_arm_it_was_given_and_leaves_it_at_the_mean(self):
+        arms = [_arm(f"title{i}") for i in range(10)]
+        f = _settled(arms)
+        counts = [arm.count for arm in arms]
+
+        assert any(f.pick(arms, 1) is arm for arm in arms)
+        assert [arm.count for arm in arms] == counts
+
     def test_a_round_fires_one_search_only_while_one_is_expected_to_bring_a_fit(self):
         _fired(Terms.written(title="purchasing", tag="cannabis"),
                [_lead(verdict=1) for _ in range(3)], found=5000)
@@ -445,6 +478,69 @@ class TestTheBelief:
         for _ in range(4):
             _lead()
         assert self._beliefs({}).count(()) == pytest.approx(4)
+
+    def _counted(self):
+        people = [_lead("Purchasing Manager") for _ in range(4)] + [_lead("Founder")]
+        _fired(Terms.written(title="purchasing"), people[:2], found=3000)
+        _fired(Terms.written(title="manager"), people[2:4], found=900,
+               origin=Search.Origin.NEIGHBOUR)
+        beliefs = self._beliefs({}, fired=frontier._fired())
+        beliefs.settle({("title", "founder"): 0.5, ("title", "purchasing"): 0.5})
+        return beliefs
+
+    def test_the_sizes_draw_repeats_on_a_round_and_moves_between_rounds(self):
+        beliefs = self._counted()
+
+        assert beliefs.draw_sizes(3) == beliefs.draw_sizes(3)
+        assert beliefs.draw_sizes(3) != beliefs.draw_sizes(4)
+
+    def test_the_sizes_draw_centres_on_the_fit(self):
+        beliefs = self._counted()
+
+        drawn = [beliefs.draw_sizes(n).log_market for n in range(2000)]
+
+        assert np.mean(drawn) == pytest.approx(beliefs.sizes.mean.log_market, abs=0.2)
+
+    def test_the_variance_is_the_fits_own_counts_that_disagree_spread_wider(self):
+        def sigma(first, second):
+            Search.objects.all().delete()
+            people = [_lead("Purchasing Manager") for _ in range(4)]
+            _fired(Terms.written(title="purchasing"), people[:2], found=first)
+            _fired(Terms.written(title="manager"), people[2:], found=second,
+                   origin=Search.Origin.NEIGHBOUR)
+            return self._beliefs({}, fired=frontier._fired()).sizes.sigma
+
+        assert sigma(3000, 2_000_000) > sigma(3000, 3000)
+
+    def test_one_count_has_no_residuals_and_draws_the_fit(self):
+        _fired(Terms.written(title="purchasing"), [_lead("Purchasing Manager")], found=3000)
+        beliefs = self._beliefs({}, fired=frontier._fired())
+
+        assert beliefs.sizes.sigma == 0.0
+        assert beliefs.draw_sizes(1).log_market == pytest.approx(beliefs.sizes.mean.log_market)
+
+    def test_a_keyword_no_count_held_draws_around_its_share_at_the_fits_spread(self):
+        beliefs = self._counted()
+        keyword = ("title", "founder")
+        share = belief._log_share(keyword, beliefs.people)
+
+        drawn = [beliefs.draw_sizes(n).log_keywords[keyword] for n in range(2000)]
+
+        # Capped at the market, so only the side below the share is whole.
+        below = np.array([x - share for x in drawn if x < share])
+        assert np.sqrt(np.mean(below ** 2)) == pytest.approx(beliefs.sizes.sigma, rel=0.15)
+
+    def test_no_keyword_draws_more_than_the_market(self):
+        beliefs = self._counted()
+
+        for number in range(200):
+            assert max(beliefs.draw_sizes(number).log_keywords.values()) <= 0.0
+
+    def test_with_no_count_the_sizes_draw_leaves_the_market_at_the_store(self):
+        _lead()
+        beliefs = self._beliefs({})
+
+        assert beliefs.draw_sizes(1).log_market == beliefs.sizes.mean.log_market
 
     def test_a_keywords_prior_is_the_gps_score_through_the_fit_rate_map(self):
         class Fixed:

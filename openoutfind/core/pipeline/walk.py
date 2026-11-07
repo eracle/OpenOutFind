@@ -155,7 +155,8 @@ def _take_in(arm, result, round_number: int):
                          fetched.leads_found, arm)
 
     page = Page.objects.create(search=arm.search, number=arm.number, round=round_number,
-                               rows=len(fetched.leads))
+                               rows=len(fetched.leads), expected_count=arm.count or None,
+                               expected_rate=arm.theta)
     return page, fetched.leads
 
 

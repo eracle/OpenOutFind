@@ -27,13 +27,18 @@ through the GP alone.
 **The provider counts queries, never a keyword**, and a count costs what a page costs, so
 ``log N₀`` and the ``log N_t`` are fitted to the fired searches' counts by ridge regression:
 ``log N₀`` is the intercept, and each keyword is pulled toward its share of the store's
-people, where one no fired search held stays.
+people, where one no fired search held stays. That fit is a Normal posterior, so the sizes
+are drawn with ``θ_t``: its mean is the ridge solution, its covariance ``σ² (RᵀR)⁻¹``, with
+``σ²`` the fit's own residual variance. A count pins down a product, so the keywords of one
+search are drawn together. With one count there are no residuals, so the sizes stay at the fit.
 """
 from __future__ import annotations
 
 import math
 import statistics
 from collections import defaultdict
+from dataclasses import dataclass
+from typing import NamedTuple
 
 import numpy as np
 
@@ -44,6 +49,8 @@ from openoutfind.core.pipeline.query import Terms, split_place
 SCORE_WEIGHT = 0.25
 # How hard a keyword's count is held to its share of the store, on a log scale.
 RIDGE = 1.0
+# Keeps the sizes' draw apart from the θ draw of the same round.
+_SIZE_STREAM = 1
 # A rate is kept off 0 and 1, where its odds would end the product.
 _MIN_RATE = 0.001
 
@@ -121,12 +128,44 @@ def _log_share(keyword: Keyword, people) -> float:
     return math.log((len(people.holding(keyword)) + 1) / (len(people.everyone) + 2))
 
 
-def fit_sizes(fired, people) -> tuple[float, dict[Keyword, float]]:
-    """``(log N₀, {keyword: log(N_t / N₀)})``, fitted to the fired searches' counts. Only
-    keywords a counted search held appear; any other stays at its share of the store."""
+class Sizes(NamedTuple):
+    """The market's size and each keyword's share of it, on a log scale: ``log N₀`` and
+    ``{keyword: log(N_t / N₀)}``. Either the fit's mean or one draw of it."""
+
+    log_market: float
+    log_keywords: dict
+
+
+@dataclass(frozen=True)
+class SizeFit:
+    """The Normal posterior over the sizes: its mean, and how to draw from it."""
+
+    mean: Sizes
+    keywords: tuple = ()
+    shares: np.ndarray | None = None
+    solution: np.ndarray | None = None
+    root: np.ndarray | None = None  # R with R·Rᵀ the solution's covariance
+    sigma: float = 0.0              # the fit's residual standard deviation
+
+    def draw(self, rng) -> Sizes:
+        """One joint draw of the fitted sizes, or the mean where no count was fitted."""
+        if self.root is None:
+            return Sizes(self.mean.log_market, dict(self.mean.log_keywords))
+        sample = self.solution + self.root @ rng.standard_normal(len(self.solution))
+        return Sizes(float(sample[0]), _within_the_market(self.keywords, self.shares, sample))
+
+
+def _within_the_market(keywords, shares: np.ndarray, solution: np.ndarray) -> dict:
+    """``{keyword: log(N_t / N₀)}``: a keyword cannot hold more of the market than the market."""
+    return dict(zip(keywords, np.minimum(shares + solution[1:], 0.0).tolist()))
+
+
+def fit_sizes(fired, people) -> SizeFit:
+    """The sizes, fitted to the fired searches' counts. Only keywords a counted search held
+    appear; any other stays at its share of the store."""
     counted = [f for f in fired if f.found]
     if not counted:
-        return math.log(max(len(people.everyone), 1)), {}
+        return SizeFit(Sizes(math.log(max(len(people.everyone), 1)), {}))
 
     keywords = sorted({keyword for f in counted for keyword in f.keywords})
     column = {keyword: i + 1 for i, keyword in enumerate(keywords)}
@@ -143,9 +182,19 @@ def fit_sizes(fired, people) -> tuple[float, dict[Keyword, float]]:
         rows[len(counted) + i, i + 1] = math.sqrt(RIDGE)
 
     solution = np.linalg.lstsq(rows, target, rcond=None)[0]
-    # A keyword cannot hold more of the market than the market.
-    fitted = np.minimum(shares + solution[1:], 0.0)
-    return float(solution[0]), dict(zip(keywords, fitted.tolist()))
+    mean = Sizes(float(solution[0]), _within_the_market(keywords, shares, solution))
+    sigma = _residual_sigma(rows, target, solution)
+    root = sigma * np.linalg.cholesky(np.linalg.inv(rows.T @ rows))
+    return SizeFit(mean, tuple(keywords), shares, solution, root, sigma)
+
+
+def _residual_sigma(rows: np.ndarray, target: np.ndarray, solution: np.ndarray) -> float:
+    """The fit's residual standard deviation, the ridge rows counted as observations. One
+    count leaves no degree of freedom, and no spread."""
+    freedom = rows.shape[0] - rows.shape[1]
+    if freedom < 1:
+        return 0.0
+    return math.sqrt(float(np.sum((target - rows @ solution) ** 2)) / freedom)
 
 
 # ── the belief ───────────────────────────────────────────────────────
@@ -157,17 +206,19 @@ class Beliefs:
         self.people = people
         self.judged = judged
         self.market_rate = _clip(market_rate)
-        self.log_market, self.log_sizes = fit_sizes(fired, people)
+        self.sizes = fit_sizes(fired, people)
         self.brought: dict[Keyword, set[int]] = defaultdict(set)
         for f in fired:
             for keyword in f.keywords:
                 self.brought[keyword] |= f.people
         self.posterior: dict[Keyword, tuple[float, float]] = {}
 
-    def count(self, keywords) -> float:
-        """``N(q)``: the people the market holds with every one of ``keywords``."""
-        log_size = self.log_market + sum(
-            self.log_sizes.get(keyword, _log_share(keyword, self.people))
+    def count(self, keywords, sizes: Sizes | None = None) -> float:
+        """``N(q)``: the people the market holds with every one of ``keywords``, on the
+        fit's mean or on ``sizes``."""
+        sizes = sizes or self.sizes.mean
+        log_size = sizes.log_market + sum(
+            sizes.log_keywords.get(keyword, _log_share(keyword, self.people))
             for keyword in keywords)
         return math.exp(log_size)
 
@@ -191,6 +242,18 @@ class Beliefs:
         rng = np.random.default_rng(round_number)
         return {keyword: float(rng.beta(*self.posterior[keyword]))
                 for keyword in sorted(self.posterior)}
+
+    def draw_sizes(self, round_number: int) -> Sizes:
+        """One draw of the sizes, seeded by ``round_number``. A keyword no count held
+        draws from its prior, around its share of the store."""
+        rng = np.random.default_rng([round_number, _SIZE_STREAM])
+        drawn = self.sizes.draw(rng)
+        spread = self.sizes.sigma / math.sqrt(RIDGE)
+        for keyword in sorted(self.posterior):
+            if keyword not in drawn.log_keywords:
+                drawn.log_keywords[keyword] = min(
+                    _log_share(keyword, self.people) + spread * rng.standard_normal(), 0.0)
+        return drawn
 
     def rate(self, keywords, thetas: dict[Keyword, float]) -> float:
         """``θ(q)`` for a query of ``keywords``, given a ``θ_t`` for each."""

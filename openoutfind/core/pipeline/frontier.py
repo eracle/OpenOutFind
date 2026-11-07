@@ -24,10 +24,11 @@
   each of them, so a page of 200 strangers pays for every one.
 
 **The search fired is drawn by Thompson sampling** (``Frontier.pick``): finding the most
-fits while learning is a bandit. One ``θ_t`` is drawn per keyword, seeded by the round's
-number so a rerun repeats, every arm is valued on the draw, and the highest fires. A keyword
-little is known about sometimes draws high and gets tried; a keyword known to be bad almost
-never does.
+fits while learning is a bandit. One ``θ_t`` is drawn per keyword and one set of sizes for
+the market, seeded by the round's number so a rerun repeats, every arm is valued on the draw,
+and the highest fires. A keyword little is known about sometimes draws high and gets tried;
+a keyword known to be bad almost never does. A search the provider has counted keeps its
+count on every draw.
 
 ``judge_or_search`` weighs the arm with the highest value at the mean ``θ_t`` against judging
 the pool, and the walk stops when no arm is expected to bring a new fit. In the cold phase
@@ -43,7 +44,7 @@ from __future__ import annotations
 import logging
 import statistics
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
@@ -300,6 +301,7 @@ class Arm:
     seen: int = 0            # the store's people it matches
     held_fits: float = 0.0   # the fits expected among them, each at their rate
     new: float = 0.0         # people the page would bring that the store does not hold
+    theta: float | None = None  # θ(q) at the mean belief, None on an arm chosen unvalued
     rate: float = 0.0        # the fit rate expected of them, at the mean belief
     cost: float = 0.0        # dollars to fire it, take its new people in and judge them
 
@@ -411,19 +413,33 @@ class Frontier:
 
     def _first_page(self, terms: Terms, move: str, search=None) -> Arm:
         """Page 1 of an unfired search, its count estimated."""
-        from openoutfind.core.models import PAGE_SIZE
-
         matched = self.people.match(terms)
         count = self._count(terms, len(matched))
-        page = min(PAGE_SIZE, max(0.0, count - len(matched))) * self.kept
-        return self._valued(terms, 1, move, search, count, matched, page)
+        return self._valued(terms, 1, move, search, count, matched,
+                            self._first_page_people(count, len(matched)))
 
-    def _count(self, terms: Terms, seen: int) -> float:
-        """``N(q)`` for an unfired search: the belief's estimate, kept above the people the
-        store holds for it and within the count of every fired search it narrows."""
-        estimate = max(self.beliefs.count(belief.query_keywords(terms)), seen * SEEN_MARGIN)
+    def _first_page_people(self, count: float, seen: int) -> float:
+        """The people page 1 of an unfired search would bring, were ``count`` its size."""
+        from openoutfind.core.models import PAGE_SIZE
+
+        return min(PAGE_SIZE, max(0.0, count - seen)) * self.kept
+
+    def _count(self, terms: Terms, seen: int, sizes: belief.Sizes | None = None) -> float:
+        """``N(q)`` for an unfired search: the belief's estimate, on the mean or on
+        ``sizes``, kept above the people the store holds for it and within the count of
+        every fired search it narrows."""
+        estimate = max(self.beliefs.count(belief.query_keywords(terms), sizes),
+                       seen * SEEN_MARGIN)
         return min([estimate] + [f.found for f in self.fired
                                  if f.found is not None and terms.holds_all_of(f.terms)])
+
+    def _resized(self, arm: Arm, sizes: belief.Sizes) -> Arm:
+        """``arm`` on ``sizes``. A next page's size is the provider's count, so it stays."""
+        if arm.move == "deepen":
+            return arm
+        count = self._count(arm.terms, arm.seen, sizes)
+        new = self._first_page_people(count, arm.seen)
+        return replace(arm, count=count, new=new, cost=self.fire_cost + self.person_cost * new)
 
     def _valued(self, terms: Terms, number: int, move: str, search, count: float,
                 seen: set[int], page: float) -> Arm:
@@ -446,16 +462,21 @@ class Frontier:
                                                   self.beliefs.market_rate))
         means = self.beliefs.means()
         for arm in arms:
-            arm.rate = arm.density(self.beliefs.rate(arm.keywords, means))
+            arm.theta = self.beliefs.rate(arm.keywords, means)
+            arm.rate = arm.density(arm.theta)
 
     # ── the next search ──
 
     def pick(self, arms: list[Arm], round_number: int) -> Arm:
-        """Thompson sampling: the arm worth the most on one draw of every keyword, seeded
-        by ``round_number``."""
-        draws = self.beliefs.draw(round_number)
-        return max(_in_one_order(arms),
-                   key=lambda arm: arm.value(self.beliefs.rate(arm.keywords, draws)))
+        """Thompson sampling: the arm worth the most on one draw of every keyword's ``θ_t``
+        and of the sizes, seeded by ``round_number``."""
+        thetas = self.beliefs.draw(round_number)
+        sizes = self.beliefs.draw_sizes(round_number)
+
+        def drawn_value(arm: Arm) -> float:
+            return self._resized(arm, sizes).value(self.beliefs.rate(arm.keywords, thetas))
+
+        return max(_in_one_order(arms), key=drawn_value)
 
 
 def _in_one_order(arms: list[Arm]) -> list[Arm]:
@@ -507,9 +528,9 @@ def written_arms() -> list[Arm]:
 
 
 def _log(chosen: Arm, candidates: int) -> None:
-    logger.debug("  frontier: %d arm(s) · %-9s density %.2f · N ~%.0f · seen %d · ~%.0f new  %s",
-                 candidates, chosen.move, chosen.rate, chosen.count, chosen.seen, chosen.new,
-                 chosen)
+    logger.debug("  frontier: %d arm(s) · %-9s θ %.2f · density %.2f · N ~%.0f · seen %d · "
+                 "~%.0f new  %s", candidates, chosen.move, chosen.theta, chosen.rate,
+                 chosen.count, chosen.seen, chosen.new, chosen)
 
 
 def _log_last_page(f: Frontier) -> None:

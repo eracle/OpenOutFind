@@ -45,6 +45,7 @@ def render(status: dict) -> str:
     sections = (
         _render_config(status["config"]),
         _render_brief(status["brief"]),
+        _render_walk(status["walk"]),
         _render_pipeline(status["totals"]),
         _render_credits(status["credits"]),
         _render_hub(status["hub"]),
@@ -68,6 +69,20 @@ def _render_brief(brief: dict | None) -> str:
         return "Brief: none yet — AI_MODEL writes one on the first verdict, or pass --brief."
     lines = [f"Brief: by {brief['written_by']}, {brief['updated_at']}"]
     lines += [f"  {line.rstrip()}" for line in brief["rules"].splitlines() if line.strip()]
+    return "\n".join(lines)
+
+
+def _render_walk(pages: list[dict]) -> str:
+    """The pages the walk chose, what it expected beside what came back."""
+    chosen = [page for page in pages if page["expected_count"] is not None]
+    if not chosen:
+        return ""
+    lines = [f"Walk: chose {len(chosen)} of {len(pages)} page(s)"]
+    for page in chosen:
+        lines.append(f"  round {page['round']} · N ~{page['expected_count']:.0f} of "
+                     f"{page['leads_found']} · θ {page['expected_rate']:.2f} · "
+                     f"{page['fits']} of {page['verdicts']} fit, {page['people']} people · "
+                     f"{page['search']} @ page {page['page']}")
     return "\n".join(lines)
 
 

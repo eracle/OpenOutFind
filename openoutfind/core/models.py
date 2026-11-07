@@ -86,6 +86,10 @@ class Page(models.Model):
     round = models.PositiveIntegerField()
     # Rows the provider returned, before any were dropped.
     rows = models.PositiveIntegerField(default=0)
+    # What the walk expected when it chose this page, N(q) and θ(q) at the mean belief, so
+    # both can be read against what came back. None on a written search, chosen unvalued.
+    expected_count = models.FloatField(null=True, blank=True)
+    expected_rate = models.FloatField(null=True, blank=True)
     leads = models.ManyToManyField("outfind_crm.Lead", through="PageLead",
                                    related_name="pages")
     created_at = models.DateTimeField(auto_now_add=True)

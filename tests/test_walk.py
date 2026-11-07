@@ -17,6 +17,7 @@ from openoutfind.core.errors import ErrorType
 from openoutfind.core.models import PAGE_SIZE, Page, PageLead, Search
 from openoutfind.core.pipeline import walk
 from openoutfind.core.pipeline.discover import discover
+from openoutfind.core.pipeline.frontier import Arm
 from openoutfind.core.pipeline.icp import (
     ANCHOR_COUNT,
     Anchor,
@@ -186,6 +187,34 @@ class TestTheFirstRound:
 
 
 class TestTakingPagesIn:
+    def test_a_written_page_holds_no_expectation(self, site):
+        _run(site, FakeLeadFinder())
+
+        assert not Page.objects.filter(expected_count__isnull=False).exists()
+        assert not Page.objects.filter(expected_rate__isnull=False).exists()
+
+    def test_a_page_the_walk_chose_keeps_what_it_expected(self, site):
+        terms = Terms.written(title="founder")
+        arm = Arm(terms, 1, "swap", count=6.0, theta=0.8)
+        _run(site, FakeLeadFinder())
+        fetched = Fetched(LeadFinderPage([{"contact_job_title": "founder"}], 33), 1.0)
+
+        page, _ = walk._take_in(arm, fetched, 3)
+
+        page.refresh_from_db()
+        assert (page.expected_count, page.expected_rate) == (6.0, 0.8)
+        assert page.search.leads_found == 33
+
+    def test_a_round_the_walk_chose_keeps_its_expectation_on_the_page(self, site):
+        _run(site, FakeLeadFinder())
+        _judge("founder")
+
+        _run(site, FakeLeadFinder())
+
+        chosen = Page.objects.get(round=1)
+        assert chosen.expected_count > 0
+        assert 0 < chosen.expected_rate < 1
+
     def test_a_page_records_every_person_it_returned(self, site):
         """Known people too: a page that returns them is evidence about its search."""
         known = Lead.objects.create(profile_url="https://linkedin.com/in/founder-0-0",

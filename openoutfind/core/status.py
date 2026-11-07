@@ -41,6 +41,7 @@ def build_status() -> dict:
     return {
         "config": config,
         "brief": _brief(),
+        "walk": _walk(),
         "totals": totals,
         "credits": credits,
         "hub": hub,
@@ -60,6 +61,42 @@ def _config_state() -> dict:
         "complete": not missing,
         "done": [group for group in GROUPS if group not in missing],
         "missing": missing,
+    }
+
+
+# ── the walk ─────────────────────────────────────────────────────
+
+def _walk() -> list[dict]:
+    """Every fired page, what the walk expected of it beside what came back. Read from the
+    store, since an ``--agent-qualify`` run is many processes and verdicts land after the
+    page. ``observed_rate`` is ``None`` until somebody on the page is judged."""
+    from collections import defaultdict
+
+    from openoutfind.core.models import Page, PageLead
+    from openoutfind.core.pipeline.frontier import judged_fits, judged_leads
+
+    people = defaultdict(set)
+    for page_id, lead_id in PageLead.objects.values_list("page_id", "lead_id"):
+        people[page_id].add(lead_id)
+    judged, fits = judged_leads(), judged_fits()
+
+    return [_page_report(page, people[page.pk], judged, fits)
+            for page in Page.objects.select_related("search").order_by("round", "pk")]
+
+
+def _page_report(page, people: set[int], judged: set[int], fits: set[int]) -> dict:
+    verdicts, page_fits = len(people & judged), len(people & fits)
+    return {
+        "round": page.round,
+        "search": page.search.query.as_text(),
+        "page": page.number,
+        "expected_count": page.expected_count,
+        "leads_found": page.search.leads_found,
+        "expected_rate": page.expected_rate,
+        "people": len(people),
+        "verdicts": verdicts,
+        "fits": page_fits,
+        "observed_rate": page_fits / verdicts if verdicts else None,
     }
 
 

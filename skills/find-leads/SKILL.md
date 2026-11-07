@@ -29,7 +29,8 @@ with `pip install openoutfind`. Inside a checkout of the repo, `python manage.py
 same entry point.
 
 `status` never blocks and never spends. It answers `config` (complete, or which `OPENOUTFIND_*`
-variables are missing), lead and deal counts, the credit balance, anything `blocked`, and a
+variables are missing), lead and deal counts, the credit balance, anything `blocked`, `walk`
+(every fired page, what the search was expected to hold beside what came back), and a
 `next_action` — start there whenever you are unsure what state the user is in.
 
 ## Setup, if `status` says the configuration is incomplete
