@@ -3,7 +3,7 @@
 
 The top of the funnel: the walk's pages become ``Lead`` rows awaiting qualification. Free
 (Lead Finder bills nothing) and browserless, so wall-clock is the only budget. A round is
-the unit: the frontier's best 10 searches fired at once (``walk.run_round``), their pages
+the unit: the frontier's batch of searches fired at once (``walk.run_round``), their pages
 taken in together.
 """
 from __future__ import annotations
@@ -33,7 +33,9 @@ def harvest(pages: list[tuple], country_code: str) -> int:
     Each whole page — dropped rows and known profiles included — is then given back to the
     hub (``share_profiles``), best-effort, and its distinct employers too
     (``share_companies``), for the hub's company index — one request per page, so no body
-    grows with the round.
+    grows with the round. Nothing is embedded twice: the stored people's vectors go out as
+    they are, and what only the hub needs (dropped rows, employers) is embedded once a
+    round, however many pages carry it.
     """
     from openoutfind.contacts.service import share_companies, share_profiles
     from openoutfind.core.db.leads import store_rows
@@ -50,9 +52,11 @@ def harvest(pages: list[tuple], country_code: str) -> int:
          if not (lead.marked or lead.synthetic)],
         ignore_conflicts=True)
 
+    vectors = {lead.profile_text: lead.embedding_array for lead in leads
+               if lead.embedding is not None}
     for _, rows in pages:
-        share_profiles(rows, country_code)
-        share_companies(rows, country_code)
+        share_profiles(rows, country_code, vectors)
+        share_companies(rows, country_code, vectors)
     return created
 
 

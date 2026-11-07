@@ -158,13 +158,13 @@ def contribute(lead, emails: list[str], origin: str) -> None:
 # here and only here — a contribution carries the address, not a second copy of it.
 
 
-def share_profiles(rows: list[dict], country_code: str) -> None:
+def share_profiles(rows: list[dict], country_code: str, vectors: dict) -> None:
     """Send one discovery page to the hub — best-effort, non-EEA only, no credit.
 
     Every row goes, a person this install already knew included: a new fetch of a known
     profile is still news, and the hub dates each copy. Each row carries its fields
     separately (``shared_fields``), the searched country and the profile-only vector
-    tagged with its model.
+    tagged with its model. ``vectors`` holds the vectors already made (``_vectors_for``).
 
     The same gates as ``contribute``: an operator in the EEA/UK/CH sends nothing, and a
     page searched in one — or in no named country — is not sent. The hub gates again.
@@ -174,17 +174,17 @@ def share_profiles(rows: list[dict], country_code: str) -> None:
     if not token:
         return
 
-    body = {"profiles": _profile_records(rows, country_code), **_build_fields()}
+    body = {"profiles": _profile_records(rows, country_code, vectors), **_build_fields()}
     _send("profiles", body, headers=_auth(token))
 
 
-def share_companies(rows: list[dict], country_code: str) -> None:
+def share_companies(rows: list[dict], country_code: str, vectors: dict) -> None:
     """Send one discovery page's distinct employers to the hub — best-effort, no credit.
 
     One record per company LinkedIn page the page carried (``discovery.company_records``),
     with its vector of the company's own text. No person rides along, so nothing here is
     about anyone; the page's gates still hold, so an install that may not share the page
-    shares none of it.
+    shares none of it. ``vectors`` holds the vectors already made (``_vectors_for``).
     """
     from openoutfind.discovery import company_records
 
@@ -193,7 +193,7 @@ def share_companies(rows: list[dict], country_code: str) -> None:
     if not token:
         return
 
-    body = {"companies": _with_company_vectors(records), **_build_fields()}
+    body = {"companies": _with_company_vectors(records, vectors), **_build_fields()}
     _send("companies", body, headers=_auth(token))
 
 
@@ -212,27 +212,40 @@ def _page_token(country_code: str) -> str:
     return token_in_hand(config)
 
 
-def _with_company_vectors(records: list[dict]) -> list[dict]:
+def _vectors_for(texts: list[str], vectors: dict) -> list:
+    """The vector of each of *texts*, embedding only those ``vectors`` does not hold.
+
+    ``vectors`` maps a text to its vector and gains what is embedded here, so a round's
+    later pages reuse it. A vector depends on its text alone, so a held one is the vector
+    embedding would give: a batch's size and neighbours change nothing, bit for bit.
+    """
+    from openoutfind.core.ml.embeddings import embed_texts
+
+    missing = list(dict.fromkeys(text for text in texts if text not in vectors))
+    if missing:
+        vectors.update(zip(missing, embed_texts(missing)))
+    return [vectors[text] for text in texts]
+
+
+def _with_company_vectors(records: list[dict], vectors: dict) -> list[dict]:
     """*records* with the vector of each company's text and the model that made it."""
     from openoutfind.core.conf import CAMPAIGN_CONFIG
-    from openoutfind.core.ml.embeddings import embed_texts
     from openoutfind.discovery import company_text_for
 
-    vectors = embed_texts([company_text_for(record["fields"]) for record in records])
+    held = _vectors_for([company_text_for(record["fields"]) for record in records], vectors)
     model = CAMPAIGN_CONFIG["embedding_model"]
     return [
         {**record, "embedding": [float(x) for x in vector], "embedding_model": model}
-        for record, vector in zip(records, vectors)
+        for record, vector in zip(records, held)
     ]
 
 
-def _profile_records(rows: list[dict], country_code: str) -> list[dict]:
+def _profile_records(rows: list[dict], country_code: str, vectors: dict) -> list[dict]:
     """The wire records for *rows*, each with its profile-only vector."""
     from openoutfind.core.conf import CAMPAIGN_CONFIG
-    from openoutfind.core.ml.embeddings import embed_texts
     from openoutfind.discovery import profile_text_for, shared_fields
 
-    vectors = embed_texts([profile_text_for(row) for row in rows])
+    held = _vectors_for([profile_text_for(row) for row in rows], vectors)
     model = CAMPAIGN_CONFIG["embedding_model"]
     return [
         {
@@ -242,7 +255,7 @@ def _profile_records(rows: list[dict], country_code: str) -> list[dict]:
             "embedding": [float(x) for x in vector],
             "embedding_model": model,
         }
-        for row, vector in zip(rows, vectors)
+        for row, vector in zip(rows, held)
     ]
 
 

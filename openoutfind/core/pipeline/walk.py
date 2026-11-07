@@ -8,7 +8,7 @@ Every later round is one blocking step of the run:
 1. **Read the frontier** (``frontier``) as the store stands now, after the run has judged
    what the last round brought in: every fired search's next page, every unfired written
    search, and every neighbour of a fired search on the lattice (``lattice``).
-2. **Fire the batch** — the 10 arms that between them hold the most of the store's fits
+2. **Fire the batch** — the 4 arms that between them hold the most of the store's fits
    and anchors, the slots left drawn at random — all at once. The worker threads only
    make the API calls.
 3. **Wait for all of them**, then, in the main thread, record each page and take every

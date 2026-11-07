@@ -206,6 +206,31 @@ class TestTakingPagesIn:
         assert embeddings.embed_texts.call_count == 1
         assert len(embeddings.embed_texts.call_args.args[0]) == 3 * POPULATION
 
+    def test_a_round_given_to_the_hub_embeds_no_text_twice(self, db, configure):
+        """A stored person's vector goes out as it is; a dropped row is embedded once."""
+        from openoutfind.core.ml import embeddings
+
+        configure(bettercontact_api_key="k", product_docs="cannabis packaging",
+                  campaign_target="buyers at cannabis brands", contacts_api_token="tok")
+        finder = FakeLeadFinder()
+        shared = _row("https://linkedin.com/in/shared", "founder", "Shared")
+        dropped = {"contact_linkedin_profile_url": "https://linkedin.com/in/forgotten",
+                   "contact_job_title": "former buyer"}
+
+        def both(api_key, filters, limit, offset, first_poll_s):
+            page, ready = finder(api_key, filters, limit, offset, first_poll_s)
+            return Fetched(LeadFinderPage(page.leads + [shared, dropped], page.leads_found), ready)
+
+        with patch("openoutfind.contacts.service._send") as send:
+            _run(SiteConfig.load(), both)
+
+        embedded = [text for call in embeddings.embed_texts.call_args_list
+                    for text in call.args[0]]
+        assert len(embedded) == len(set(embedded)) == 3 * POPULATION + 2
+        sent = [record for call in send.call_args_list for record in call.args[1]["profiles"]]
+        assert len(sent) == (3 + 2) * POPULATION
+        assert all(len(record["embedding"]) == 384 for record in sent)
+
     def test_a_person_on_two_pages_is_stored_once_and_on_both(self, site):
         finder = FakeLeadFinder()
         shared = _row("https://linkedin.com/in/shared", "founder", "Shared")

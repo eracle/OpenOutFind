@@ -104,9 +104,10 @@ CAMPAIGN_CONFIG = {
     # running mean (`core/meter.py`: every round fired, every verdict given), and a
     # setting stands in only until its first measurement.
     #
-    # A round is 10 Lead Finder pages fired at once, each ready in 1.1–3.6 s, then up to
-    # 2,000 rows embedded in one pass and stored — 2m42s for 1,169 new people on a fresh
-    # store, 0.14 s a new person — and free: Lead Finder bills nothing.
+    # A round is 4 Lead Finder pages fired at once, each ready in 1.1–3.6 s, then up to
+    # 800 rows embedded in one pass, stored and given to the hub with their employers: 52s
+    # for 268 new people on a 4-core laptop, 0.2 s a new person, half of it the companies' long
+    # texts — and free: Lead Finder bills nothing.
     #
     # A verdict is one candidate judged: a few seconds and an LLM call for a model, and
     # ~40 s for a calling agent under --agent-qualify (178 verdicts in 1h49m on the same
@@ -130,8 +131,8 @@ CAMPAIGN_CONFIG = {
     # 824 MB resident, so 1 GiB is too tight once an OS sits underneath and 2 GiB is not. At
     # this price time is nearly free next to an LLM's bill, so the bill decides the bar.
     "run_hour_dollars": 0.01786,
-    "round_seconds": 160,
-    "ingest_seconds_per_lead": 0.14,
+    "round_seconds": 60,
+    "ingest_seconds_per_lead": 0.2,
     "verdict_seconds_model": 5,
     "verdict_seconds_agent": 40,
     # An agent's verdict longer than this is not measured: the candidate waited on a
@@ -153,10 +154,10 @@ CAMPAIGN_CONFIG = {
 # batch at a time. `population` is how many searches the LLM writes to start it, fired
 # whole as round 0; every later round fires the `batch` highest-value arms of the frontier
 # (core/pipeline/frontier.py). A round is embedded as it lands, so its size is the run's
-# wait: 15 pages of new people took 14½ minutes, 10 took 2m42s.
+# wait: a replay of a real 10-page round took 2m32s, and 4 average pages of it 52s.
 WALK_CONFIG = {
-    "population": 10,
-    "batch": 10,
+    "population": 4,
+    "batch": 4,
     # The heaviest terms each field offers a neighbour (core/pipeline/lattice.py): ~100
     # neighbours a fired search, each valued from the store in microseconds.
     "terms_per_field": 15,

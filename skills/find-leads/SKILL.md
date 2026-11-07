@@ -169,9 +169,9 @@ driven this way never needs a model key at all. The `qualify_pending` payload ca
 brief as `rules` (`""` when none was given — pass `--brief` first and judge by it).
 
 **A fresh store asks you for its initial population first.** The cold start has two more model
-calls — the walk's first 10 searches and a few invented ideal profiles — so the first
+calls — the walk's first 4 searches and a few invented ideal profiles — so the first
 `--agent-qualify` run on an empty store stops with `population_pending` instead. Its error object
-carries `product_docs`, `campaign_target`, the brief as `rules`, `population_size` (10), the
+carries `product_docs`, `campaign_target`, the brief as `rules`, `population_size` (4), the
 `fields` and how the provider matches each, the allowed `seniorities`, `anchor_count` and the JSON
 `schema` of the answer. Write both parts in one object and re-run the same command with it:
 

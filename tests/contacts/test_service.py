@@ -267,13 +267,43 @@ def _lead_finder_row(url="https://www.linkedin.com/in/jane-doe", **over):
 
 @pytest.mark.django_db
 class TestShareProfiles:
-    def _share(self, rows, country="us", response=None):
+    def _share(self, rows, country="us", response=None, vectors=None):
         with patch.object(
             service.requests, "post",
             return_value=response or _resp(200, {"accepted": len(rows)}),
         ) as post:
-            service.share_profiles(rows, country)
+            service.share_profiles(rows, country, {} if vectors is None else vectors)
         return post
+
+    def test_a_held_vector_is_sent_and_nothing_is_embedded(self):
+        from openoutfind.discovery import profile_text_for
+
+        _config(token="tok")
+        row = _lead_finder_row()
+        with patch("openoutfind.core.ml.embeddings.embed_texts") as embed:
+            post = self._share([row], vectors={profile_text_for(row): np.full(384, 0.5)})
+        embed.assert_not_called()
+        assert post.call_args.kwargs["json"]["profiles"][0]["embedding"] == [0.5] * 384
+
+    def test_only_what_is_not_held_is_embedded_and_then_held(self):
+        from openoutfind.discovery import profile_text_for
+
+        _config(token="tok")
+        held = _lead_finder_row()
+        dropped = _lead_finder_row(url="https://x/in/b", contact_headline="other text")
+        vectors = {profile_text_for(held): np.full(384, 0.5)}
+        with patch("openoutfind.core.ml.embeddings.embed_texts",
+                   side_effect=lambda texts: np.ones((len(texts), 384))) as embed:
+            self._share([held, dropped], vectors=vectors)
+            self._share([dropped], vectors=vectors)
+        embed.assert_called_once_with([profile_text_for(dropped)])
+        assert profile_text_for(dropped) in vectors
+
+    def test_a_row_held_by_no_vector_and_blocked_by_the_gate_embeds_nothing(self):
+        _config(token="tok")
+        with patch("openoutfind.core.ml.embeddings.embed_texts") as embed:
+            self._share([_lead_finder_row()], country="de").assert_not_called()
+        embed.assert_not_called()
 
     def test_a_page_is_one_request_to_the_profiles_endpoint(self):
         _config(token="tok")
@@ -352,7 +382,7 @@ class TestShareProfiles:
         with patch.object(
             service.requests, "post", side_effect=requests.ConnectionError("down"),
         ):
-            service.share_profiles([_lead_finder_row()], "us")  # must not raise
+            service.share_profiles([_lead_finder_row()], "us", {})  # must not raise
 
     def test_an_error_status_is_swallowed(self):
         _config(token="tok")
@@ -379,12 +409,23 @@ def _company_row(url="https://www.linkedin.com/company/verano-holdings", **over)
 
 @pytest.mark.django_db
 class TestShareCompanies:
-    def _share(self, rows, country="us"):
+    def _share(self, rows, country="us", vectors=None):
         with patch.object(
             service.requests, "post", return_value=_resp(200, {"accepted": 1}),
         ) as post:
-            service.share_companies(rows, country)
+            service.share_companies(rows, country, {} if vectors is None else vectors)
         return post
+
+    def test_a_company_on_a_second_page_is_not_embedded_again(self):
+        _config(token="tok")
+        vectors = {}
+        with patch("openoutfind.core.ml.embeddings.embed_texts",
+                   side_effect=lambda texts: np.ones((len(texts), 384))) as embed:
+            first = self._share([_company_row()], vectors=vectors)
+            second = self._share([_company_row()], vectors=vectors)
+        embed.assert_called_once()
+        assert (second.call_args.kwargs["json"]["companies"]
+                == first.call_args.kwargs["json"]["companies"])
 
     def test_a_page_is_one_request_with_one_record_per_company(self):
         _config(token="tok")
@@ -439,7 +480,7 @@ class TestShareCompanies:
         with patch.object(
             service.requests, "post", side_effect=requests.ConnectionError("down"),
         ):
-            service.share_companies([_company_row()], "us")  # must not raise
+            service.share_companies([_company_row()], "us", {})  # must not raise
 
 
 # ── identity, minted at onboarding ───────────────────────────────────
