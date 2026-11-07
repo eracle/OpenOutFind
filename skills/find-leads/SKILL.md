@@ -304,7 +304,7 @@ is a stable string worth branching on:
 | `provider_unavailable` | Provider unreachable at all. | Transient; retry later. |
 | `bad_config` | A value is set but unusable (e.g. a negative count). | Read the message; it names the field. |
 | `qualify_pending` | `--agent-qualify` stopped one candidate short of the `AI_MODEL` call it opted out of. | Judge the candidate carried on the error object, then re-run with `--verdict`/`--reason` — see *Answering qualify yourself*. |
-| `population_pending` | `--agent-qualify` on a fresh store: the walk's 10 initial searches and the ideal profiles are needed first. | Write them from the error's `product_docs`/`campaign_target`/`rules` in its `schema`, then re-run with `--population '<json>'`. |
+| `population_pending` | `--agent-qualify` on a fresh store: the walk's 4 initial searches and the ideal profiles are needed first. | Write them from the error's `product_docs`/`campaign_target`/`rules` in its `schema`, then re-run with `--population '<json>'`. |
 | `unanchored` | The ideal profiles could not be written (the model failed or wrote none), and the walk does not start without them. Nothing was fired. | Transient on the model path; run again. |
 
 Treat a non-zero exit as *partial success with a stated reason*, not as "nothing happened" — the

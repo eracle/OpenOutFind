@@ -227,31 +227,22 @@ def _anchor(title="Head of Procurement", tags="cannabis extraction"):
 
 
 @pytest.mark.django_db
-class TestTheBatch:
-    def test_it_takes_the_arm_holding_the_most_fits_first(self):
+class TestTheNextSearch:
+    def test_it_takes_the_arm_holding_the_most_fits(self):
         for _ in range(3):
             _lead("Founder", verdict=1)
         _lead("Buyer", verdict=1)
         buyer, founder = _arm("buyer"), _arm("founder")
 
-        assert Frontier(None).batch([buyer, founder], 1, slots=1) == [founder]
-        assert founder.covers == 3
+        assert Frontier(None).best([buyer, founder], 1) is founder
+        assert founder.held == 3
 
-    def test_an_arm_holding_only_fits_already_covered_is_skipped(self):
-        """Batch 5: ten near-copies resting on one fit could fill a round."""
-        for _ in range(2):
-            _lead("Founder", verdict=1)
-        _lead("Buyer", verdict=1)
-        founder, copy, buyer = _arm("founder"), _arm("founder", tag="thc vape"), _arm("buyer")
-
-        assert Frontier(None).batch([founder, copy, buyer], 1, slots=2) == [founder, buyer]
-
-    def test_a_no_fit_is_not_promising(self):
+    def test_a_no_fit_is_not_counted(self):
         _lead("Founder", verdict=0)
         _lead("Buyer", verdict=1)
         founder, buyer = _arm("founder"), _arm("buyer")
 
-        assert Frontier(None).batch([founder, buyer], 1, slots=1) == [buyer]
+        assert Frontier(None).best([founder, buyer], 1) is buyer
 
     def test_an_anchors_fields_count_as_a_promising_person(self):
         anchor = _anchor()
@@ -275,22 +266,20 @@ class TestTheBatch:
         wide = _arm("founder", sample=range(50))
         narrow = _arm("founder", tag="thc vape", sample=range(5))
 
-        assert Frontier(None).batch([wide, narrow], 1, slots=1) == [narrow]
+        assert Frontier(None).best([wide, narrow], 1) is narrow
 
-    def test_the_slots_left_are_filled_the_same_way_twice(self):
-        fit = _lead("Founder", verdict=1)
-        arms = [_arm("founder")] + [_arm(f"title{i}") for i in range(30)]
+    def test_with_no_fit_held_one_is_drawn_the_same_way_twice(self):
+        arms = [_arm(f"title{i}") for i in range(30)]
 
-        first = Frontier(None).batch(list(arms), 4, slots=10)
-        again = Frontier(None).batch(list(reversed(arms)), 4, slots=10)
-        other_round = Frontier(None).batch(list(arms), 5, slots=10)
+        first = Frontier(None).best(list(arms), 4)
+        again = Frontier(None).best(list(reversed(arms)), 4)
+        others = {Frontier(None).best(list(arms), number).terms.key for number in range(20)}
 
-        assert len(first) == 10 and first[0].terms.title == frozenset({"founder"})
-        assert [a.terms.key for a in first] == [a.terms.key for a in again]
-        assert [a.terms.key for a in first] != [a.terms.key for a in other_round]
-        assert fit.pk in Frontier(None).holds(first[0])
+        assert first.held == 0
+        assert first is again
+        assert len(others) > 1
 
-    def test_a_filled_round_holds_nothing_fired_dead_or_drained(self):
+    def test_the_next_search_is_nothing_fired_dead_or_drained(self):
         people = [_lead(verdict=1) for _ in range(3)]
         roomy = Terms.written(title="purchasing", tag="cannabis")
         drained = Terms.written(title="manager", tag="cannabis")
@@ -300,19 +289,17 @@ class TestTheBatch:
         Search.objects.create(key=dead.key, dead=True, terms=dead.as_json())
 
         f = Frontier(None)
-        batch = f.batch(f.arms(), 1)
+        arm = f.best(f.arms(), 1)
 
-        assert len(batch) == frontier.WALK_CONFIG["batch"]
-        for arm in batch:
-            assert not (arm.number == 1 and arm.terms in (roomy, drained))
-            assert not arm.terms.holds_all_of(dead)
-            assert not arm.terms.holds_all_of(drained)
+        assert not (arm.number == 1 and arm.terms in (roomy, drained))
+        assert not arm.terms.holds_all_of(dead)
+        assert not arm.terms.holds_all_of(drained)
 
-    def test_a_round_fires_only_while_an_arm_beats_the_floor(self):
+    def test_a_round_fires_one_search_only_while_an_arm_beats_the_floor(self):
         _fired(Terms.written(title="purchasing", tag="cannabis"),
                [_lead(verdict=1) for _ in range(3)], found=5000)
 
-        assert frontier.next_round(None, 1, floor=0.0)
+        assert len(frontier.next_round(None, 1, floor=0.0)) == 1
         assert frontier.next_round(None, 1, floor=1.0) == []
 
     def test_an_arms_sample_is_the_people_it_matches(self):

@@ -1,19 +1,18 @@
 # openoutfind/core/pipeline/walk.py
-"""The walk — a best-first search over the lattice of searches, a batch at a time.
+"""The walk — a best-first search over the lattice of searches, one search at a time.
 
 The initial population is written whole by the LLM (``icp.write_initial_population``), and
 the first round fires it whole: nothing is known yet to choose among its searches by.
-Every later round is one blocking step of the run:
+Every later round is one search, one blocking step of the run:
 
 1. **Read the frontier** (``frontier``) as the store stands now, after the run has judged
    what the last round brought in: every fired search's next page, every unfired written
    search, and every neighbour of a fired search on the lattice (``lattice``).
-2. **Fire the batch** — the 4 arms that between them hold the most of the store's fits
-   and anchors, the slots left drawn at random — all at once. The worker threads only
-   make the API calls.
-3. **Wait for all of them**, then, in the main thread, record each page and take every
-   page's people into the store together (``discover.harvest``): one embedding pass over
-   the whole round, shortest profile first, since embedding is most of its time.
+2. **Fire the search holding the most fits** (anchors counted as fits). The worker thread
+   only makes the API call.
+3. **Wait for it**, then, in the main thread, record its page and take the page's people
+   into the store (``discover.harvest``): one embedding pass, shortest profile first,
+   since embedding is most of its time.
 4. Hand back to the run, which goes on judging until it asks for the next round
    (``judge_or_search``).
 
@@ -42,7 +41,6 @@ from dataclasses import dataclass
 
 from termcolor import colored
 
-from openoutfind.core.conf import WALK_CONFIG
 from openoutfind.core.errors import ErrorType, OpenOutFindError
 from openoutfind.core.pipeline import frontier
 
@@ -97,7 +95,7 @@ def _fire_all(arms, api_key: str) -> list:
         except BetterContactUnavailable as exc:
             return exc
 
-    with ThreadPoolExecutor(max_workers=WALK_CONFIG["batch"]) as executor:
+    with ThreadPoolExecutor(max_workers=len(arms)) as executor:
         return list(executor.map(fire, arms))
 
 

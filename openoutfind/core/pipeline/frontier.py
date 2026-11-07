@@ -1,19 +1,17 @@
 # openoutfind/core/pipeline/frontier.py
-"""The frontier — every search the walk could fire next, and the round chosen from them.
+"""The frontier — every search the walk could fire next, and the one it fires.
 
-**The round covers the fits** (``Frontier.batch``). The promising people are every lead
-judged a fit — the customer's marked fits among them — and the anchors, the ICP written
-as profiles. An unfired search holds the promising people whose own fields match all its
-terms; a next page holds the fits on its search's latest page. The batch is chosen
-greedily: take the arm holding the most promising people, mark them covered, recount the
-rest on the people not yet covered, and take the best again, ties to the arm matching
-fewer of the store's people (the narrower search), until no arm holds anyone new. The
-slots left are drawn at random from the other arms, seeded by the round's number so a
-replay repeats. No rate, floor or cost orders the batch, and the GP only orders the
-judging: an offline replay of seven ways to pick a round on four stores found this one
-reached the most later fits by far — on batch 5, 55 over 15 rounds against the walk's 0
-— where the rate below picked small areas and found none (openoutreach-docs card
-``p2-e3-the-round-fires-searches-that-pay-or-teach``, finding 8).
+**Fire the search holding the most fits** (``Frontier.best``). The fits are every lead
+judged one — the customer's marked fits among them — and the anchors, the ICP written as
+profiles. An unfired search holds those whose own fields match all its terms; a next page
+holds the fits on its search's latest page. A tie goes to the narrower search, the one
+matching fewer of the store's people, and when no arm holds a fit one is drawn at random,
+seeded by the round's number so a replay repeats. No rate, floor or cost picks it, and the
+GP reaches it only through the term weights that decide which arms exist
+(``lattice.TermPools``): an offline replay of seven ways to pick searches on four stores
+found counting fits reached the most later fits by far — on batch 5, 55 over 15 rounds
+against the walk's 0 — where the rate below picked small areas and found none
+(openoutreach-docs card ``p2-e3-the-round-fires-searches-that-pay-or-teach``, finding 8).
 
 **What each arm is expected to bring** is still valued, for ``judge_or_search``'s
 decision of *when* to fire a round, and for the debug log:
@@ -46,8 +44,8 @@ decision of *when* to fire a round, and for the debug log:
   ready time, and each new person's measured ingest time — embedding is most of a
   round's — so a page of 200 strangers pays for every one.
 
-``judge_or_search`` weighs the batch ``next_round`` would fire, valued whole, against
-judging the pool, and a round fires only while one of its arms beats the floor.
+``judge_or_search`` weighs the search ``next_round`` would fire against judging the pool,
+and a search fires only while some arm beats the floor.
 """
 from __future__ import annotations
 
@@ -166,7 +164,7 @@ class People:
 
     @classmethod
     def promising(cls, fits: set[int]) -> "People":
-        """The people a round covers: the ``fits`` and the anchors, each matched on its own
+        """The people an arm is counted on: the ``fits`` and the anchors, each matched on its own
         fields — an anchor's are the model's own assignment of value to field."""
         from django.db.models import Q
 
@@ -306,7 +304,7 @@ class Arm:
     new: float = 0.0         # of them, people the store does not hold, after drops
     rate: float = 0.0        # the fit rate expected of them
     cost: float = 0.0        # dollars to fire it and take its new people in
-    covers: int = 0          # promising people it was the first in its batch to hold
+    held: int = 0            # fits and anchors it holds, the count that picked it
     # The store's people that stand for its region: a next page's latest page, an
     # unfired search's matched people.
     sample: set[int] = field(default_factory=set, repr=False)
@@ -456,7 +454,7 @@ class Frontier:
         arm.cost = self.fire_cost + self.ingest_cost * arm.new
         return arm
 
-    # ── the batch ──
+    # ── the next search ──
 
     def holds(self, arm: Arm) -> set[int]:
         """The promising people ``arm`` holds: for a next page, the fits on its search's
@@ -465,40 +463,28 @@ class Frontier:
             return arm.sample & self.fits
         return self.promising.match(arm.terms)
 
-    def batch(self, arms: list[Arm], round_number: int, slots: int | None = None) -> list[Arm]:
-        """The ``slots`` arms of a round: those that between them hold the most promising
-        people, chosen greedily, then a random fill seeded by ``round_number``."""
-        slots = slots or WALK_CONFIG["batch"]
-        # One order however the lattice enumerated them, so a replay draws the same fill.
-        rest = sorted(arms, key=lambda arm: (arm.terms.key, arm.number))
-        holding = {id(arm): self.holds(arm) for arm in rest}
-
-        chosen: list[Arm] = []
-        covered: set[int] = set()
-        while rest and len(chosen) < slots:
-            best = max(rest, key=lambda arm: (len(holding[id(arm)] - covered),
-                                              -len(arm.sample)))
-            gained = holding[id(best)] - covered
-            if not gained:
-                break
-            best.covers = len(gained)
-            chosen.append(best)
-            rest.remove(best)
-            covered |= gained
-
-        drawn = random.Random(round_number).sample(rest, min(len(rest), slots - len(chosen)))
-        _log(chosen, drawn, len(arms), len(self.promising.everyone))
-        return chosen + drawn
+    def best(self, arms: list[Arm], round_number: int) -> Arm:
+        """The arm holding the most fits, ties to the narrower; with none holding any, one
+        drawn at random, seeded by ``round_number``."""
+        # One order however the lattice enumerated them, so a replay draws the same arm.
+        ordered = sorted(arms, key=lambda arm: (arm.terms.key, arm.number))
+        for arm in ordered:
+            arm.held = len(self.holds(arm))
+        top = max(ordered, key=lambda arm: (arm.held, -len(arm.sample)))
+        chosen = top if top.held else random.Random(round_number).choice(ordered)
+        _log(chosen, len(arms), len(self.promising.everyone))
+        return chosen
 
 
 def next_round(qualifier, round_number: int, floor: float = 0.0) -> list[Arm]:
-    """The round's batch, or ``[]`` when no arm beats ``floor``, the fit rate of the best
-    lead waiting: ``judge_or_search`` decides *when* a round fires, the batch *what*."""
+    """The one search to fire next, or ``[]`` when no arm beats ``floor``, the fit rate of
+    the best lead waiting: ``judge_or_search`` decides *when* a search fires, ``best``
+    *which*."""
     f = Frontier(qualifier)
     arms = f.arms()
     if not any(arm.beats(floor) for arm in arms):
         return []
-    return f.batch(arms, round_number)
+    return [f.best(arms, round_number)]
 
 
 def written_arms() -> list[Arm]:
@@ -511,15 +497,7 @@ def written_arms() -> list[Arm]:
                                                 pages__isnull=True)]
 
 
-def _log(chosen: list[Arm], drawn: list[Arm], candidates: int, promising: int) -> None:
-    if not logger.isEnabledFor(logging.DEBUG):
-        return
-    logger.debug("  frontier: %d arm(s), %d cover %d of %d promising, %d drawn",
-                 candidates, len(chosen), sum(arm.covers for arm in chosen), promising,
-                 len(drawn))
-    for arm in chosen:
-        logger.debug("  %-9s covers %d · rate %.2f · ~%.0f new  %s", arm.move, arm.covers,
-                     arm.rate, arm.new, arm)
-    for arm in drawn:
-        logger.debug("  %-9s drawn · rate %.2f · ~%.0f new  %s", arm.move, arm.rate,
-                     arm.new, arm)
+def _log(chosen: Arm, candidates: int, promising: int) -> None:
+    how = f"holds {chosen.held} of {promising}" if chosen.held else "drawn, none holds a fit"
+    logger.debug("  frontier: %d arm(s) · %-9s %s · rate %.2f · ~%.0f new  %s", candidates,
+                 chosen.move, how, chosen.rate, chosen.new, chosen)

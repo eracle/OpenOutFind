@@ -34,7 +34,7 @@ tests/
 ├── test_discovery.py           # Lead Finder search + embed_row
 ├── test_query.py               # a search's terms: the provider's analyzers, matching, dead conviction
 ├── test_lattice.py             # a search's neighbours and the term pools they draw on
-├── test_frontier.py            # the arms, their rate, new people and value, the batch
+├── test_frontier.py            # the arms, their rate, new people and value, the next search
 ├── test_judge_or_search.py     # dollars per fit: the best lead waiting against the best arm
 ├── test_walk.py                # rounds end to end against a stubbed Lead Finder
 ├── test_anchors.py             # synthetic ICP positives and their one-per-acceptance retirement

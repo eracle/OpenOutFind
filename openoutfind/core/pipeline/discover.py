@@ -3,8 +3,8 @@
 
 The top of the funnel: the walk's pages become ``Lead`` rows awaiting qualification. Free
 (Lead Finder bills nothing) and browserless, so wall-clock is the only budget. A round is
-the unit: the frontier's batch of searches fired at once (``walk.run_round``), their pages
-taken in together.
+the unit: the written searches fired at once, then one search at a time
+(``walk.run_round``), a round's pages taken in together.
 """
 from __future__ import annotations
 

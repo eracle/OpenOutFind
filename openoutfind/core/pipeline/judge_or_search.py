@@ -12,12 +12,8 @@ sides are a fit rate over a cost, in dollars per fit:
   the store's verdicts (``frontier.fit_rate_map``) — so a lead waiting and the people a
   search would bring are weighed on one scale, never the raw score against a mean of raw
   scores;
-- **the round** is the batch ``frontier.next_round`` would fire next, valued whole: its
-  ``new`` people across every arm, ``rate`` the arms' rates weighted by those people, and
-  ``c_round`` its ready and ingest time. The batch covers the fits, so a narrow search
-  with a high rate says nothing about it: on batch 6 the best single arm read 0.32 for 4
-  new people while the batch held 347 at 0.10, and valuing that arm fired a round after
-  almost every verdict with 8,258 people waiting;
+- **the round** is the search ``frontier.next_round`` would fire next: its ``new`` people,
+  its ``rate``, and ``c_round`` its ready and ingest time;
 - ``c_verdict`` (``calibration.verdict_cost``) is a verdict's measured time at
   ``run_hour_dollars`` plus its LLM bill, or an agent's fixed cost.
 

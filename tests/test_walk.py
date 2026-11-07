@@ -265,12 +265,9 @@ class TestTakingPagesIn:
 
     def test_an_outage_leaves_the_search_on_the_frontier(self, site):
         _run(site, FakeLeadFinder(outages={"founder"}))
-        _judge("purchasing")
-        finder = FakeLeadFinder()
-        with patch.dict(walk.WALK_CONFIG, {"batch": 500}):
-            _run(site, finder)
 
-        assert ("founder", 0) in finder.calls
+        assert any(arm.terms.title == {"founder"} and arm.number == 1
+                   for arm in walk.frontier.Frontier(None).arms())
 
     @pytest.mark.parametrize("error_type", [ErrorType.PROVIDER_AUTH,
                                             ErrorType.PROVIDER_RATE_LIMITED])
@@ -281,7 +278,7 @@ class TestTakingPagesIn:
 
 
 class TestTheNextRound:
-    def test_it_fires_the_frontiers_batch(self, site):
+    def test_it_fires_one_search(self, site):
         _run(site, FakeLeadFinder())
         _judge("founder")
         finder = FakeLeadFinder()
@@ -289,8 +286,8 @@ class TestTheNextRound:
         fired = _run(site, finder)
 
         assert fired.number == 1
-        assert 0 < len(finder.calls) <= WALK_CONFIG["batch"]
-        assert set(Page.objects.filter(round=1).values_list("round", flat=True)) == {1}
+        assert len(finder.calls) == 1
+        assert Page.objects.filter(round=1).count() == 1
 
     def test_the_first_search_fired_holds_the_fits(self, site):
         """Five founders judged fits outnumber the three anchors."""
@@ -298,8 +295,7 @@ class TestTheNextRound:
         _judge("founder")
         finder = FakeLeadFinder()
 
-        with patch.dict(walk.WALK_CONFIG, {"batch": 1}):
-            _run(site, finder)
+        _run(site, finder)
 
         (title, _), = finder.calls
         assert title == "founder"

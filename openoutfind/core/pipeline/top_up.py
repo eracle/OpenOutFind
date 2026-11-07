@@ -17,7 +17,7 @@ crown jewel and it is ported verbatim:
 
 - **cold phase** (``is_cold`` — invented anchor positives still padding the positive
   class) — judge the strongest lead every pass, and fire a round of the walk only when
-  the pool is empty. A round is 4 pages, up to 800 people, so the first one fills the
+  the pool is empty. The first round is 4 pages, up to 800 people, so it fills the
   pool for many verdicts; ranking still leans on the anchors' *guess* at the ICP, so
   nothing observed says a second round beats judging what the first brought. Only an
   empty pool after a round stalls.
