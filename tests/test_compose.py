@@ -11,7 +11,7 @@ import pytest
 from openoutfind.core.pipeline import compose
 from openoutfind.core.pipeline.belief import query_keywords
 from openoutfind.core.pipeline.compose import Vocabulary
-from openoutfind.core.pipeline.query import Terms
+from openoutfind.core.pipeline.terms import Terms
 
 US = "united states"
 LOG_MARKET = math.log(1_000_000)

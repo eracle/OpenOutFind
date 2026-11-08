@@ -53,7 +53,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from openoutfind.core.conf import WALK_CONFIG
-from openoutfind.core.pipeline.query import Terms, split_place
+from openoutfind.core.pipeline.terms import Terms, split_place
 
 logger = logging.getLogger(__name__)
 # What an unjudged person's fit rate weighs against a verdict.

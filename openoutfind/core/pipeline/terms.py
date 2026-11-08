@@ -1,94 +1,28 @@
-# openoutfind/core/pipeline/query.py
-"""A search — its terms per field, the provider's analyzers, and who it matches.
+# openoutfind/core/pipeline/terms.py
+"""A search's terms, one entry per field, and who they match.
 
-A search is a set of ``field:term`` pairs, each field holding what its match type allows
-(the probe table above ``discovery.SEARCH_FIELDS``):
+Each field holds what its match type allows (the probe table above
+``discovery.SEARCH_FIELDS``):
 
-    title      words, ANDed (``match``)        any number, in the forms profiles carry
-    tag        one phrase (``match_phrase``)   a word or a phrase a company's tags hold;
-                                               never without a title
+    title      words, ANDed (``match``)        any number
+    tag        one phrase (``match_phrase``)   inside one company tag; never without a title
     place      ``state, country``              the market's country, or a state in it
     seniority  one closed-list value           at most one of the provider's 12
 
-The size band and the market's country code are the **shape** the customer fixed: they
-ride every search and never vary, so they live on the ``Search`` row beside the terms
-rather than in them.
-
-**A person matches a search when every term matches its own field**, read from the
-lead's ``source_fields`` with that field's analyzer. The analyzers copy the provider's,
-as measured: nothing is stemmed on either free-text field; a title drops stopwords and a
-tag keeps them as words of its phrase; a hyphen splits a title word and also matches the
-joined form, while in a tag it only splits; ``&`` and other punctuation are stripped; case
-is ignored everywhere.
+The size band and the country code ride every search unchanged, so they live on the
+``Search`` row, not here. A person matches when every term matches its own field, read
+through that field's analyzer (``analyzers.py``).
 """
 from __future__ import annotations
 
 import hashlib
 import json
-import re
 from dataclasses import dataclass, field, replace
 
-# Elasticsearch's ``_english_`` stopword list — the one a title's analyzer drops.
-# ``head of procurement`` = ``head the procurement`` = ``procurement head`` (89), and a
-# title made only of these counts 0.
-STOPWORDS = frozenset({
-    "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "if", "in", "into",
-    "is", "it", "no", "not", "of", "on", "or", "such", "that", "the", "their", "then",
-    "there", "these", "they", "this", "to", "was", "will", "with",
-})
-
-_WORD = re.compile(r"[a-z0-9]+")
-_HYPHENATED = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)+")
-
-
-# ── the analyzers ────────────────────────────────────────────────────
-
-def title_words(text: str) -> frozenset[str]:
-    """A job title's terms: words, stopwords dropped, a hyphenated word also joined.
-
-    ``co-founder`` yields ``co``, ``founder`` and ``cofounder``, so a search for any of
-    the three spellings finds it — the provider matched all three at 161,369.
-    """
-    text = (text or "").lower()
-    words = {word for word in _WORD.findall(text) if word not in STOPWORDS}
-    words |= {compound.replace("-", "") for compound in _HYPHENATED.findall(text)}
-    return frozenset(words)
-
-
-def query_title_words(text: str) -> frozenset[str]:
-    """The words a title *search* requires: its words, stopwords dropped, never joined.
-
-    The provider splits ``co-founder`` in a query into ``co`` and ``founder``; matching
-    that against a profile's title words finds the hyphenated and spaced forms alike.
-    """
-    return frozenset(word for word in _WORD.findall((text or "").lower())
-                     if word not in STOPWORDS)
-
-
-def phrase_words(text: str) -> tuple[str, ...]:
-    """A tag, or a tag search, as its word sequence: stopwords kept, punctuation gone.
-
-    ``e-commerce`` is ``e commerce`` and ``food & beverage`` is ``food beverage``;
-    ``ecommerce`` stays one word, a different term.
-    """
-    return tuple(_WORD.findall((text or "").lower()))
-
-
-def company_tags(text: str) -> list[tuple[str, ...]]:
-    """A company's stored tag list (``source_fields``, ``", "``-joined) as phrases."""
-    return [words for tag in (text or "").split(",") if (words := phrase_words(tag))]
-
-
-def holds_phrase(longer: tuple[str, ...], phrase: tuple[str, ...]) -> bool:
-    """Whether ``phrase`` sits inside ``longer`` — adjacent and in order."""
-    span = len(phrase)
-    return bool(span) and any(longer[i:i + span] == phrase
-                              for i in range(len(longer) - span + 1))
-
-
-def is_stopword_phrase(phrase: tuple[str, ...]) -> bool:
-    """A tag phrase made only of stopwords — never a term a search may hold."""
-    return all(word in STOPWORDS for word in phrase)
+from openoutfind.core.pipeline.analyzers import (
+    company_tags, holds_phrase, is_stopword_phrase, phrase_words, query_title_words,
+    title_words,
+)
 
 
 # ── the place ────────────────────────────────────────────────────────

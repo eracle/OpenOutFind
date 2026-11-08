@@ -11,7 +11,7 @@ import pytest
 from openoutfind.core.models import PAGE_SIZE, Page, PageLead, Search
 from openoutfind.core.pipeline import belief, frontier
 from openoutfind.core.pipeline.frontier import Arm, Frontier, People
-from openoutfind.core.pipeline.query import Terms, split_place
+from openoutfind.core.pipeline.terms import Terms, split_place
 from openoutfind.crm.models import Company, Deal, DealState, Lead, Outcome
 
 US = "United States"
@@ -87,13 +87,14 @@ class TestPeople:
         assert people.holding(("state", "ohio", "united states")) == {ohio.pk, stateless.pk}
         assert texas.pk not in people.holding(("state", "ohio", "united states"))
 
-    def test_a_hyphenated_title_offers_its_words_and_not_their_joined_form(self):
-        """The provider counts `cofounder` and `co founder` as one: two searches for 1,828."""
+    def test_a_hyphenated_title_offers_none_of_its_pieces(self):
+        """`co` alone reaches co-owners and co-CEOs: 283,068 against 179,644 co-founders."""
         _lead("Co-Founder & CEO", "cannabis edibles, food & beverage", "Ohio")
+        _lead("Founder", "cannabis", "Ohio")
 
         people = People.load({})
 
-        assert people.title_vocabulary() == {"co", "founder", "ceo"}
+        assert people.title_vocabulary() == {"founder", "ceo"}
         assert {("cannabis",), ("cannabis", "edibles"), ("food", "beverage")} <= (
             people.tag_vocabulary())
         assert people.states_in("United States") == {"ohio"}

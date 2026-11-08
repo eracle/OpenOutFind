@@ -24,7 +24,7 @@ from openoutfind.core.pipeline.icp import (
     InitialPopulation,
     anchor_leads,
 )
-from openoutfind.core.pipeline.query import Terms
+from openoutfind.core.pipeline.terms import Terms
 from openoutfind.crm.models import Deal, DealState, Lead, Outcome
 from openoutfind.discovery import Fetched, Page as LeadFinderPage
 from openoutfind.enrichment.bettercontact import BetterContactUnavailable

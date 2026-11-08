@@ -16,7 +16,7 @@ from openoutfind.core import status as status_module
 from openoutfind.core.errors import ErrorType
 from openoutfind.core.management.commands.status import render
 from openoutfind.core.models import Page, PageLead, Search
-from openoutfind.core.pipeline.query import Terms
+from openoutfind.core.pipeline.terms import Terms
 from openoutfind.crm.models import Deal, DealState, Lead, Outcome
 from openoutfind.enrichment import bettercontact
 from tests.factories import DealFactory, LeadFactory

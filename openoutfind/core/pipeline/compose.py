@@ -28,7 +28,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from openoutfind.core.pipeline.query import Terms, place_of
+from openoutfind.core.pipeline.terms import Terms, place_of
 
 # The width of a size bin, on the log scale: two searches a tenth apart in size are one size.
 BIN = 0.1

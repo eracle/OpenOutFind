@@ -59,6 +59,8 @@ dependencies = [
     "fastembed>=0.4,<1",
     "scikit-learn>=1.4,<2",
     "huggingface_hub>=0.23,<1",
+    # Unicode word splitting (UAX #29) for the search analyzers; its wheels bundle ICU.
+    "icu4py>=1.2.0,<2",
     # 0.1.8: the GP centres its labels (normalize_y), so it ranks on every verdict at few
     # fits instead of fitting a flat score; 0.1.7 sorted embed_texts by length.
     "openoutlearn>=0.1.8,<1",

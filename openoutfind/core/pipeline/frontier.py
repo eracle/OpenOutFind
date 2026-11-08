@@ -55,9 +55,10 @@ import numpy as np
 
 from openoutfind.core.conf import CAMPAIGN_CONFIG
 from openoutfind.core.pipeline import belief, compose
-from openoutfind.core.pipeline.query import (
-    Terms, company_tags, is_stopword_phrase, query_title_words, split_place, title_words,
+from openoutfind.core.pipeline.analyzers import (
+    company_tags, is_stopword_phrase, standalone_title_words, title_words,
 )
+from openoutfind.core.pipeline.terms import Terms, split_place
 
 logger = logging.getLogger(__name__)
 
@@ -175,7 +176,6 @@ class People:
         self.everyone: set[int] = set()
         self._index: dict[tuple, set[int]] = defaultdict(set)
         self._title_words: set[str] = set()
-        self._joined: set[str] = set()
         self._states: dict[str, set[str]] = defaultdict(set)
         for pk, company_id, fields in rows:
             self.everyone.add(pk)
@@ -185,20 +185,16 @@ class People:
             self._take_vocabulary(fields)
 
     def _take_vocabulary(self, fields: dict) -> None:
-        title = fields.get("contact_job_title", "")
-        searched = query_title_words(title)
-        self._title_words |= searched
-        self._joined |= title_words(title) - searched
+        self._title_words |= standalone_title_words(fields.get("contact_job_title", ""))
         country = str(fields.get("contact_location_country") or "").strip().lower()
         state = str(fields.get("contact_location_state") or "").strip().lower()
         if country and state:
             self._states[country].add(state)
 
     def title_vocabulary(self) -> set[str]:
-        """Every title word a search may hold. A hyphenated title's joined form is left
-        out: the provider counts ``cofounder`` and ``co founder`` as one (161,369), so the
-        split words already reach it."""
-        return self._title_words - self._joined
+        """Every title word a search may hold: words a title holds on their own, never a
+        piece of a hyphenated one (``analyzers.standalone_title_words``)."""
+        return self._title_words
 
     def tag_vocabulary(self) -> set[tuple[str, ...]]:
         """Every phrase inside a tag the store's people hold, never stopwords alone."""

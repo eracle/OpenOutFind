@@ -32,7 +32,8 @@ tests/
 ├── test_export.py              # the record schema, both serialisations, the two exclusions
 ├── test_business_time.py       # working-day arithmetic
 ├── test_discovery.py           # Lead Finder search + embed_row
-├── test_query.py               # a search's terms: the provider's analyzers, matching, dead conviction
+├── test_analyzers.py           # the provider's analyzers: Unicode words, titles, tags
+├── test_terms.py               # a search's terms: matching, legality, dead conviction
 ├── test_compose.py             # the searches worth the most on a draw, checked against every combination
 ├── test_frontier.py            # the arms, their rate, new people and value, the next search
 ├── test_judge_or_search.py     # dollars per fit: the best lead waiting against the best arm

@@ -6,7 +6,7 @@ import pytest
 
 from openoutfind.core.models import Page, PageLead, Search
 from openoutfind.core.pipeline import probe
-from openoutfind.core.pipeline.query import Terms
+from openoutfind.core.pipeline.terms import Terms
 from openoutfind.crm.models import Deal, DealState, Lead, Outcome
 
 

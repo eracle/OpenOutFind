@@ -94,7 +94,7 @@ class InitialPopulation(BaseModel):
 
 def as_terms(written: WrittenSearch, country: str):
     """One written search as ``query.Terms``, its state placed inside the market."""
-    from openoutfind.core.pipeline.query import Terms, place_of
+    from openoutfind.core.pipeline.terms import Terms, place_of
 
     return Terms.written(title=written.title, tag=written.tag,
                          place=place_of(written.state, country),

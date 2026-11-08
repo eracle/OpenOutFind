@@ -110,7 +110,7 @@ class TestVerdictMeasurements:
 def _arm(rate, new=20.0, cost=None):
     """An arm whose cost is, unless given, a verdict at $0.05 on each person it brings."""
     from openoutfind.core.pipeline.frontier import Arm
-    from openoutfind.core.pipeline.query import Terms
+    from openoutfind.core.pipeline.terms import Terms
 
     return Arm(Terms.written(title="production", tag="cannabis"), 1, "swap", new=new,
                rate=rate, cost=0.0001 + 0.05 * new if cost is None else cost)

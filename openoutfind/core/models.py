@@ -59,7 +59,7 @@ class Search(models.Model):
     @property
     def query(self):
         """The terms as a ``query.Terms``."""
-        from openoutfind.core.pipeline.query import Terms
+        from openoutfind.core.pipeline.terms import Terms
 
         return Terms.from_json(self.terms)
 
