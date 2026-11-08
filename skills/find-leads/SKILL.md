@@ -193,8 +193,9 @@ searches next to them that between them hold the most of the store's fits and yo
 Spread them: different titles, different kinds of company, some broad and some narrow.
 
 - **`title`** — the job title's words. Every word is required, in any order, and small words
-  (`of`, `the`) are ignored. **Nothing is stemmed**: write the form titles carry (`founder`, not
-  `founders`).
+  (`of`, `the`) are ignored, `it` among them (`it manager` is `manager`). **Nothing is stemmed**:
+  write the form titles carry (`founder`, not `founders`), accents included (`gérant` and `gerant`
+  are different words).
 - **`tag`** — at most one phrase one of the company's own LinkedIn tags holds, its words adjacent
   and in order (`thc vape`, not `vape thc`), or empty for any company. Not stemmed either: a company
   tags itself `vapes` or `vape`, and the two find different companies. A tag is never searched
