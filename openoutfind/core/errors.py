@@ -65,6 +65,15 @@ class ErrorType:
     command plus ``--population '<json>'``.
     """
 
+    KEYWORD_GUESS_PENDING = "keyword_guess_pending"
+    """``find --agent-qualify`` reached a market or keywords the walk has no guess for: how
+    many people each holds and how many of them fit, written by ``AI_MODEL`` otherwise.
+    The error object carries the product and target text, the brief, the market's guess
+    (``null`` when it is to be guessed), each field's keywords to guess beside those already
+    guessed, the guesses refused last time with why, and the JSON schema of the answer;
+    resume with the same command plus ``--keyword-guesses '<json>'``.
+    """
+
     UNANCHORED = "unanchored"
     """The walk would start without the synthetic ideal profiles: ``AI_MODEL`` failed or
     wrote none. Each round covers them, so nothing is fired; run again."""

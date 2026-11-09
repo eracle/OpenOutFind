@@ -42,6 +42,13 @@ class PopulationPending(QualifyPending):
     error_type = ErrorType.POPULATION_PENDING
 
 
+class KeywordGuessPending(QualifyPending):
+    """``find --agent-qualify`` reached keywords the walk has no guess for, with no
+    ``--keyword-guesses`` answer (``keyword_guess.ensure``)."""
+
+    error_type = ErrorType.KEYWORD_GUESS_PENDING
+
+
 def fetch_qualification_candidates():
     """Embedded, un-dealt Leads awaiting qualification, oldest first.
 

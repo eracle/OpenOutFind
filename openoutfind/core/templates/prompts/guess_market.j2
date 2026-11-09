@@ -1,0 +1,19 @@
+You are guessing, before any search is run, how big a lead search's market is. A customer described what they sell and who buys it, below, with the rules every person found is judged by. We search a database of LinkedIn profiles, and we want your best guess of the whole market we will search in, so every later guess about a keyword has one scale to sit on. Your guess is a starting point: every search we run corrects it.
+
+## What the customer sells
+{{ product_docs }}
+
+## Who the customer says buys it
+{{ campaign_target }}
+{% if rules %}
+## The judging rules
+{{ rules }}
+{% endif %}
+## The market
+The market is everyone on LinkedIn in the customer's country (or the states the rules name), at companies of any size, in any job.
+
+Give two plain counts:
+- **people**: how many people the market holds.
+- **fits**: how many of them are a fit under the rules. Count people, not companies: a buying company may hold one fit or several.
+
+Orders of magnitude matter more than precision.

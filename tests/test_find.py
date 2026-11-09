@@ -480,6 +480,38 @@ class TestTheCommandContract:
         assert exc.value.error_type == ErrorType.BAD_CONFIG
         action.assert_not_called()
 
+    def test_keyword_guesses_without_agent_qualify_are_refused(self, site_config, booted):
+        with pytest.raises(OpenOutFindError) as exc:
+            call_command("find", "1", "--keyword-guesses", "{}", stdout=io.StringIO())
+
+        assert exc.value.error_type == ErrorType.BAD_CONFIG
+
+    def test_keyword_guesses_outside_the_schema_are_refused_before_any_work(self, site_config,
+                                                                            booted):
+        with patch("openoutfind.core.cycle.run_one_action") as action:
+            with pytest.raises(OpenOutFindError) as exc:
+                call_command("find", "1", "--agent-qualify", "--keyword-guesses",
+                             '{"fields": [{"field": "title"}]}', stdout=io.StringIO())
+
+        assert exc.value.error_type == ErrorType.BAD_CONFIG
+        action.assert_not_called()
+
+    def test_plain_mode_shows_the_keywords_to_guess(self, site_config, booted, caplog):
+        from openoutfind.core.pipeline.qualify import KeywordGuessPending
+
+        pending = KeywordGuessPending("2 keyword(s) have no guess yet", payload={
+            "fields": {"tag": {"keywords": ["tag|live resin", "tag|rosin"]}},
+            "schema": {"title": "KeywordGuesses"}})
+
+        with patch("openoutfind.core.cycle.run_one_action", side_effect=pending), \
+                caplog.at_level(logging.INFO):
+            with pytest.raises(OpenOutFindError) as exc:
+                call_command("find", "1", "--agent-qualify", stdout=io.StringIO())
+
+        assert exc.value.error_type == ErrorType.KEYWORD_GUESS_PENDING
+        assert "tag|live resin, tag|rosin" in caplog.text
+        assert '"title": "KeywordGuesses"' in caplog.text
+
     def test_other_stops_show_no_candidate(self, site_config, booted, caplog):
         with patch("openoutfind.core.cycle.run_one_action", return_value=False), \
                 caplog.at_level(logging.INFO):

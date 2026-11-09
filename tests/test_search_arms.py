@@ -7,11 +7,21 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from openoutfind.core.models import PAGE_SIZE, Search
+from openoutfind.core.config import SiteConfig
+from openoutfind.core.models import PAGE_SIZE, KeywordGuess, MarketGuess, Search
 from openoutfind.core.pipeline import belief, search_arms
 from openoutfind.core.pipeline.search_arms import Arm, Frontier
 from openoutfind.core.pipeline.terms import Terms, split_place
 from tests.store_builders import US, fire, make_company, make_lead
+
+MARKET = (10_000_000, 500_000)
+
+
+def guess_for(keyword, people, fits):
+    if not MarketGuess.objects.exists():
+        MarketGuess.objects.create(people=MARKET[0], fits=MARKET[1], written_by="test")
+    return KeywordGuess.objects.create(keyword=keyword, people=people, fits=fits,
+                                       written_by="test")
 
 
 def arm_for(title, count=1000.0, new=100.0, seen=0, held_fits=0, rate=0.0):
@@ -218,6 +228,29 @@ class TestTheNextSearch:
         assert frontier.pick([bad, unknown], 1) is unknown
         assert good.score is not None
 
+    def test_an_unfired_keyword_starts_from_its_guess(self):
+        """The LLM's guess is the prior: a likelier fit lifts more, a larger keyword counts
+        more, before any search holds either."""
+        fire(Terms.written(title="purchasing", tag="cannabis"), [make_lead()], found=5000)
+        guess_for("tag|live resin", people=400, fits=120)
+        guess_for("tag|retail", people=2_000_000, fits=4_000)
+        resin, retail = ("tag", "live resin"), ("tag", "retail")
+        beliefs = Frontier(None).beliefs
+        lifts = beliefs.lifts()
+
+        assert lifts[resin] > 0 > lifts[retail]
+        assert beliefs.count([retail]) > 100 * beliefs.count([resin])
+
+    def test_a_fired_keywords_lift_moves_off_its_guess_with_its_pages(self):
+        guess_for("title|founder", people=50_000, fits=30_000)
+        misses = [make_lead("Founder", company=make_company(f"m{i}"), verdict=0)
+                  for i in range(20)]
+        fire(Terms.written(title="founder", tag="cannabis"), misses, found=5000)
+        guessed = belief.Guesses.from_counts(
+            MARKET, [("title|founder", 50_000, 30_000)]).lift(("title", "founder"))
+
+        assert Frontier(None).beliefs.lifts()[("title", "founder")] < guessed
+
     def test_a_page_whose_probe_came_back_without_fits_loses_its_next_page(self):
         """Batch 6: founder · `wholesale` brought 170 people and 0 fits, and the keywords'
         marks still read its next page at 0.35. Its own verdicts are what it is valued on."""
@@ -273,15 +306,18 @@ class TestTheNextSearch:
         fire(Terms.written(title="purchasing", tag="cannabis"), people, found=5000)
 
         with patch.object(belief, "sample_posterior", wraps=belief.sample_posterior) as fit:
-            Frontier(None), Frontier(None)
+            Frontier(None).beliefs, Frontier(None).beliefs
             assert fit.call_count == 1
             make_lead(verdict=1)
-            Frontier(None)
+            Frontier(None).beliefs
             assert fit.call_count == 2
             fire(Terms.written(title="purchasing", tag="cannabis"), [make_lead()], found=5000,
                  number=2)
-            Frontier(None)
+            Frontier(None).beliefs
             assert fit.call_count == 3
+            guess_for("title|purchasing", people=1000, fits=300)
+            Frontier(None).beliefs
+            assert fit.call_count == 4
 
     def test_a_next_page_keeps_the_providers_count_on_any_draw(self):
         people = [make_lead("Purchasing Manager") for _ in range(3)]
@@ -318,9 +354,9 @@ class TestTheNextSearch:
         fire(Terms.written(title="purchasing", tag="cannabis"),
              [make_lead(verdict=1) for _ in range(3)], found=5000)
 
-        assert len(search_arms.next_round(None, 1)) == 1
+        assert len(search_arms.next_round(None, 1, SiteConfig.load())) == 1
         with patch.object(search_arms, "FITS_WORTH_A_SEARCH", 1e9):
-            assert search_arms.next_round(None, 1) == []
+            assert search_arms.next_round(None, 1, SiteConfig.load()) == []
             assert search_arms.best_expected(None) is None
 
     def test_the_cold_phase_fires_while_an_arm_brings_somebody_new(self):
@@ -338,7 +374,7 @@ class TestTheNextSearch:
             patch("openoutfind.core.ml.embeddings.embed_texts",
                   side_effect=lambda texts: np.zeros((len(texts), 384))),
         ):
-            assert len(search_arms.next_round(Cold(), 1)) == 1
+            assert len(search_arms.next_round(Cold(), 1, SiteConfig.load())) == 1
 
     def test_the_arm_weighed_against_the_pool_is_the_best_at_the_mean(self):
         for _ in range(3):

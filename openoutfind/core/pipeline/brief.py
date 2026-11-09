@@ -50,13 +50,16 @@ def adopt(rules: str) -> None:
 
     Silent: ``find`` echoes the brief in force at the start of every run anyway.
     """
-    from openoutfind.core.models import Brief
+    from openoutfind.core.models import Brief, KeywordGuess, MarketGuess
 
     rules = rules.strip()
     brief = stored()
     if brief is not None and brief.rules == rules:
         return
     Brief.objects.all().delete()
+    # Who fits changed, so every guessed count of fits is stale.
+    MarketGuess.objects.all().delete()
+    KeywordGuess.objects.all().delete()
     Brief.objects.create(rules=rules, written_by=GIVEN)
 
 

@@ -160,6 +160,11 @@ class Command(OpenOutFindCommand):
             help="Answer a population_pending stop: the walk's initial searches and the "
                  "ideal profiles as one JSON object, in the schema the error carried.")
         parser.add_argument(
+            "--keyword-guesses", dest="keyword_guesses", metavar="JSON",
+            help="Answer a keyword_guess_pending stop: the market's people and fits when "
+                 "it has no guess, and per keyword the people holding it and how many of "
+                 "them fit, as one JSON object in the schema the error carried.")
+        parser.add_argument(
             "--brief", dest="brief", metavar="PATH",
             help="A file holding the judging rules — who fits, who does not. Stored as "
                  "this store's brief, replacing any there, and read by every prompt. "
@@ -184,9 +189,12 @@ class Command(OpenOutFindCommand):
         if options["population"] and not options["agent_qualify"]:
             raise OpenOutFindError(ErrorType.BAD_CONFIG,
                                     "--population needs --agent-qualify")
+        if options["keyword_guesses"] and not options["agent_qualify"]:
+            raise OpenOutFindError(ErrorType.BAD_CONFIG,
+                                    "--keyword-guesses needs --agent-qualify")
         if options["agent_qualify"]:
             _enable_agent_qualify(options["verdict"], options["reason"],
-                                  options["population"])
+                                  options["population"], options["keyword_guesses"])
         if options["exclude"]:
             _enable_exclude(options["exclude"])
         brief = _read_brief(options["brief"]) if options["brief"] else None
@@ -446,6 +454,18 @@ def _narrate_pending_candidate(result: JobResult) -> None:
                     "in this schema:")
         logger.info("    %s", json.dumps(result.payload.get("schema")))
         return
+    if result.stopped_because == ErrorType.KEYWORD_GUESS_PENDING:
+        if result.payload.get("market") is None:
+            logger.info("Guess the market: its people and how many of them fit.")
+        for keyword, reason in result.payload.get("refused", {}).items():
+            logger.info("Refused %s: %s", keyword, reason)
+        for field, asked in result.payload.get("fields", {}).items():
+            logger.info("Guess %d %s keyword(s): %s", len(asked["keywords"]), field,
+                        ", ".join(asked["keywords"]))
+        logger.info("Answer with the same command plus --keyword-guesses '<json>', "
+                    "in this schema:")
+        logger.info("    %s", json.dumps(result.payload.get("schema")))
+        return
     if result.stopped_because != ErrorType.QUALIFY_PENDING:
         return
     logger.info("Candidate: %s", result.payload.get("profile_url"))
@@ -496,23 +516,29 @@ def _read_labels(path: str) -> list[dict]:
 
 
 def _enable_agent_qualify(verdict: str | None, reason: str | None,
-                          population: str | None) -> None:
+                          population: str | None, keyword_guesses: str | None) -> None:
     """Turn ``--agent-qualify`` on for this process, with optional resume answers.
 
-    A ``--population`` that does not parse is refused here, before any work — a malformed
-    answer discovered mid-run would leave the caller unsure which half had been written.
+    A ``--population`` or ``--keyword-guesses`` that does not parse is refused here,
+    before any work — a malformed answer discovered mid-run would leave the caller unsure
+    which half had been written.
     """
-    from pydantic import ValidationError
-
     from openoutfind.core.agent_qualify import Verdict, enable
     from openoutfind.core.pipeline.icp import PopulationAnswer
+    from openoutfind.core.pipeline.keyword_guess import KeywordGuesses
 
     answer = Verdict(fit=verdict == "fit", reason=reason) if verdict else None
-    population_answer = None
-    if population:
-        try:
-            population_answer = PopulationAnswer.model_validate_json(population)
-        except ValidationError as exc:
-            raise OpenOutFindError(ErrorType.BAD_CONFIG,
-                                    f"--population does not fit the schema: {exc}")
-    enable(answer, population_answer)
+    enable(answer, _parsed("--population", population, PopulationAnswer),
+           _parsed("--keyword-guesses", keyword_guesses, KeywordGuesses))
+
+
+def _parsed(flag: str, text: str | None, schema):
+    """``text`` validated against ``schema``, ``None`` when not given."""
+    from pydantic import ValidationError
+
+    if not text:
+        return None
+    try:
+        return schema.model_validate_json(text)
+    except ValidationError as exc:
+        raise OpenOutFindError(ErrorType.BAD_CONFIG, f"{flag} does not fit the schema: {exc}")

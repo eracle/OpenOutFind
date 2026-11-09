@@ -35,6 +35,7 @@ is yet known to stop on, so it fires while an arm brings somebody new.
 """
 from __future__ import annotations
 
+import functools
 import logging
 import statistics
 from dataclasses import dataclass, replace
@@ -42,7 +43,7 @@ from dataclasses import dataclass, replace
 import numpy as np
 
 from openoutfind.core.conf import CAMPAIGN_CONFIG
-from openoutfind.core.pipeline import belief, compose
+from openoutfind.core.pipeline import belief, compose, keyword_guess
 from openoutfind.core.pipeline.store_snapshot import (
     FiredSearch, People, fired_searches, fit_rate_map, judged_fits, judged_leads,
     lead_fit_rates,
@@ -121,8 +122,6 @@ class Frontier:
         self.judged = judged_leads()
         self.fits = judged_fits()
         self.fired = fired_searches()
-        self.beliefs = belief.Beliefs(self.people, self.fired, self.judged,
-                                      self.people.base_rate())
         self.written = list(Search.objects.filter(origin=Search.Origin.WRITTEN))
         self.market_is_states = bool(self.written) and all(
             split_place(search.query.place)[0] for search in self.written)
@@ -140,6 +139,18 @@ class Frontier:
                                                         FIRST_POLL_SECONDS))
         self.person_cost = calibration.verdict_cost() + calibration.dollars(
             meter.mean(meter.INGEST_SECONDS_PER_LEAD, CAMPAIGN_CONFIG["ingest_seconds_per_lead"]))
+
+    @functools.cached_property
+    def beliefs(self) -> belief.Beliefs:
+        """The belief, fitted on first read: after ``guess_keywords`` where a round asks."""
+        return belief.Beliefs(self.people, self.fired, self.judged, self.people.base_rate(),
+                              keyword_guess.load())
+
+    def guess_keywords(self, site_config) -> None:
+        """Have the market and every keyword the walk could compose or has fired guessed,
+        before the belief is read."""
+        fired = {keyword for f in self.fired for keyword in f.keywords}
+        keyword_guess.ensure(site_config, [*self.vocabulary.keywords(), *fired])
 
     # ── the arms ──
 
@@ -346,9 +357,11 @@ def worth_firing(arms: list[Arm], qualifier) -> list[Arm]:
     return []
 
 
-def next_round(qualifier, round_number: int) -> list[Arm]:
-    """The one search to fire next, or ``[]`` when none is worth firing."""
+def next_round(qualifier, round_number: int, site_config) -> list[Arm]:
+    """The one search to fire next, or ``[]`` when none is worth firing. Keywords with no
+    guess yet are guessed first (``keyword_guess``)."""
     frontier = Frontier(qualifier)
+    frontier.guess_keywords(site_config)
     arms = worth_firing(frontier.arms(), qualifier)
     log_last_page(frontier)
     if not arms:
