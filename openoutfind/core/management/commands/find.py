@@ -74,9 +74,12 @@ not interact.
 **Under ``--json``, stderr is JSON and nothing else** — no banner, no log lines: the run
 object, and the ``{"error": …}`` object after it if the run fell short. Otherwise a ``2>``
 capture is prose with an object somewhere in it and every caller writes the same fragile
-``tail -1``. The cost is the narration an interactive ``--json`` run used to print, and
-that is the right trade: ``--json`` is the machine's mode, and a person watching a run is
-not using it.
+``tail -1``. **An explicit ``--debug`` or ``--log-level`` is the exception**: whoever typed
+it asked for the narration, so the log lines go to stderr beside the objects (each object
+still on a line of its own, found by its leading ``{``). An agent judging under
+``--agent-qualify`` needs both: the candidate's payload, which only ``--json`` carries, and
+the walk's reasoning — the belief's refit and the judge-or-search call — which only the log
+does.
 """
 from __future__ import annotations
 
@@ -192,9 +195,10 @@ class Command(OpenOutFindCommand):
         # in addresses cannot be met without buying them, so the noun implies the flag —
         # that is the one place the two are not independent.
         buy_addresses = options["buy_emails"] or options["unit"] == EMAILS
-        quiet = options["as_json"]
+        quiet = options["as_json"] and not options.get("log_level")
 
-        self._configure_logging(options.get("log_level"), options["verbosity"], quiet=quiet)
+        self._configure_logging(options.get("log_level"), options["verbosity"], quiet=quiet,
+                                banner=not options["as_json"])
         # Django's migration narration is prose, and under --json stderr is JSON only —
         # so it goes nowhere rather than onto the stream a caller is parsing. A migration
         # that *fails* still raises; what is dropped is "Applying core.0001_initial… OK".
@@ -305,12 +309,13 @@ class Command(OpenOutFindCommand):
 
     # ── logging ──────────────────────────────────────────────────
 
-    def _configure_logging(self, log_level: str | None, verbosity: int, *, quiet: bool = False):
+    def _configure_logging(self, log_level: str | None, verbosity: int, *, quiet: bool = False,
+                           banner: bool = True):
         """Configure the run's narration, or silence it entirely.
 
-        ``quiet`` is ``--json``: stderr carries JSON objects there and nothing else, so
-        the banner and every log line are suppressed rather than interleaved with the
-        one thing a caller is parsing.
+        ``quiet`` is ``--json`` with no level asked for: stderr carries JSON objects there
+        and nothing else, so every log line is suppressed rather than interleaved with the
+        one thing a caller is parsing. The banner never prints under ``--json``.
         """
         from openoutfind.core.logging import configure_logging, print_banner, resolve_log_level
 
@@ -319,7 +324,8 @@ class Command(OpenOutFindCommand):
             return
 
         configure_logging(level=resolve_log_level(log_level, verbosity))
-        print_banner()
+        if banner:
+            print_banner()
 
 
 def _write_run_object(result: JobResult, action, rows: int, labels: dict | None) -> None:

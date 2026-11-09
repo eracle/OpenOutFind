@@ -202,6 +202,33 @@ class TestTheCommandContract:
         assert document["goal"] == {"count": 0, "unit": "leads"}
         assert document["rows"] == 1
 
+    @pytest.mark.parametrize("flags, quiet", [(["--json"], True),
+                                              (["--json", "--debug"], False)])
+    def test_json_is_silent_unless_a_log_level_was_asked_for(self, site_config, booted,
+                                                              flags, quiet):
+        """An explicit --debug asked for the narration, so it goes to stderr beside the run
+        object; the banner stays off either way under --json."""
+        from openoutfind.core.management.commands.find import Command
+
+        with patch.object(Command, "_configure_logging") as configure:
+            call_command("find", "0", *flags, stdout=io.StringIO())
+
+        assert configure.call_args.kwargs == {"quiet": quiet, "banner": False}
+
+    def test_the_log_level_decides_the_handler_under_json(self, capsys):
+        """The other half: with quiet off, a log line reaches stderr."""
+        from openoutfind.core.management.commands.find import Command
+
+        root = logging.getLogger()
+        handlers, level = root.handlers[:], root.level
+        try:
+            Command()._configure_logging("debug", 1, quiet=False, banner=False)
+            logging.getLogger("openoutfind.test").debug("belief: refit")
+        finally:
+            root.handlers[:], root.level = handlers, level
+
+        assert "belief: refit" in capsys.readouterr().err
+
     def test_by_default_what_is_already_there_prints_before_any_work(self, site_config, booted):
         """The opening bulk: even a run that produces nothing yet has already printed
         the site_config as it stood at minute zero — unlike `--batch`, which waits."""

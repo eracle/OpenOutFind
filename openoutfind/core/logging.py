@@ -143,6 +143,9 @@ SILENCED_LOGGERS = (
     "urllib3", "httpx", "httpcore", "httpx2", "httpcore2", "h11", "hpack",
     # Embeddings + runtime
     "fastembed", "huggingface_hub", "filelock", "onnxruntime", "asyncio",
+    # The belief's sampler: numba narrates every compiler pass at DEBUG, thousands of lines
+    # a refit, and arviz announces its backends at INFO.
+    "numba", "pytensor", "nutpie", "arviz", "arviz_base",
 )
 
 

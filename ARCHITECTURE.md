@@ -846,7 +846,10 @@ contacted twice unless the operator enables it — say so in every adapter's doc
   a line-delimited one has already delivered every complete record before the break, and the rest
   is a re-run. Under `--json` stderr carries JSON and nothing else — no banner, no log lines (the
   run object, plus the `{"error": …}` object after it if the run fell short), or every caller ends
-  up writing the same fragile `tail -1` over a stream of prose.
+  up writing the same fragile `tail -1` over a stream of prose. **An explicit `--debug` or
+  `--log-level` keeps the log lines** beside the objects (the banner stays off), each object still
+  on a line of its own: an agent judging under `--agent-qualify` needs both the candidate's payload
+  and the walk's reasoning, the belief's refit and the judge-or-search call.
 
   **Output is progressive by default, in either format.** `find` writes what the campaign already
   has immediately, before touching the job (`handle` reads `lead_records(campaign)` and calls

@@ -102,7 +102,7 @@ exports — the row carries the person, the company and the reason with a blank 
 | Flag | What it does |
 |------|--------------|
 | `--new` | Print only the rows *this run* produced, instead of every lead in the store. Use this when you are reading stdout into your own context rather than into a file. |
-| `--json` | The rows as JSON Lines on stdout (the full record, `profile_text` included); the run's metadata — goal, outcome, `next_action` — as one JSON object on stderr, and nothing else there. Prefer it when you are going to parse. |
+| `--json` | The rows as JSON Lines on stdout (the full record, `profile_text` included); the run's metadata — goal, outcome, `next_action` — as one JSON object on stderr, and nothing else there unless `--debug` is given, which keeps the log lines beside it (each object on a line of its own, starting `{`). Prefer it when you are going to parse. |
 | `--batch` | Hold everything until the job ends, then print every lead once — the old, pre-streaming shape. Output is progressive *by default* now (see below); reach for `--batch` only if whatever you are piping into cannot handle a stream — a strict single-document JSON parser, for instance. Not something you need for reading into your own context — that is what `--new` is for. |
 | `--debug` | Show the discovery walk's reasoning on stderr. For diagnosing a run that finds nothing. |
 | `--open` | Opens each new lead's profile in a browser. **Never pass this** — it is for a human at a terminal, and it errors out headless. |
