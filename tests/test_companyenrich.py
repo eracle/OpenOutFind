@@ -217,6 +217,18 @@ def test_source_selection_is_scoped_and_default_walk_unchanged(mocker):
     walk.assert_called_once()
 
 
+def test_paid_source_judges_local_pool_without_planning_free_search(mocker):
+    from openoutfind.core.pipeline import judge_or_search
+
+    fit_rate = mocker.patch("openoutfind.core.pipeline.store_snapshot.fit_rate_map")
+    plan = mocker.patch("openoutfind.core.pipeline.search_arms.best_expected")
+    with discovery_source.selected(CompanyEnrichSource(QUERY, "page-one", 20)):
+        # The current upstream contract is a bool, consumed directly by top_up.
+        assert judge_or_search.decide(None, [object()]) is True
+    fit_rate.assert_not_called()
+    plan.assert_not_called()
+
+
 def test_provenance_survives_duplicate_and_blocks_all_hub_paths(http, mocker):
     from openoutfind.contacts import service
     from openoutfind.core.db.leads import store_rows
@@ -239,8 +251,8 @@ def test_provenance_survives_duplicate_and_blocks_all_hub_paths(http, mocker):
     row = {"contact_linkedin_profile_url": known.profile_url,
            "company_linkedin_url": "https://www.linkedin.com/company/example",
            "_discovery_source": "companyenrich"}
-    service.share_profiles([row], "US")
-    service.share_companies([row], "US")
+    service.share_profiles([row], "US", {})
+    service.share_companies([row], "US", {})
     token.assert_not_called()
     page_token.assert_not_called()
     send.assert_not_called()
@@ -348,8 +360,8 @@ def test_later_free_pages_cannot_clear_local_only_identity(http, mocker):
     row = {"contact_linkedin_profile_url": "https://linkedin.com/in/alex-example/?tracking=1",
            "company_linkedin_url": "https://www.linkedin.com/company/example",
            "company_name": "Example"}
-    service.share_profiles([row], "US")
-    service.share_companies([row], "US")
+    service.share_profiles([row], "US", {})
+    service.share_companies([row], "US", {})
     duplicate = Lead.objects.create(profile_url=row["contact_linkedin_profile_url"],
                                     discovery_source="bettercontact", country_code="US")
     assert service.resolve(duplicate) is None

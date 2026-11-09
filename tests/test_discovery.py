@@ -290,7 +290,7 @@ class TestDescribeFilters:
 
 class TestDescribeCompanyAxis:
     def test_the_company_axis_reads_as_company(self):
-        from openoutfind.core.pipeline.query import Terms
+        from openoutfind.core.pipeline.terms import Terms
 
         rendered = discovery.describe_filters(
             Terms.written(title="purchasing", tag="cannabis").to_filters())

@@ -70,9 +70,10 @@ _HTTP_TIMEOUT_S = 30
 # endpoints**: 100/min on Starter and free accounts, 200/min from 1,000 monthly credits,
 # `GET /account` exempt. Our key is on 100/min. A client firing through 429s can get the
 # account blocked, so the limit is taken from the docs and never probed by going over it:
-# the budget sits below it, and the walk runs one store at a time on the key, so no other
-# process spends it.
-REQUESTS_PER_MINUTE = 90
+# the budget sits below it. A process cannot see another's requests, so this is a share of
+# the key rather than the whole of it: 15 holds one round of about 12, and six runs on the
+# key at once stay at 90 a minute between them.
+REQUESTS_PER_MINUTE = 15
 _BUDGET_WINDOW_S = 60.0
 
 # **A 429 is backed off, never retried at speed** — their docs warn that a client which
@@ -103,9 +104,8 @@ _BROWSER_UA = (
 class RequestBudget:
     """At most ``limit`` requests in any ``window`` seconds, across this process's threads.
 
-    ``take`` blocks until a request fits, then counts it. A round of 10 searches spends
-    about 30, and a run judges for longer than the window between rounds, so it rarely
-    waits.
+    ``take`` blocks until a request fits, then counts it. The first round's 4 searches
+    spend about 12, a later round's one about 3, so a run rarely waits.
     """
 
     def __init__(self, limit: int, window: float, clock=time.monotonic, sleep=time.sleep):

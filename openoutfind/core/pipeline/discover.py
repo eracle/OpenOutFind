@@ -3,8 +3,8 @@
 
 The top of the funnel: the walk's pages become ``Lead`` rows awaiting qualification. Free
 (Lead Finder bills nothing) and browserless, so wall-clock is the only budget. A round is
-the unit: the frontier's best 10 searches fired at once (``walk.run_round``), their pages
-taken in together.
+the unit: the written searches fired at once, then one search at a time
+(``walk.run_round``), a round's pages taken in together.
 """
 from __future__ import annotations
 
@@ -33,7 +33,9 @@ def harvest(pages: list[tuple], country_code: str) -> int:
     Each whole page — dropped rows and known profiles included — is then given back to the
     hub (``share_profiles``), best-effort, and its distinct employers too
     (``share_companies``), for the hub's company index — one request per page, so no body
-    grows with the round.
+    grows with the round. Nothing is embedded twice: the stored people's vectors go out as
+    they are, and what only the hub needs (dropped rows, employers) is embedded once a
+    round, however many pages carry it.
     """
     from openoutfind.contacts.service import share_companies, share_profiles
     from openoutfind.core.db.leads import store_rows
@@ -50,9 +52,11 @@ def harvest(pages: list[tuple], country_code: str) -> int:
          if not (lead.marked or lead.synthetic)],
         ignore_conflicts=True)
 
+    vectors = {lead.profile_text: lead.embedding_array for lead in leads
+               if lead.embedding is not None}
     for _, rows in pages:
-        share_profiles(rows, country_code)
-        share_companies(rows, country_code)
+        share_profiles(rows, country_code, vectors)
+        share_companies(rows, country_code, vectors)
     return created
 
 
@@ -75,11 +79,10 @@ def _leads_of(rows: list[dict], by_url: dict) -> list:
     return [by_url[url] for url in urls if url in by_url]
 
 
-def discover(site_config, qualifier=None, floor: float = 0.0) -> bool:
+def discover(site_config, qualifier=None) -> bool:
     """Run one round of the walk. Returns whether one was fired.
 
-    ``False`` means no search on the frontier is worth firing — none would bring people
-    fitting more often than ``floor``, the best lead waiting — or a gate is shut. A
+    ``False`` means no search on the frontier is worth firing, or a gate is shut. A
     provider *refusal* propagates (``walk._take_in``): a rejected key must never be read as
     a search that matches nobody. ``qualifier`` scores the store's people, which is what
     the frontier is valued on; without one, only judged people count.
@@ -102,8 +105,8 @@ def discover(site_config, qualifier=None, floor: float = 0.0) -> bool:
         return False
 
     logger.info(colored("▶ discover", "blue", attrs=["bold"]))
-    if run_round(site_config, qualifier, floor) is None:
-        logger.info(colored("■ no search left worth firing — the frontier holds none that "
-                            "beats the pool", "blue"))
+    if run_round(site_config, qualifier) is None:
+        logger.info(colored("■ no search left worth firing — none is expected to bring a "
+                            "new fit", "blue"))
         return False
     return True

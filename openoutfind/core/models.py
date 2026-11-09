@@ -27,14 +27,15 @@ class Search(models.Model):
     class Origin(models.TextChoices):
         # Written whole by the LLM (or the calling agent) — the initial population.
         WRITTEN = "written", "written"
-        # A neighbour of a fired search on the lattice, fired from the frontier.
-        NEIGHBOUR = "neighbour", "neighbour"
+        # Composed from the store's keywords at the mean belief, fired from the frontier.
+        DRAWN = "drawn", "drawn"
 
     terms = models.JSONField()
     key = models.CharField(max_length=64, unique=True)
     origin = models.CharField(max_length=9, choices=Origin.choices,
-                              default=Origin.NEIGHBOUR)
-    # The move that reached it (``lattice.MOVES``), blank for a written search.
+                              default=Origin.DRAWN)
+    # How the frontier reached it (``drawn``; a store from before keeps its lattice move),
+    # blank for a written search.
     move = models.CharField(max_length=16, blank=True, default="")
     # The provider's exact count, read from page 1 — the only offset whose count is an
     # answer. ``None`` until page 1 has been fetched.
@@ -58,7 +59,7 @@ class Search(models.Model):
     @property
     def query(self):
         """The terms as a ``query.Terms``."""
-        from openoutfind.core.pipeline.query import Terms
+        from openoutfind.core.pipeline.terms import Terms
 
         return Terms.from_json(self.terms)
 
@@ -86,6 +87,10 @@ class Page(models.Model):
     round = models.PositiveIntegerField()
     # Rows the provider returned, before any were dropped.
     rows = models.PositiveIntegerField(default=0)
+    # What the walk expected when it chose this page, N(q) and θ(q) at the mean belief, so
+    # both can be read against what came back. None on a written search, chosen unvalued.
+    expected_count = models.FloatField(null=True, blank=True)
+    expected_rate = models.FloatField(null=True, blank=True)
     leads = models.ManyToManyField("outfind_crm.Lead", through="PageLead",
                                    related_name="pages")
     created_at = models.DateTimeField(auto_now_add=True)
@@ -112,7 +117,7 @@ class PageLead(models.Model):
 
     Whether the person was new to the store or not: a person on several pages is
     evidence about each, and the first page that holds them is the one that brought them
-    in (``frontier`` reads a page's novelty from that). Rows dropped for no headline or a company at its cap are not
+    in (``search_arms`` reads a page's novelty from that). Rows dropped for no headline or a company at its cap are not
     here, and neither is a marked lead or an anchor.
     """
 

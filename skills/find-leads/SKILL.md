@@ -29,7 +29,8 @@ with `pip install openoutfind`. Inside a checkout of the repo, `python manage.py
 same entry point.
 
 `status` never blocks and never spends. It answers `config` (complete, or which `OPENOUTFIND_*`
-variables are missing), lead and deal counts, the credit balance, anything `blocked`, and a
+variables are missing), lead and deal counts, the credit balance, anything `blocked`, `walk`
+(every fired page, what the search was expected to hold beside what came back), and a
 `next_action` — start there whenever you are unsure what state the user is in.
 
 ## Setup, if `status` says the configuration is incomplete
@@ -136,7 +137,7 @@ query example and provider pricing caveat: [docs/companyenrich.md](../../docs/co
 | Flag | What it does |
 |------|--------------|
 | `--new` | Print only the rows *this run* produced, instead of every lead in the store. Use this when you are reading stdout into your own context rather than into a file. |
-| `--json` | The rows as JSON Lines on stdout (the full record, `profile_text` included); the run's metadata — goal, outcome, `next_action` — as one JSON object on stderr, and nothing else there. Prefer it when you are going to parse. |
+| `--json` | The rows as JSON Lines on stdout (the full record, `profile_text` included); the run's metadata — goal, outcome, `next_action` — as one JSON object on stderr, and nothing else there unless `--debug` is given, which keeps the log lines beside it (each object on a line of its own, starting `{`). Prefer it when you are going to parse. |
 | `--batch` | Hold everything until the job ends, then print every lead once — the old, pre-streaming shape. Output is progressive *by default* now (see below); reach for `--batch` only if whatever you are piping into cannot handle a stream — a strict single-document JSON parser, for instance. Not something you need for reading into your own context — that is what `--new` is for. |
 | `--debug` | Show the discovery walk's reasoning on stderr. For diagnosing a run that finds nothing. |
 | `--open` | Opens each new lead's profile in a browser. **Never pass this** — it is for a human at a terminal, and it errors out headless. |
@@ -204,9 +205,9 @@ driven this way never needs a model key at all. The `qualify_pending` payload ca
 brief as `rules` (`""` when none was given — pass `--brief` first and judge by it).
 
 **A fresh store asks you for its initial population first.** The cold start has two more model
-calls — the walk's first 10 searches and a few invented ideal profiles — so the first
+calls — the walk's first 4 searches and a few invented ideal profiles — so the first
 `--agent-qualify` run on an empty store stops with `population_pending` instead. Its error object
-carries `product_docs`, `campaign_target`, the brief as `rules`, `population_size` (10), the
+carries `product_docs`, `campaign_target`, the brief as `rules`, `population_size` (4), the
 `fields` and how the provider matches each, the allowed `seniorities`, `anchor_count` and the JSON
 `schema` of the answer. Write both parts in one object and re-run the same command with it:
 
@@ -223,22 +224,27 @@ outfind find 10 --agent-qualify --population '{"searches": [
 **Write 10 whole searches, each a person you would want to find** — "a head of procurement at a
 dental clinic in California" is `{"title": "head procurement", "tag": "dental clinic", "state":
 "California"}`. The model knows which titles go with which companies; the walk then fires the
-searches next to them whose people would fit best. Spread them: different titles, different kinds
-of company, some broad and some narrow.
+searches next to them that between them hold the most of the store's fits and your anchors.
+Spread them: different titles, different kinds of company, some broad and some narrow.
 
 - **`title`** — the job title's words. Every word is required, in any order, and small words
-  (`of`, `the`) are ignored. **Nothing is stemmed**: write the form titles carry (`founder`, not
-  `founders`).
+  (`of`, `the`) are ignored, `it` among them (`it manager` is `manager`). **Nothing is stemmed**:
+  write the form titles carry (`founder`, not `founders`), accents included (`gérant` and `gerant`
+  are different words).
 - **`tag`** — at most one phrase one of the company's own LinkedIn tags holds, its words adjacent
   and in order (`thc vape`, not `vape thc`), or empty for any company. Not stemmed either: a company
   tags itself `vapes` or `vape`, and the two find different companies. A tag is never searched
   without a title, and a word just as common in unrelated industries (`oil`, `brand`) is no tag.
-- **`state`** — a state inside the market `country`, or empty for the whole country.
+- **`state`** — a state inside the market `country`, or empty for the whole country. When all
+  the searches name a state, the walk never goes country-wide.
 - **`seniority`** — one of the allowed values, or `null`.
 
 An anchor's `profile` is one lowercase line shaped like a lead row (headline, industry, title,
 company, seniority, state, country), and its `company_keywords` are the invented company's tags,
-comma separated. It is asked once per store; later runs never see it again.
+comma separated. Every round of the walk counts the anchors as fits to cover, so a store never
+walks without them: a store seeded with `--labels` gets them in the same answer, and an older
+store that has searches but no anchors stops once with `population_pending` before its next
+round (its searches part is not used). It is asked once per store; later runs never see it again.
 
 ## Reading the output
 
@@ -335,7 +341,8 @@ is a stable string worth branching on:
 | `provider_unavailable` | Provider unreachable at all. | Transient; retry later. |
 | `bad_config` | A value is set but unusable (e.g. a negative count). | Read the message; it names the field. |
 | `qualify_pending` | `--agent-qualify` stopped one candidate short of the `AI_MODEL` call it opted out of. | Judge the candidate carried on the error object, then re-run with `--verdict`/`--reason` — see *Answering qualify yourself*. |
-| `population_pending` | `--agent-qualify` on a fresh store: the walk's 10 initial searches and the ideal profiles are needed first. | Write them from the error's `product_docs`/`campaign_target`/`rules` in its `schema`, then re-run with `--population '<json>'`. |
+| `population_pending` | `--agent-qualify` on a fresh store: the walk's 4 initial searches and the ideal profiles are needed first. | Write them from the error's `product_docs`/`campaign_target`/`rules` in its `schema`, then re-run with `--population '<json>'`. |
+| `unanchored` | The ideal profiles could not be written (the model failed or wrote none), and the walk does not start without them. Nothing was fired. | Transient on the model path; run again. |
 
 Treat a non-zero exit as *partial success with a stated reason*, not as "nothing happened" — the
 rows are already on stdout. And never report a failed run to the user as "no leads matched": a

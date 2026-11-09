@@ -40,7 +40,7 @@ def store_rows(rows: list[dict], country_code: str = "", *,
     Keyed on ``profile_url`` (the provider's per-person URL): a person already in the
     store comes back as the row it is, unchanged, since a page that returned them is
     evidence about its search either way. A row with no URL is skipped. New rows are
-    embedded in one call — a round brings in up to 2,000.
+    embedded in one call — a round brings in up to 800.
 
     Stamps the firmographic ``profile_text`` (the LLM qualifier's input) and the embedding
     from the same row, so qualification never re-fetches anything. ``country_code`` is the

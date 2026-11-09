@@ -135,7 +135,8 @@ LEAD_SENIORITIES = get_args(Seniority)
 #
 # So those two narrow by *being* narrower — "California, United States" rather than
 # "United States" — while a job title narrows by adding a word and a tag by lengthening
-# its phrase. Each field's type and what a search holds in it: ``core/pipeline/query.py``.
+# its phrase. Each field's type and what a search holds in it: ``core/pipeline/terms.py``;
+# how its text becomes words: ``core/pipeline/analyzers.py``.
 SEARCH_FIELDS = ("lead_job_title", "company_keywords", "lead_location", "lead_seniority")
 
 # Lead-row fields we embed, folded in only when the row carries them.

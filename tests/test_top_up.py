@@ -7,7 +7,6 @@ import numpy as np
 import pytest
 
 from openoutfind.core.ml.qualifier import BayesianQualifier
-from openoutfind.core.pipeline.judge_or_search import Decision
 from openoutfind.core.pipeline.top_up import top_up
 
 
@@ -26,6 +25,38 @@ def test_the_cold_phase_names_itself_and_the_anchor_progress(site_config, caplog
 
     assert "cold phase" in caplog.text
     assert "0/3 real positive" in caplog.text
+
+
+def _cold_qualifier():
+    qualifier = BayesianQualifier(embedding_dim=8)
+    qualifier.set_anchors(np.random.RandomState(0).rand(3, 8))
+    return qualifier
+
+
+@pytest.mark.django_db
+def test_a_cold_round_adding_nobody_is_still_a_move(site_config):
+    with (
+        patch("openoutfind.core.pipeline.top_up.discover", return_value=True),
+        patch("openoutfind.core.pipeline.top_up.fetch_qualification_candidates",
+              return_value=[]),
+        patch("openoutfind.core.pipeline.top_up.run_qualification") as qualify,
+    ):
+        assert top_up(site_config, _cold_qualifier()) is True
+
+    qualify.assert_not_called()
+
+
+@pytest.mark.django_db
+def test_a_cold_empty_pool_with_nothing_to_fire_is_the_end(site_config):
+    with (
+        patch("openoutfind.core.pipeline.top_up.discover", return_value=False),
+        patch("openoutfind.core.pipeline.top_up.fetch_qualification_candidates",
+              return_value=[]),
+        patch("openoutfind.core.pipeline.top_up.run_qualification") as qualify,
+    ):
+        assert top_up(site_config, _cold_qualifier()) is False
+
+    qualify.assert_not_called()
 
 
 def _exploiting_qualifier():
@@ -61,6 +92,39 @@ def test_exploit_qualifies_only_a_lead_clearing_the_spend_gate(site_config):
 
 
 @pytest.mark.django_db
+def test_a_probe_draw_is_judged_ahead_of_every_other_move(site_config):
+    qualifier = _exploiting_qualifier()
+    drawn = _Candidate()
+
+    with (
+        patch("openoutfind.core.pipeline.top_up.fetch_qualification_candidates",
+              return_value=[_Candidate(), drawn]),
+        patch("openoutfind.core.pipeline.top_up.probe.next_lead", return_value=drawn),
+        patch("openoutfind.core.pipeline.top_up.calibration.should_calibrate") as calibrate,
+        patch("openoutfind.core.pipeline.top_up.run_qualification",
+              return_value="https://example.com/in/alice/") as qualify,
+        patch("openoutfind.core.pipeline.top_up.discover") as discover,
+    ):
+        assert top_up(site_config, qualifier) is True
+
+    assert qualify.call_args.kwargs == {"candidates": [drawn], "preselected": True}
+    assert not calibrate.called and not discover.called
+
+
+@pytest.mark.django_db
+def test_the_cold_phase_never_probes(site_config):
+    with (
+        patch("openoutfind.core.pipeline.top_up.probe.next_lead") as probe_draw,
+        patch("openoutfind.core.pipeline.top_up.discover", return_value=False),
+        patch("openoutfind.core.pipeline.top_up.fetch_qualification_candidates",
+              return_value=[]),
+    ):
+        top_up(site_config, _cold_qualifier())
+
+    assert not probe_draw.called
+
+
+@pytest.mark.django_db
 def test_below_the_bar_exploit_judges_the_whole_pool_when_judging_is_cheaper(site_config):
     """Below the bar is not "nothing to do": when a verdict on the pool buys a fit for
     less than a search would, the best lead by P is judged, from every candidate.
@@ -75,7 +139,7 @@ def test_below_the_bar_exploit_judges_the_whole_pool_when_judging_is_cheaper(sit
         patch.object(qualifier, "predict_probs", return_value=np.array([0.37, 0.2])),
         patch("openoutfind.core.pipeline.top_up.fetch_qualification_candidates",
               return_value=pool),
-        patch("openoutfind.core.pipeline.top_up.decide", return_value=Decision(True, 0.37)),
+        patch("openoutfind.core.pipeline.top_up.decide", return_value=True),
         patch("openoutfind.core.pipeline.top_up.run_qualification",
               return_value="https://example.com/in/alice/") as qualify,
         patch("openoutfind.core.pipeline.top_up.discover", return_value=True) as discover,
@@ -96,14 +160,14 @@ def test_below_the_bar_exploit_searches_when_searching_is_cheaper(site_config):
         patch.object(qualifier, "predict_probs", return_value=np.array([0.5])),
         patch("openoutfind.core.pipeline.top_up.fetch_qualification_candidates",
               return_value=[_Candidate()]),
-        patch("openoutfind.core.pipeline.top_up.decide", return_value=Decision(False, 0.4)),
+        patch("openoutfind.core.pipeline.top_up.decide", return_value=False),
         patch("openoutfind.core.pipeline.top_up.run_qualification") as qualify,
         patch("openoutfind.core.pipeline.top_up.discover", return_value=True) as discover,
     ):
         assert top_up(site_config, qualifier) is True
 
     assert not qualify.called
-    assert discover.call_args.args[2] == 0.4  # the round must beat the best lead waiting
+    assert discover.called
 
 
 @pytest.mark.django_db
@@ -116,7 +180,7 @@ def test_with_nothing_left_to_search_the_pool_is_judged(site_config):
         patch.object(qualifier, "predict_probs", return_value=np.array([0.5])),
         patch("openoutfind.core.pipeline.top_up.fetch_qualification_candidates",
               return_value=[_Candidate()]),
-        patch("openoutfind.core.pipeline.top_up.decide", return_value=Decision(False, 0.4)),
+        patch("openoutfind.core.pipeline.top_up.decide", return_value=False),
         patch("openoutfind.core.pipeline.top_up.run_qualification",
               return_value="https://example.com/in/alice/") as qualify,
         patch("openoutfind.core.pipeline.top_up.discover", return_value=False),

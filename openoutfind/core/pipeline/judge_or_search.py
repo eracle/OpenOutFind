@@ -3,49 +3,38 @@
 less.
 
 Exploit asks this when no lead clears the bar (``calibration.current_threshold``). Both
-sides are a fit rate over a cost, in dollars per fit:
+sides are dollars per fit:
 
     judge   = c_verdict / rate(best waiting)
-    search  = (c_arm + c_verdict · new) / (new · rate(arm))      for the best arm
+    search  = cost(arm) / expected fits(arm)
 
 - **rate** is a fit rate on both sides — the GP's score through the isotonic map fitted on
-  the store's verdicts (``frontier.fit_rate_map``) — so a lead waiting and the people a
+  the store's verdicts (``store_snapshot.fit_rate_map``) — so a lead waiting and the people a
   search would bring are weighed on one scale, never the raw score against a mean of raw
   scores;
-- **the arm** is the frontier's best (``frontier.plan``): a search whose new people are
-  expected to fit more often than the best lead waiting, at ``new`` of them for
-  ``c_arm`` (its ready time and their ingest time);
+- **the arm** is the one worth the most at the mean belief (``search_arms.best_expected``),
+  its cost its ready and ingest time and a verdict on each person it brings: the inverse
+  of the value the walk ranks arms on, so the pick and the decision read one number;
 - ``c_verdict`` (``calibration.verdict_cost``) is a verdict's measured time at
   ``run_hour_dollars`` plus its LLM bill, or an agent's fixed cost.
 
 A search is cheap next to a verdict, so this is close to *judge while the best lead
-waiting fits as often as the people the best search would bring*. Before the first round
-there is nothing to weigh, and the pool is judged. **After a round that added leads, the
-pool is judged at least once before the next**: an arm is valued on the GP as the run's
-verdicts leave it, and with no verdict on the new people nothing has tested what the
-round brought. On batch 5 a GP scoring everyone alike put the best waiting lead at the
-base rate round after round, and six rounds fired with no verdict between them. The best
-waiting lead's rate is handed on as the **floor** a round's arms must beat
-(``walk.run_round``).
+waiting fits as often as the people the next search would bring*, whoever the judge is.
+Before the first round there is nothing to weigh, and the pool is judged. **After a round
+that added leads, the pool is judged at least once before the next**: an arm is valued on
+the GP as the run's verdicts leave it, and with no verdict on the new people nothing has
+tested what the round brought. On batch 5 a GP scoring everyone alike put the best waiting
+lead at the base rate round after round, and six rounds fired with no verdict between them.
 """
 from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass
 
 import numpy as np
 from termcolor import colored
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class Decision:
-    """Whether to judge, and the fit rate a search's people must beat to be worth one."""
-
-    judge: bool
-    floor: float
 
 
 def cost_per_fit(cost: float, rate: float) -> float:
@@ -62,45 +51,43 @@ def best_waiting(qualifier, candidates, fit_rate) -> float:
     return float(np.max(fit_rate(probs))) if probs is not None else 0.0
 
 
-def decide(qualifier, candidates) -> Decision:
-    """Judge the best lead waiting, or search, on dollars per fit. Logs both costs, so a
-    run says why it searched or judged."""
+def decide(qualifier, candidates) -> bool:
+    """Whether to judge the best lead waiting rather than search, on dollars per fit. Logs
+    both costs, so a run says why it searched or judged."""
     from openoutfind.core import meter
     from openoutfind.core.ml import calibration
     from openoutfind.core.models import Page
-    from openoutfind.core.pipeline import frontier
+    from openoutfind.core.pipeline import search_arms, store_snapshot
 
     from openoutfind.core.discovery_source import current
 
-    floor = best_waiting(qualifier, candidates, frontier.fit_rate_map())
     if current() is not None:
         # The selected paid source is one bounded page, not a free frontier arm.
         # Exhaust useful local qualification work before asking it for anything.
-        return Decision(True, floor)
+        return True
+
+    waiting = best_waiting(qualifier, candidates, store_snapshot.fit_rate_map())
     if not Page.objects.exists():
-        return Decision(True, floor)
+        return True
     fits, verdicts = meter.totals(meter.POOL_FIT)
     if not verdicts:
         logger.info("  %s the last round's people have no verdict yet (best waiting %.2f) → %s",
-                    colored("·", "cyan", attrs=["bold"]), floor,
+                    colored("·", "cyan", attrs=["bold"]), waiting,
                     colored("judge", "cyan", attrs=["bold"]))
-        return Decision(True, floor)
-    batch = frontier.plan(qualifier, floor)
-    verdict = calibration.verdict_cost()
+        return True
+    arm = search_arms.best_expected(qualifier)
 
-    judge = cost_per_fit(verdict, floor)
-    best = min(batch, key=lambda arm: arm.cost_per_fit(verdict), default=None)
-    search = best.cost_per_fit(verdict) if best is not None else math.inf
+    judge = cost_per_fit(calibration.verdict_cost(), waiting)
+    search = cost_per_fit(arm.cost, arm.expected_fits) if arm else math.inf
     pays = judge <= search
 
-    beyond = (f"{len(batch)} search(es) would beat it, the best {best} at "
-              f"{best.rate:.2f} × ~{best.new:.0f} new" if best else "no search beats it")
+    beyond = f"{arm.rate:.2f} × ~{arm.new:.0f} new" if arm else "no search worth firing"
     logger.info("  %s judge %s/fit (best waiting %.2f; %d of %d fit since the last new "
                 "leads) vs search %s/fit (%s) → %s",
-                colored("·", "cyan", attrs=["bold"]), _dollars(judge), floor,
+                colored("·", "cyan", attrs=["bold"]), _dollars(judge), waiting,
                 int(fits), verdicts, _dollars(search), beyond,
                 colored("judge" if pays else "search", "cyan", attrs=["bold"]))
-    return Decision(pays, floor)
+    return pays
 
 
 def _dollars(value: float) -> str:

@@ -94,7 +94,7 @@ class InitialPopulation(BaseModel):
 
 def as_terms(written: WrittenSearch, country: str):
     """One written search as ``query.Terms``, its state placed inside the market."""
-    from openoutfind.core.pipeline.query import Terms, place_of
+    from openoutfind.core.pipeline.terms import Terms, place_of
 
     return Terms.written(title=written.title, tag=written.tag,
                          place=place_of(written.state, country),
@@ -104,8 +104,8 @@ def as_terms(written: WrittenSearch, country: str):
 def write_initial_population(site_config) -> int:
     """Write the initial population as ``Search`` rows. Returns how many were new.
 
-    The cold start, and the **only** LLM call the walk makes: every later search is a
-    neighbour of a fired one on the lattice, with no model in the loop. Under ``--agent-qualify`` the
+    The cold start, and the **only** LLM call the walk makes: every later search is
+    composed from the store's keywords (``compose``), with no model in the loop. Under ``--agent-qualify`` the
     population is the calling agent's ``--population`` answer instead, or the run stops
     with ``population_pending``.
 
@@ -223,8 +223,8 @@ def generate_anchors(site_config, count: int = ANCHOR_COUNT, existing=()) -> lis
     ``existing`` are the profiles already written — shown to the model so a top-up round
     widens the positive region instead of restating it.
 
-    Best-effort by design: an unanchored install still runs, it just spends its cold
-    phase without a fitted GP, so failure must not propagate to the caller. The one
+    Best-effort by design: a failure must not propagate to the caller, and the walk,
+    which does not start unanchored, checks what came back (``walk._anchor``). The one
     exception is ``population_pending`` under ``--agent-qualify``, which is not a failure
     but the question the calling agent answers with ``--population``.
     """
@@ -293,7 +293,7 @@ def agent_population_answer(site_config, existing=()) -> PopulationAnswer | None
         return answer
     brief = stored()
     raise PopulationPending(
-        f"this store has no searches yet — write the {POPULATION_SIZE} searches of the "
+        f"this store has no cold start yet — write the {POPULATION_SIZE} searches of the "
         f"initial population and {ANCHOR_COUNT} ideal profiles",
         payload={
             "product_docs": site_config.product_docs,
@@ -375,8 +375,10 @@ def ensure_anchors(site_config) -> np.ndarray | None:
     stored — callers treat that as "no anchors", never as an error. A failed fill-up keeps
     whatever is already there.
 
-    Never called once a real lead has qualified: from that point the set is permanent,
-    and callers restore it with ``stored_anchors`` instead of inventing more.
+    Never called on a standing set once a real lead has qualified: from that point the set
+    is permanent, and callers restore it with ``stored_anchors`` instead of inventing more.
+    The walk calls it on a store with none at all — one seeded with marks never ran cold —
+    so every store is anchored.
     """
     from openoutfind.crm.models import Lead
     from openoutfind.discovery import embed_profile

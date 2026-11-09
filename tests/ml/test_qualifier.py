@@ -85,6 +85,21 @@ class TestBayesianQualifierPredict:
         assert prob > 0.7
 
 
+class TestConfidence:
+    def test_it_is_high_at_a_verdict_and_near_zero_far_from_every_one(self):
+        qualifier, pos_emb, _ = _make_trained_qualifier()
+        far = np.random.RandomState(7).randn(384).astype(np.float32) * 10
+
+        near, away = qualifier.confidence(np.stack([pos_emb, far]))
+
+        assert near > 0.5
+        assert away < 0.05
+
+    def test_it_is_none_when_unfitted(self):
+        qualifier = BayesianQualifier(seed=42)
+        assert qualifier.confidence(np.random.randn(1, 384)) is None
+
+
 class TestBaldScores:
     def test_bald_shape(self):
         qualifier, _, _ = _make_trained_qualifier()

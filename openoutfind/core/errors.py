@@ -65,6 +65,10 @@ class ErrorType:
     command plus ``--population '<json>'``.
     """
 
+    UNANCHORED = "unanchored"
+    """The walk would start without the synthetic ideal profiles: ``AI_MODEL`` failed or
+    wrote none. Each round covers them, so nothing is fired; run again."""
+
 
 def format_error(error_type: str, message: str) -> str:
     """The one error line every verb writes: ``error: <type>: <message>``."""

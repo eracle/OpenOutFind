@@ -15,7 +15,9 @@ import pytest
 from openoutfind.core import status as status_module
 from openoutfind.core.errors import ErrorType
 from openoutfind.core.management.commands.status import render
-from openoutfind.crm.models import DealState
+from openoutfind.core.models import Page, PageLead, Search
+from openoutfind.core.pipeline.terms import Terms
+from openoutfind.crm.models import Deal, DealState, Lead, Outcome
 from openoutfind.enrichment import bettercontact
 from tests.factories import DealFactory, LeadFactory
 
@@ -220,7 +222,7 @@ def test_json_is_one_object_and_nothing_else(site_config, configured, has_key, b
 
     document = json.loads(capsys.readouterr().out)  # would raise on any stray line
     assert set(document) == {
-        "config", "brief", "totals", "credits", "hub", "blocked", "next_action",
+        "config", "brief", "walk", "totals", "credits", "hub", "blocked", "next_action",
     }
 
 
@@ -236,6 +238,58 @@ def test_the_brief_in_force_is_reported_and_none_before_one(site_config, configu
 
     assert brief["rules"] == "A fit is: bakers.\nNot a fit: florists."
     assert brief["written_by"] == "--brief"
+
+
+def _chosen_page(expected_count=6.0, expected_rate=0.8, people=()):
+    terms = Terms.written(title="founder", tag="biochar")
+    search = Search.objects.create(key=terms.key, terms=terms.as_json(), leads_found=33)
+    page = Page.objects.create(search=search, number=1, round=2, rows=len(people),
+                               expected_count=expected_count, expected_rate=expected_rate)
+    PageLead.objects.bulk_create([PageLead(page=page, lead=lead) for lead in people])
+
+
+def _person(verdict=None):
+    lead = Lead.objects.create(profile_url=f"https://x/{Lead.objects.count()}")
+    if verdict is not None:
+        Deal.objects.create(lead=lead, state=DealState.QUALIFIED if verdict else DealState.FAILED,
+                            outcome="" if verdict else Outcome.WRONG_FIT)
+    return lead
+
+
+@pytest.mark.django_db
+def test_a_page_reports_what_the_walk_expected_beside_what_came_back(site_config, configured,
+                                                                     has_key, balance, hub):
+    _chosen_page(people=[_person(1), _person(0), _person(0), _person(1), _person()])
+
+    with balance(value=40), hub(balance=0, known=True):
+        [page] = status_module.build_status()["walk"]
+
+    assert (page["expected_count"], page["leads_found"]) == (6.0, 33)
+    assert page["expected_rate"] == 0.8
+    assert (page["people"], page["verdicts"], page["fits"]) == (5, 4, 2)
+    assert page["observed_rate"] == 0.5
+
+
+@pytest.mark.django_db
+def test_a_page_nobody_judged_has_no_observed_rate(site_config, configured, has_key, balance, hub):
+    _chosen_page(people=[_person()])
+
+    with balance(value=40), hub(balance=0, known=True):
+        [page] = status_module.build_status()["walk"]
+
+    assert page["verdicts"] == 0 and page["observed_rate"] is None
+
+
+@pytest.mark.django_db
+def test_human_summary_shows_the_pages_the_walk_chose_and_no_written_one(
+        site_config, configured, has_key, balance, hub):
+    _chosen_page(expected_count=None, expected_rate=None)
+    with balance(value=40), hub(balance=0, known=True):
+        assert "Walk:" not in render(status_module.build_status())
+
+    Page.objects.update(expected_count=6.0, expected_rate=0.8)
+    with balance(value=40), hub(balance=0, known=True):
+        assert "N ~6 of 33 · θ 0.80" in render(status_module.build_status())
 
 
 @pytest.mark.django_db

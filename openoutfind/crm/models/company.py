@@ -1,10 +1,10 @@
-import re
-
 from django.db import models
 from django.utils.translation import gettext_lazy as _
 
-# Employer strings that mean "no company", lowercased with punctuation collapsed to
-# spaces. Each one was seen in a live Lead Finder page stapled to an unrelated domain.
+from openoutfind.core.pipeline.analyzers import words
+
+# Employer strings that mean "no company", as their words joined by spaces. Each one was
+# seen in a live Lead Finder page stapled to an unrelated domain.
 PLACEHOLDER_NAMES = frozenset({
     "self employed",
     "freelance",
@@ -81,8 +81,7 @@ class Company(models.Model):
     @staticmethod
     def is_placeholder(name: str | None) -> bool:
         """Whether ``name`` is a stand-in for "no company" rather than a company."""
-        normalised = " ".join(re.sub(r"[^a-z0-9]+", " ", (name or "").lower()).split())
-        return normalised in PLACEHOLDER_NAMES
+        return " ".join(words(name)) in PLACEHOLDER_NAMES
 
     def size_text(self) -> str:
         """The band as the verdict reads it: ``51–200 employees (LinkedIn)``, or

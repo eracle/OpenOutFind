@@ -10,7 +10,6 @@ from openoutfind.core.conf import CAMPAIGN_CONFIG
 from openoutfind.core.ml import calibration
 from openoutfind.core.ml.qualifier import BayesianQualifier
 from openoutfind.core.models import CalibrationBar, CalibrationDraw
-from openoutfind.core.pipeline.judge_or_search import Decision
 from openoutfind.core.pipeline.top_up import top_up
 from openoutfind.crm.models import DealState, Outcome
 from tests.factories import DealFactory, LeadFactory
@@ -414,7 +413,7 @@ def test_without_a_measured_bar_the_fallback_gates_exploit(site_config):
 
     with (
         patch.object(qualifier, "predict_probs", return_value=np.array([0.5])),
-        patch("openoutfind.core.pipeline.top_up.decide", return_value=Decision(False, 0.5)),
+        patch("openoutfind.core.pipeline.top_up.decide", return_value=False),
         patch("openoutfind.core.pipeline.top_up.fetch_qualification_candidates",
               return_value=[_Candidate()]),
         patch("openoutfind.core.pipeline.top_up.run_qualification") as qualify,

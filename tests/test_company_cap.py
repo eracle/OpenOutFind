@@ -15,7 +15,7 @@ from openoutfind.core.errors import ErrorType, OpenOutFindError
 from openoutfind.core.models import Page, Search
 from openoutfind.core.pipeline.discover import harvest
 from openoutfind.core.pipeline.qualify import fetch_qualification_candidates
-from openoutfind.core.pipeline.query import Terms
+from openoutfind.core.pipeline.terms import Terms
 from openoutfind.crm.models import Company, Deal, DealState, Lead, Outcome
 from openoutfind.discovery import company_key_for
 

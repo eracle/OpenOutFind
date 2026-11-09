@@ -17,8 +17,14 @@ from openoutfind.core.errors import ErrorType
 from openoutfind.core.models import PAGE_SIZE, Page, PageLead, Search
 from openoutfind.core.pipeline import walk
 from openoutfind.core.pipeline.discover import discover
-from openoutfind.core.pipeline.icp import InitialPopulation
-from openoutfind.core.pipeline.query import Terms
+from openoutfind.core.pipeline.search_arms import Arm
+from openoutfind.core.pipeline.icp import (
+    ANCHOR_COUNT,
+    Anchor,
+    InitialPopulation,
+    anchor_leads,
+)
+from openoutfind.core.pipeline.terms import Terms
 from openoutfind.crm.models import Deal, DealState, Lead, Outcome
 from openoutfind.discovery import Fetched, Page as LeadFinderPage
 from openoutfind.enrichment.bettercontact import BetterContactUnavailable
@@ -82,12 +88,24 @@ def site(db, configure):
     return SiteConfig.load()
 
 
-def _run(site, finder, floor=0.0):
-    with (
-        patch("openoutfind.core.pipeline.icp._population_from_llm", return_value=_population()),
-        patch("openoutfind.discovery.search", side_effect=finder),
-    ):
-        return walk.run_round(site, None, floor)
+ANCHORS = [Anchor(f"head of procurement cannabis {i}",
+                  {"contact_job_title": "head of procurement",
+                   "company_keywords": "cannabis extraction",
+                   "contact_location_country": "united states"})
+           for i in range(ANCHOR_COUNT)]
+
+
+def _cold_start(anchors=ANCHORS):
+    """The model's two cold-start answers: the written population and the anchors."""
+    return (patch("openoutfind.core.pipeline.icp._population_from_llm",
+                  return_value=_population()),
+            patch("openoutfind.core.pipeline.icp.generate_anchors", return_value=anchors))
+
+
+def _run(site, finder, anchors=ANCHORS):
+    population, anchored = _cold_start(anchors)
+    with population, anchored, patch("openoutfind.discovery.search", side_effect=finder):
+        return walk.run_round(site, None)
 
 
 def _judge(title_fits: str):
@@ -111,10 +129,47 @@ class TestTheFirstRound:
 
     def test_it_values_nothing(self, site):
         """None of its people judged yet: there is nothing to value it on."""
-        with patch.object(walk.frontier, "plan") as plan:
+        with patch.object(walk.search_arms, "next_round") as planned:
             _run(site, FakeLeadFinder())
 
-        plan.assert_not_called()
+        planned.assert_not_called()
+
+    def test_it_writes_the_anchors_with_the_population(self, site):
+        """A store seeded with marks starts with fits, so it never ran cold — batch 5
+        had none."""
+        mark = Lead.objects.create(profile_url="https://linkedin.com/in/mark", marked=True)
+        Deal.objects.create(lead=mark, state=DealState.QUALIFIED)
+
+        _run(site, FakeLeadFinder())
+
+        assert [lead.profile_text for lead in anchor_leads()] == [a.profile for a in ANCHORS]
+
+    def test_without_anchors_it_fires_nothing(self, site):
+        finder = FakeLeadFinder()
+
+        with pytest.raises(walk.Unanchored):
+            _run(site, finder, anchors=[])
+
+        assert finder.calls == [] and not Page.objects.exists()
+
+    def test_a_store_with_searches_and_no_anchors_writes_them_before_its_next_round(self, site):
+        _run(site, FakeLeadFinder())
+        Lead.objects.filter(synthetic=True).delete()
+        _judge("founder")
+
+        _run(site, FakeLeadFinder())
+
+        assert len(anchor_leads()) == ANCHOR_COUNT
+        assert Page.objects.filter(round=1).exists()
+
+    def test_a_standing_set_is_never_topped_up(self, site):
+        _run(site, FakeLeadFinder())
+        Lead.objects.filter(synthetic=True).exclude(pk=anchor_leads()[0].pk).delete()
+        _judge("founder")
+
+        _run(site, FakeLeadFinder())
+
+        assert len(anchor_leads()) == 1
 
     def test_every_search_rides_the_customers_shape(self, site):
         _run(site, FakeLeadFinder())
@@ -132,6 +187,34 @@ class TestTheFirstRound:
 
 
 class TestTakingPagesIn:
+    def test_a_written_page_holds_no_expectation(self, site):
+        _run(site, FakeLeadFinder())
+
+        assert not Page.objects.filter(expected_count__isnull=False).exists()
+        assert not Page.objects.filter(expected_rate__isnull=False).exists()
+
+    def test_a_page_the_walk_chose_keeps_what_it_expected(self, site):
+        terms = Terms.written(title="founder")
+        arm = Arm(terms, 1, "swap", count=6.0, theta=0.8)
+        _run(site, FakeLeadFinder())
+        fetched = Fetched(LeadFinderPage([{"contact_job_title": "founder"}], 33), 1.0)
+
+        page, _ = walk._take_in(arm, fetched, 3)
+
+        page.refresh_from_db()
+        assert (page.expected_count, page.expected_rate) == (6.0, 0.8)
+        assert page.search.leads_found == 33
+
+    def test_a_round_the_walk_chose_keeps_its_expectation_on_the_page(self, site):
+        _run(site, FakeLeadFinder())
+        _judge("founder")
+
+        _run(site, FakeLeadFinder())
+
+        chosen = Page.objects.get(round=1)
+        assert chosen.expected_count > 0
+        assert 0 < chosen.expected_rate < 1
+
     def test_a_page_records_every_person_it_returned(self, site):
         """Known people too: a page that returns them is evidence about its search."""
         known = Lead.objects.create(profile_url="https://linkedin.com/in/founder-0-0",
@@ -151,6 +234,31 @@ class TestTakingPagesIn:
 
         assert embeddings.embed_texts.call_count == 1
         assert len(embeddings.embed_texts.call_args.args[0]) == 3 * POPULATION
+
+    def test_a_round_given_to_the_hub_embeds_no_text_twice(self, db, configure):
+        """A stored person's vector goes out as it is; a dropped row is embedded once."""
+        from openoutfind.core.ml import embeddings
+
+        configure(bettercontact_api_key="k", product_docs="cannabis packaging",
+                  campaign_target="buyers at cannabis brands", contacts_api_token="tok")
+        finder = FakeLeadFinder()
+        shared = _row("https://linkedin.com/in/shared", "founder", "Shared")
+        dropped = {"contact_linkedin_profile_url": "https://linkedin.com/in/forgotten",
+                   "contact_job_title": "former buyer"}
+
+        def both(api_key, filters, limit, offset, first_poll_s):
+            page, ready = finder(api_key, filters, limit, offset, first_poll_s)
+            return Fetched(LeadFinderPage(page.leads + [shared, dropped], page.leads_found), ready)
+
+        with patch("openoutfind.contacts.service._send") as send:
+            _run(SiteConfig.load(), both)
+
+        embedded = [text for call in embeddings.embed_texts.call_args_list
+                    for text in call.args[0]]
+        assert len(embedded) == len(set(embedded)) == 3 * POPULATION + 2
+        sent = [record for call in send.call_args_list for record in call.args[1]["profiles"]]
+        assert len(sent) == (3 + 2) * POPULATION
+        assert all(len(record["embedding"]) == 384 for record in sent)
 
     def test_a_person_on_two_pages_is_stored_once_and_on_both(self, site):
         finder = FakeLeadFinder()
@@ -186,12 +294,9 @@ class TestTakingPagesIn:
 
     def test_an_outage_leaves_the_search_on_the_frontier(self, site):
         _run(site, FakeLeadFinder(outages={"founder"}))
-        _judge("purchasing")
-        finder = FakeLeadFinder()
-        with patch.dict(walk.WALK_CONFIG, {"batch": 500}):
-            _run(site, finder)
 
-        assert ("founder", 0) in finder.calls
+        assert any(arm.terms.title == {"founder"} and arm.number == 1
+                   for arm in walk.search_arms.Frontier(None).arms())
 
     @pytest.mark.parametrize("error_type", [ErrorType.PROVIDER_AUTH,
                                             ErrorType.PROVIDER_RATE_LIMITED])
@@ -202,7 +307,7 @@ class TestTakingPagesIn:
 
 
 class TestTheNextRound:
-    def test_it_fires_the_frontiers_batch(self, site):
+    def test_it_fires_one_search(self, site):
         _run(site, FakeLeadFinder())
         _judge("founder")
         finder = FakeLeadFinder()
@@ -210,18 +315,19 @@ class TestTheNextRound:
         fired = _run(site, finder)
 
         assert fired.number == 1
-        assert 0 < len(finder.calls) <= WALK_CONFIG["batch"]
-        assert set(Page.objects.filter(round=1).values_list("round", flat=True)) == {1}
+        assert len(finder.calls) == 1
+        assert Page.objects.filter(round=1).count() == 1
 
-    def test_the_search_whose_people_fit_pages_deeper(self, site):
-        _run(site, FakeLeadFinder())
+    def test_the_first_search_fired_holds_the_fits(self, site):
+        """Five founders judged fits outnumber the three anchors."""
+        _run(site, FakeLeadFinder(rows=5))
         _judge("founder")
         finder = FakeLeadFinder()
 
         _run(site, finder)
 
-        assert ("founder", PAGE_SIZE) in finder.calls
-        assert all(offset == 0 for title, offset in finder.calls if title != "founder")
+        (title, _), = finder.calls
+        assert "founder" in title.split()
 
     def test_a_drained_search_is_neither_paged_nor_narrowed(self, site):
         """Its first page held everyone the provider counts: anything holding all its
@@ -235,7 +341,7 @@ class TestTheNextRound:
         assert all(offset == 0 for _, offset in finder.calls)
         founder = Terms.written(title="founder")
         assert not any(search.query.holds_all_of(founder)
-                       for search in Search.objects.filter(origin=Search.Origin.NEIGHBOUR))
+                       for search in Search.objects.filter(origin=Search.Origin.DRAWN))
 
     def test_no_arm_repeats_a_fired_search_or_holds_a_dead_ones_terms(self, site):
         _run(site, FakeLeadFinder(dead={"purchasing"}))
@@ -243,17 +349,18 @@ class TestTheNextRound:
         _run(site, FakeLeadFinder())
 
         dead = Terms.written(title="purchasing")
-        for search in Search.objects.filter(origin=Search.Origin.NEIGHBOUR):
+        for search in Search.objects.filter(origin=Search.Origin.DRAWN):
             assert not search.query.holds_all_of(dead)
         assert Search.objects.filter(pages__number=1).count() == Page.objects.filter(
             number=1).count()
 
-    def test_nothing_is_fired_when_no_arm_beats_the_floor(self, site):
+    def test_nothing_is_fired_when_no_arm_is_expected_to_bring_a_fit(self, site):
         _run(site, FakeLeadFinder())
         _judge("founder")
         finder = FakeLeadFinder()
 
-        assert _run(site, finder, floor=1.0) is None
+        with patch.object(walk.search_arms, "FITS_WORTH_A_SEARCH", 1e9):
+            assert _run(site, finder) is None
         assert finder.calls == []
 
     def test_a_walk_with_nothing_left_to_fire_says_so(self, site):
@@ -292,14 +399,7 @@ class TestDiscover:
         fired.assert_not_called()
 
     def test_a_fired_round_is_work(self, site):
-        with (
-            patch("openoutfind.core.pipeline.icp._population_from_llm",
-                  return_value=_population()),
-            patch("openoutfind.discovery.search", side_effect=FakeLeadFinder()),
-        ):
+        population, anchored = _cold_start()
+        with population, anchored, patch("openoutfind.discovery.search",
+                                         side_effect=FakeLeadFinder()):
             assert discover(site) is True
-
-    def test_the_floor_reaches_the_round(self, site):
-        with patch.object(walk, "run_round", return_value=None) as fired:
-            discover(site, None, 0.4)
-        assert fired.call_args.args[2] == 0.4

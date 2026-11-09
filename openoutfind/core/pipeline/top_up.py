@@ -17,13 +17,16 @@ crown jewel and it is ported verbatim:
 
 - **cold phase** (``is_cold`` — invented anchor positives still padding the positive
   class) — judge the strongest lead every pass, and fire a round of the walk only when
-  the pool is empty. A round is 10 pages, up to 2,000 people, so the first one fills the
+  the pool is empty. The first round is 4 pages, up to 800 people, so it fills the
   pool for many verdicts; ranking still leans on the anchors' *guess* at the ICP, so
-  nothing observed says a second round beats judging what the first brought. Only an
-  empty pool after a round stalls.
+  nothing observed says a second round beats judging what the first brought. A round
+  adding nobody is still a move: only a frontier with nobody new left stalls.
 - **explore** (``neg ≤ pos``) — label the most *informative* lead (max BALD), with no
   confidence gate: a low-confidence lead is exactly the label that teaches the GP
   most, so filtering by confidence would throw away the point of exploring.
+- **probe** (a fired search whose people hold fewer than ``PROBE_VERDICTS`` verdicts) —
+  judge one person drawn at random from what it brought, ahead of everything below: the
+  walk values the search's next page on those verdicts. See ``core/pipeline/probe.py``.
 - **calibrate** (fewer than √N calibration verdicts, N the unjudged pool) — judge one
   lead drawn at random from the thinnest score band, ahead of explore and exploit, and
   once √N are in, measure the bar exploit reads. See ``core/ml/calibration.py``.
@@ -32,8 +35,7 @@ crown jewel and it is ported verbatim:
   measured), the one whose qualification will buy an email rather than
   park at QUALIFIED. When none clears it, **judge or search, whichever is cheaper per
   fit** on this run's measured costs (``judge_or_search``): judging takes the best lead
-  by P from the whole pool, searching fires the walk's next round, whose searches must
-  each bring people fitting more often than that lead. The bar itself
+  by P from the whole pool, searching fires the walk's next round. The bar itself
   never moves here — a pass that discovers leaves the class balance untouched, and when
   the walk has nothing left to fire the pool is judged to its end.
 
@@ -50,6 +52,7 @@ from termcolor import colored
 
 from openoutfind.core.ml import calibration
 from openoutfind.core.ml.qualifier import BayesianQualifier
+from openoutfind.core.pipeline import probe
 from openoutfind.core.pipeline.discover import discover
 from openoutfind.core.pipeline.icp import ANCHOR_COUNT
 from openoutfind.core.pipeline.judge_or_search import decide
@@ -72,15 +75,17 @@ def top_up(site_config, qualifier: BayesianQualifier) -> bool:
         logger.info("  %s cold phase — %d/%d real positive(s), exploiting the anchors' guess",
                    colored("·", "cyan", attrs=["bold"]),
                    qualifier.n_real_positives, ANCHOR_COUNT)
-        candidates = fetch_qualification_candidates()
-        if not candidates:
-            discover(site_config, qualifier)
-            candidates = fetch_qualification_candidates()
-        if not candidates:
-            return False
-        return run_qualification(site_config, qualifier, candidates=candidates) is not None
+        return _judge_or_page_one_in(site_config, qualifier, fetch_qualification_candidates())
 
     candidates = fetch_qualification_candidates()
+
+    # Probe — a few random verdicts on what each search brought, ahead of everything: the
+    # walk values a search's next page on them, and no other move reaches those people.
+    # See `core/pipeline/probe.py`.
+    lead = probe.next_lead(candidates)
+    if lead is not None:
+        return run_qualification(site_config, qualifier, candidates=[lead],
+                                 preselected=True) is not None
 
     # Calibrate — ahead of both, because what exploit can judge depends on the bar this
     # measures. It waits on neither the balance nor the bar, so it cannot stall the way
@@ -114,18 +119,13 @@ def top_up(site_config, qualifier: BayesianQualifier) -> bool:
         # Falling straight to discovery here cost a live install 14h33m with 3 real
         # positives and a pool that topped out at P=0.37, so the rule judges a fresh
         # pool before its first verdict is in.
-        floor = 0.0
-        if candidates:
-            decision = decide(qualifier, candidates)
-            if decision.judge:
-                return run_qualification(site_config, qualifier,
-                                         candidates=candidates) is not None
-            floor = decision.floor
+        if candidates and decide(qualifier, candidates):
+            return run_qualification(site_config, qualifier, candidates=candidates) is not None
         # A fired round is the work, however much of it we had already seen. Reading
         # *new leads* here is what once stopped a live run with 100 rows in hand: the page
         # was all familiar profiles, so discovery reported nothing and the whole job
         # ended `goal_unreached` with the walk untouched.
-        if discover(site_config, qualifier, floor):
+        if discover(site_config, qualifier):
             return True
         # Nothing left to search, so the pool is all there is.
         return bool(candidates) and run_qualification(
@@ -134,6 +134,12 @@ def top_up(site_config, qualifier: BayesianQualifier) -> bool:
     # Explore — label the most informative lead we have. The GP is fitted here, so it
     # ranks the pool and there is a best lead to pick; an empty pool is the one case
     # with no lead to label, so page one in first.
+    return _judge_or_page_one_in(site_config, qualifier, candidates)
+
+
+def _judge_or_page_one_in(site_config, qualifier: BayesianQualifier, candidates: list) -> bool:
+    """Judge the pool, firing a round first if it is empty. False only when the pool is
+    empty and the walk has nothing left to fire."""
     if not candidates:
         if not discover(site_config, qualifier):
             return False

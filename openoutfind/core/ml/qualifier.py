@@ -291,7 +291,7 @@ class BayesianQualifier(GPBaldQualifier):
     # window, when a handful of fits is outweighed by the rejections around them; past
     # it, subsampling drops verdicts the run paid for (batch 5 at 54 fits kept 108 of
     # 375 no-fits, so a fresh one was usually left out and its lookalike topped the
-    # pool), and scores need only rank — ``frontier.fit_rate_map`` turns them into fit
+    # pool), and scores need only rank — ``store_snapshot.fit_rate_map`` turns them into fit
     # rates. Every verdict at 12% fits ranks only because the GP centres its labels
     # (``openoutlearn.qualifier.gpr_for``); uncentred, it fitted a flat score. 10 is a
     # placeholder until a replay measures where balancing stops helping.
@@ -416,6 +416,25 @@ class BayesianQualifier(GPBaldQualifier):
             return None
         _, std = _gpr_predict(self._pipeline, embeddings)
         return std
+
+    def confidence(self, embeddings: np.ndarray) -> np.ndarray | None:
+        """How much of the GP's prior variance the verdicts have removed at each embedding:
+        about 0.9 on a verdict (``alpha`` keeps the rest), 0 far from every one.
+
+        Far from its verdicts the GP's score falls back to its prior mean, the base rate,
+        whoever the person is: on batch 6 the 780 people the walk brought sat at 0.05 and
+        the judged at 0.90. Returns None when the model cannot be fitted yet.
+        """
+        from sklearn.pipeline import Pipeline
+
+        if not self._fit_if_needed():
+            return None
+        X = np.asarray(embeddings, dtype=np.float64).reshape(len(embeddings), -1)
+        X = Pipeline(self._pipeline.steps[:-1]).transform(X)
+        gpr = self._pipeline.named_steps["gpr"]
+        _, std = gpr.predict(X, return_std=True)
+        prior = np.sqrt(gpr.kernel_.diag(X)) * gpr._y_train_std  # normalize_y scales both
+        return np.clip(1.0 - (std / prior) ** 2, 0.0, 1.0)
 
     def acquisition_mode(self, embeddings: np.ndarray | None = None) -> str | None:
         """The live acquisition axis: ``"exploit (p)"``, ``"explore (BALD)"``, or None.

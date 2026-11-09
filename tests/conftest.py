@@ -52,7 +52,8 @@ def _mock_embeddings(request):
 
 @pytest.fixture(autouse=True)
 def _no_fit_survives_a_test():
-    """``qualifier_for`` keeps the fitted model, keyed on the labels.
+    """``qualifier_for`` keeps the fitted model, keyed on the labels, and ``belief`` its
+    posterior, keyed on the pages and verdicts.
 
     That key cannot go stale inside a run, but a test database reuses primary keys, so
     two tests can share one label set and different intent. Each test starts from an
@@ -60,15 +61,18 @@ def _no_fit_survives_a_test():
     """
     import openoutfind.core.ml.qualifier as qualifier_module
     import openoutfind.core.cycle as cycle_module
-    import openoutfind.core.pipeline.frontier as frontier_module
+    import openoutfind.core.pipeline.belief as belief_module
+    import openoutfind.core.pipeline.store_snapshot as store_snapshot_module
 
     qualifier_module._FITTED = None
     cycle_module._scored_at = None
-    frontier_module._FIT_RATE = None
+    store_snapshot_module.FIT_RATE_CACHE = None
+    belief_module.FITTED = None
     yield
     qualifier_module._FITTED = None
     cycle_module._scored_at = None
-    frontier_module._FIT_RATE = None
+    store_snapshot_module.FIT_RATE_CACHE = None
+    belief_module.FITTED = None
 
 
 @pytest.fixture

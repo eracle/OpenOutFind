@@ -4,7 +4,7 @@
 Covers the running means (``core/meter.py``), where the run takes its verdict
 measurements, and the rule itself (``core/pipeline/judge_or_search.py``). Where a round
 measures itself is in ``tests/test_walk.py``, and how the frontier values its arms in
-``tests/test_frontier.py``.
+``tests/test_search_arms.py``.
 """
 from __future__ import annotations
 
@@ -107,17 +107,18 @@ class TestVerdictMeasurements:
 
 # ── The rule ──
 
-def _arm(rate, new=20.0, cost=0.0001):
-    from openoutfind.core.pipeline.frontier import Arm
-    from openoutfind.core.pipeline.query import Terms
+def _arm(rate, new=20.0, cost=None):
+    """An arm whose cost is, unless given, a verdict at $0.05 on each person it brings."""
+    from openoutfind.core.pipeline.search_arms import Arm
+    from openoutfind.core.pipeline.terms import Terms
 
-    return Arm(Terms.written(title="production", tag="cannabis"), 1, "swap",
-               new=new, rate=rate, cost=cost)
+    return Arm(Terms.written(title="production", tag="cannabis"), 1, "swap", new=new,
+               rate=rate, cost=0.0001 + 0.05 * new if cost is None else cost)
 
 
-def _decide(*, waiting, batch, verdict=0.05, fired=True, judged=True):
+def _decide(*, waiting, arm, verdict=0.05, fired=True, judged=True):
     """``decide`` with a verdict at ``verdict`` dollars, the best lead waiting at a fit
-    rate of ``waiting`` and the frontier's batch at ``batch``; ``judged``, a verdict
+    rate of ``waiting`` and the frontier's best arm at ``arm``; ``judged``, a verdict
     given since the last round's new leads."""
     from openoutfind.core.models import Page, Search
 
@@ -126,10 +127,10 @@ def _decide(*, waiting, batch, verdict=0.05, fired=True, judged=True):
         Page.objects.create(search=search, number=1, round=0, rows=3)
     if judged and not meter.totals(meter.POOL_FIT)[1]:
         meter.record(meter.POOL_FIT, 0)
-    plan = patch("openoutfind.core.pipeline.frontier.plan", return_value=batch)
+    plan = patch("openoutfind.core.pipeline.search_arms.best_expected", return_value=arm)
     with (
         plan as planned,
-        patch("openoutfind.core.pipeline.frontier.fit_rate_map", return_value=lambda p: p),
+        patch("openoutfind.core.pipeline.store_snapshot.fit_rate_map", return_value=lambda p: p),
         patch.object(judge_or_search, "best_waiting", return_value=waiting),
         patch("openoutfind.core.ml.calibration.verdict_cost", return_value=verdict),
     ):
@@ -140,8 +141,8 @@ def _decide(*, waiting, batch, verdict=0.05, fired=True, judged=True):
 @pytest.mark.django_db
 class TestTheRule:
     def test_before_the_first_round_the_pool_is_judged(self):
-        decision, plan = _decide(waiting=0.1, batch=[_arm(0.5)], fired=False)
-        assert decision.judge is True
+        decision, plan = _decide(waiting=0.1, arm=_arm(0.5), fired=False)
+        assert decision is True
         plan.assert_not_called()
 
     def test_a_round_that_added_leads_is_judged_before_the_next(self, caplog):
@@ -149,48 +150,55 @@ class TestTheRule:
         meter.record(meter.POOL_FIT, 1)
         meter.reset(meter.POOL_FIT)  # what a round adding leads does
         with caplog.at_level("INFO"):
-            decision, plan = _decide(waiting=0.12, batch=[_arm(0.5)], judged=False)
+            decision, plan = _decide(waiting=0.12, arm=_arm(0.5), judged=False)
 
-        assert decision == judge_or_search.Decision(True, 0.12)
+        assert decision is True
         plan.assert_not_called()
         assert "no verdict yet" in caplog.text
 
     def test_one_verdict_after_a_round_lets_the_rule_weigh_again(self):
-        decision, _ = _decide(waiting=0.12, batch=[_arm(0.5)])
-        assert decision.judge is False
+        decision, _ = _decide(waiting=0.12, arm=_arm(0.5))
+        assert decision is False
 
     def test_a_best_lead_below_what_a_search_would_bring_is_left_for_a_search(self):
         """The batch-5 shape: the pool's best is off-industry, a search's people fit more."""
-        decision, _ = _decide(waiting=0.15, batch=[_arm(0.3)])
-        assert decision == judge_or_search.Decision(False, 0.15)
-
-    def test_the_batch_is_asked_for_people_beating_the_best_waiting(self):
-        _, plan = _decide(waiting=0.15, batch=[_arm(0.3)])
-        assert plan.call_args.args[1] == 0.15
+        decision, _ = _decide(waiting=0.15, arm=_arm(0.3))
+        assert decision is False
 
     def test_a_best_lead_fitting_like_the_best_search_is_judged(self):
-        decision, _ = _decide(waiting=0.3, batch=[_arm(0.3)])
-        assert decision.judge is True
+        decision, _ = _decide(waiting=0.3, arm=_arm(0.3))
+        assert decision is True
+
+    def test_the_search_side_pays_a_verdict_for_each_person_it_brings(self):
+        """Without that bill a page would look cheaper than judging at the same fit rate."""
+        unbilled, _ = _decide(waiting=0.3, arm=_arm(0.3, cost=0.0001))
+        billed, _ = _decide(waiting=0.3, arm=_arm(0.3))
+
+        assert (unbilled, billed) == (False, True)
 
     def test_with_no_search_worth_firing_the_pool_is_judged(self):
-        decision, _ = _decide(waiting=0.1, batch=[])
-        assert decision.judge is True
+        decision, _ = _decide(waiting=0.1, arm=None)
+        assert decision is True
+
+    def test_with_no_search_and_no_lead_worth_a_verdict_the_pool_is_still_judged(self):
+        decision, _ = _decide(waiting=0.0, arm=None)
+        assert decision is True
 
     def test_a_dearer_search_keeps_the_run_on_the_pool_longer(self):
-        cheap, _ = _decide(waiting=0.25, batch=[_arm(0.3, cost=0.0001)])
-        dear, _ = _decide(waiting=0.25, batch=[_arm(0.3, new=2.0, cost=1.0)])
+        cheap, _ = _decide(waiting=0.25, arm=_arm(0.3))
+        dear, _ = _decide(waiting=0.25, arm=_arm(0.3, new=2.0, cost=1.0))
 
-        assert (cheap.judge, dear.judge) == (False, True)
+        assert (cheap, dear) == (False, True)
 
     def test_the_decision_is_logged_with_both_costs(self, caplog):
         meter.record(meter.POOL_FIT, 0)
         meter.record(meter.POOL_FIT, 0)
         with caplog.at_level("INFO"):
-            _decide(waiting=0.1, batch=[_arm(0.3)])
+            _decide(waiting=0.1, arm=_arm(0.3))
 
         assert "judge $" in caplog.text
         assert "0 of 2 fit" in caplog.text
-        assert "1 search(es) would beat it" in caplog.text
+        assert "0.30 × ~20 new" in caplog.text
         assert "→" in caplog.text and "search" in caplog.text
 
 
