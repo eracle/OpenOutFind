@@ -134,6 +134,17 @@ def company_tags(text: str) -> list[tuple[str, ...]]:
     return [phrase for tag in (text or "").split(",") if (phrase := phrase_words(tag))]
 
 
+def sub_phrases(tag: tuple[str, ...]) -> list[tuple[str, ...]]:
+    """Every phrase a tag search matches inside ``tag``: its words adjacent and in order.
+
+    For matching only, never a keyword: ``pre`` from ``pre rolls`` reaches
+    ``pre-seed venture capital`` and ``pre-k to 5th grade``, 6,512 founders against the
+    71 tagged ``pre rolls``. A search holds a whole tag (``company_tags``).
+    """
+    return [tag[start:end] for start in range(len(tag))
+            for end in range(start + 1, len(tag) + 1)]
+
+
 def holds_phrase(longer: tuple[str, ...], phrase: tuple[str, ...]) -> bool:
     """Whether ``phrase`` sits inside ``longer``, adjacent and in order."""
     span = len(phrase)

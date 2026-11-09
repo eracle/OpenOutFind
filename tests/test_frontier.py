@@ -99,6 +99,17 @@ class TestPeople:
             people.tag_vocabulary())
         assert people.states_in("United States") == {"ohio"}
 
+    def test_the_vocabulary_holds_whole_tags_and_a_phrase_inside_one_still_matches(self):
+        """`pre` from `pre-rolls` brought 6,512 founders of pre-seed funds and pre-k schools."""
+        held = _lead("Founder", "pre-rolls, health care, cannabis extraction", "Ohio")
+
+        people = People.load({})
+
+        assert people.tag_vocabulary() == {
+            ("pre", "rolls"), ("health", "care"), ("cannabis", "extraction")}
+        assert people.match(Terms.written(title="founder", tag="cannabis")) == {held.pk}
+        assert people.match(Terms.written(title="founder", tag="pre")) == {held.pk}
+
     def test_a_store_with_nobody_scored_reads_as_neutral(self):
         _lead()
         assert People.load({}).base_rate() == frontier.NEUTRAL_RATE

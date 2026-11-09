@@ -4,7 +4,7 @@ import pytest
 
 from openoutfind.core.pipeline.analyzers import (
     company_tags, holds_phrase, phrase_words, query_title_words, standalone_title_words,
-    title_words, words,
+    sub_phrases, title_words, words,
 )
 
 
@@ -102,3 +102,8 @@ class TestTagAnalyzer:
 
     def test_a_tag_list_is_split_on_commas(self):
         assert company_tags("cannabis, thc vape, ") == [("cannabis",), ("thc", "vape")]
+
+    def test_a_tag_search_matches_every_phrase_inside_a_tag(self):
+        """`pre` matches `pre-rolls`, and `pre-seed venture capital` with it."""
+        assert set(sub_phrases(("pre", "rolls"))) == {("pre",), ("rolls",), ("pre", "rolls")}
+        assert sub_phrases(()) == []

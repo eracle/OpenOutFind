@@ -56,7 +56,7 @@ import numpy as np
 from openoutfind.core.conf import CAMPAIGN_CONFIG
 from openoutfind.core.pipeline import belief, compose
 from openoutfind.core.pipeline.analyzers import (
-    company_tags, is_stopword_phrase, standalone_title_words, title_words,
+    company_tags, is_stopword_phrase, standalone_title_words, sub_phrases, title_words,
 )
 from openoutfind.core.pipeline.terms import Terms, split_place
 
@@ -176,6 +176,7 @@ class People:
         self.everyone: set[int] = set()
         self._index: dict[tuple, set[int]] = defaultdict(set)
         self._title_words: set[str] = set()
+        self._tags: set[tuple[str, ...]] = set()
         self._states: dict[str, set[str]] = defaultdict(set)
         for pk, company_id, fields in rows:
             self.everyone.add(pk)
@@ -186,6 +187,7 @@ class People:
 
     def _take_vocabulary(self, fields: dict) -> None:
         self._title_words |= standalone_title_words(fields.get("contact_job_title", ""))
+        self._tags.update(company_tags(fields.get("company_keywords", "")))
         country = str(fields.get("contact_location_country") or "").strip().lower()
         state = str(fields.get("contact_location_state") or "").strip().lower()
         if country and state:
@@ -197,9 +199,9 @@ class People:
         return self._title_words
 
     def tag_vocabulary(self) -> set[tuple[str, ...]]:
-        """Every phrase inside a tag the store's people hold, never stopwords alone."""
-        return {key[1] for key in self._index if key[0] == "tag"
-                and not is_stopword_phrase(key[1])}
+        """Every whole tag the store's people hold, never a phrase inside one
+        (``analyzers.sub_phrases``) and never stopwords alone."""
+        return {tag for tag in self._tags if not is_stopword_phrase(tag)}
 
     def states_in(self, country: str) -> set[str]:
         """The states the store's people live in inside ``country``."""
@@ -271,9 +273,8 @@ def _index_keys(fields: dict):
     for word in title_words(fields.get("contact_job_title", "")):
         yield ("title", word)
     for tag in company_tags(fields.get("company_keywords", "")):
-        for start in range(len(tag)):
-            for end in range(start + 1, len(tag) + 1):
-                yield ("tag", tag[start:end])
+        for phrase in sub_phrases(tag):
+            yield ("tag", phrase)
     if seniority := str(fields.get("contact_seniority") or "").strip().lower():
         yield ("seniority", seniority)
     if country := str(fields.get("contact_location_country") or "").strip().lower():
