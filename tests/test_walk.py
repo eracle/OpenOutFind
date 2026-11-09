@@ -17,7 +17,7 @@ from openoutfind.core.errors import ErrorType
 from openoutfind.core.models import PAGE_SIZE, Page, PageLead, Search
 from openoutfind.core.pipeline import walk
 from openoutfind.core.pipeline.discover import discover
-from openoutfind.core.pipeline.frontier import Arm
+from openoutfind.core.pipeline.search_arms import Arm
 from openoutfind.core.pipeline.icp import (
     ANCHOR_COUNT,
     Anchor,
@@ -129,7 +129,7 @@ class TestTheFirstRound:
 
     def test_it_values_nothing(self, site):
         """None of its people judged yet: there is nothing to value it on."""
-        with patch.object(walk.frontier, "next_round") as planned:
+        with patch.object(walk.search_arms, "next_round") as planned:
             _run(site, FakeLeadFinder())
 
         planned.assert_not_called()
@@ -296,7 +296,7 @@ class TestTakingPagesIn:
         _run(site, FakeLeadFinder(outages={"founder"}))
 
         assert any(arm.terms.title == {"founder"} and arm.number == 1
-                   for arm in walk.frontier.Frontier(None).arms())
+                   for arm in walk.search_arms.Frontier(None).arms())
 
     @pytest.mark.parametrize("error_type", [ErrorType.PROVIDER_AUTH,
                                             ErrorType.PROVIDER_RATE_LIMITED])
@@ -359,7 +359,7 @@ class TestTheNextRound:
         _judge("founder")
         finder = FakeLeadFinder()
 
-        with patch.object(walk.frontier, "FITS_WORTH_A_SEARCH", 1e9):
+        with patch.object(walk.search_arms, "FITS_WORTH_A_SEARCH", 1e9):
             assert _run(site, finder) is None
         assert finder.calls == []
 

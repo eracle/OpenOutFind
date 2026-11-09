@@ -5,7 +5,7 @@ The initial population is written whole by the LLM (``icp.write_initial_populati
 the first round fires it whole: nothing is known yet to choose among its searches by.
 Every later round is one search, one blocking step of the run:
 
-1. **Read the frontier** (``frontier``) as the store stands now, after the run has judged
+1. **Read the frontier** (``search_arms``) as the store stands now, after the run has judged
    what the last round brought in: every fired search's next page, every unfired written
    search, and the searches composed from every keyword the store holds (``compose``).
 2. **Fire the search whose page brings the most fits at its mean plus one σ**
@@ -42,7 +42,7 @@ from dataclasses import dataclass
 from termcolor import colored
 
 from openoutfind.core.errors import ErrorType, OpenOutFindError
-from openoutfind.core.pipeline import frontier
+from openoutfind.core.pipeline import search_arms
 
 logger = logging.getLogger(__name__)
 
@@ -209,8 +209,8 @@ def run_round(site_config, qualifier) -> Round | None:
     last = Page.objects.aggregate(Max("round"))["round__max"]
     number = 0 if last is None else last + 1
 
-    arms = (frontier.written_arms() if last is None
-            else frontier.next_round(qualifier, number))
+    arms = (search_arms.written_arms() if last is None
+            else search_arms.next_round(qualifier, number))
     if not arms:
         return None
     results = _fire_all(arms, site_config.bettercontact_api_key)

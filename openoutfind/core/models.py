@@ -117,7 +117,7 @@ class PageLead(models.Model):
 
     Whether the person was new to the store or not: a person on several pages is
     evidence about each, and the first page that holds them is the one that brought them
-    in (``frontier`` reads a page's novelty from that). Rows dropped for no headline or a company at its cap are not
+    in (``search_arms`` reads a page's novelty from that). Rows dropped for no headline or a company at its cap are not
     here, and neither is a marked lead or an anchor.
     """
 

@@ -73,7 +73,7 @@ def _walk() -> list[dict]:
     from collections import defaultdict
 
     from openoutfind.core.models import Page, PageLead
-    from openoutfind.core.pipeline.frontier import judged_fits, judged_leads
+    from openoutfind.core.pipeline.store_snapshot import judged_fits, judged_leads
 
     people = defaultdict(set)
     for page_id, lead_id in PageLead.objects.values_list("page_id", "lead_id"):

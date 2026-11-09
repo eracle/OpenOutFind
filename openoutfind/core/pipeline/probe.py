@@ -30,7 +30,7 @@ PROBE_VERDICTS = 5
 def next_lead(candidates: list):
     """The person the probe judges next, or None when every fired search is measured or
     has nobody left to judge."""
-    from openoutfind.core.pipeline.frontier import fired_searches, judged_leads
+    from openoutfind.core.pipeline.store_snapshot import fired_searches, judged_leads
 
     searches = sorted(fired_searches(), key=lambda f: (-f.latest.round, f.search.key))
     if not searches:

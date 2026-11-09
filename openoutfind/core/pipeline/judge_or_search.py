@@ -9,10 +9,10 @@ sides are dollars per fit:
     search  = cost(arm) / expected fits(arm)
 
 - **rate** is a fit rate on both sides — the GP's score through the isotonic map fitted on
-  the store's verdicts (``frontier.fit_rate_map``) — so a lead waiting and the people a
+  the store's verdicts (``store_snapshot.fit_rate_map``) — so a lead waiting and the people a
   search would bring are weighed on one scale, never the raw score against a mean of raw
   scores;
-- **the arm** is the one worth the most at the mean belief (``frontier.best_expected``),
+- **the arm** is the one worth the most at the mean belief (``search_arms.best_expected``),
   its cost its ready and ingest time and a verdict on each person it brings: the inverse
   of the value the walk ranks arms on, so the pick and the decision read one number;
 - ``c_verdict`` (``calibration.verdict_cost``) is a verdict's measured time at
@@ -57,9 +57,9 @@ def decide(qualifier, candidates) -> bool:
     from openoutfind.core import meter
     from openoutfind.core.ml import calibration
     from openoutfind.core.models import Page
-    from openoutfind.core.pipeline import frontier
+    from openoutfind.core.pipeline import search_arms, store_snapshot
 
-    waiting = best_waiting(qualifier, candidates, frontier.fit_rate_map())
+    waiting = best_waiting(qualifier, candidates, store_snapshot.fit_rate_map())
     if not Page.objects.exists():
         return True
     fits, verdicts = meter.totals(meter.POOL_FIT)
@@ -68,7 +68,7 @@ def decide(qualifier, candidates) -> bool:
                     colored("·", "cyan", attrs=["bold"]), waiting,
                     colored("judge", "cyan", attrs=["bold"]))
         return True
-    arm = frontier.best_expected(qualifier)
+    arm = search_arms.best_expected(qualifier)
 
     judge = cost_per_fit(calibration.verdict_cost(), waiting)
     search = cost_per_fit(arm.cost, arm.expected_fits) if arm else math.inf

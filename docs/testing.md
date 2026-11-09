@@ -35,7 +35,10 @@ tests/
 ├── test_analyzers.py           # the provider's analyzers: Unicode words, titles, tags
 ├── test_terms.py               # a search's terms: matching, legality, dead conviction
 ├── test_compose.py             # the searches worth the most on a draw, checked against every combination
-├── test_frontier.py            # the arms, their rate, new people and value, the next search
+├── store_builders.py           # people, companies, verdicts and fired searches for a walk's store
+├── test_store_snapshot.py      # the people index and the fit-rate map
+├── test_belief.py              # the sizes and fit rate per keyword, at the mean and on a draw
+├── test_search_arms.py         # the arms, their rate, new people and value, the next search
 ├── test_judge_or_search.py     # dollars per fit: the best lead waiting against the best arm
 ├── test_walk.py                # rounds end to end against a stubbed Lead Finder
 ├── test_anchors.py             # synthetic ICP positives and their one-per-acceptance retirement

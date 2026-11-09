@@ -4,7 +4,7 @@
 Covers the running means (``core/meter.py``), where the run takes its verdict
 measurements, and the rule itself (``core/pipeline/judge_or_search.py``). Where a round
 measures itself is in ``tests/test_walk.py``, and how the frontier values its arms in
-``tests/test_frontier.py``.
+``tests/test_search_arms.py``.
 """
 from __future__ import annotations
 
@@ -109,7 +109,7 @@ class TestVerdictMeasurements:
 
 def _arm(rate, new=20.0, cost=None):
     """An arm whose cost is, unless given, a verdict at $0.05 on each person it brings."""
-    from openoutfind.core.pipeline.frontier import Arm
+    from openoutfind.core.pipeline.search_arms import Arm
     from openoutfind.core.pipeline.terms import Terms
 
     return Arm(Terms.written(title="production", tag="cannabis"), 1, "swap", new=new,
@@ -127,10 +127,10 @@ def _decide(*, waiting, arm, verdict=0.05, fired=True, judged=True):
         Page.objects.create(search=search, number=1, round=0, rows=3)
     if judged and not meter.totals(meter.POOL_FIT)[1]:
         meter.record(meter.POOL_FIT, 0)
-    plan = patch("openoutfind.core.pipeline.frontier.best_expected", return_value=arm)
+    plan = patch("openoutfind.core.pipeline.search_arms.best_expected", return_value=arm)
     with (
         plan as planned,
-        patch("openoutfind.core.pipeline.frontier.fit_rate_map", return_value=lambda p: p),
+        patch("openoutfind.core.pipeline.store_snapshot.fit_rate_map", return_value=lambda p: p),
         patch.object(judge_or_search, "best_waiting", return_value=waiting),
         patch("openoutfind.core.ml.calibration.verdict_cost", return_value=verdict),
     ):

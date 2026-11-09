@@ -10,7 +10,7 @@ class SearchAdmin(admin.ModelAdmin):
     """The walk's searches — what each one asks the provider, and how far it paged.
 
     There is no value column: the frontier values a search from the store's people on the
-    GP as it stands (``frontier``), so a stored number would only show a stale one.
+    GP as it stands (``search_arms``), so a stored number would only show a stale one.
     """
 
     list_display = ("id", "query_filters", "origin", "move", "leads_found", "dead",

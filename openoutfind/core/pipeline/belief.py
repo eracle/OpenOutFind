@@ -1,46 +1,33 @@
 # openoutfind/core/pipeline/belief.py
 """The walk's belief about the market — how many people hold each keyword, and how many
-of them the customer would like.
+of them the customer would like — and every read of it the walk makes, at the mean or on
+a draw.
 
-Two numbers per keyword, a title word, a tag phrase, a seniority or a place:
-
-- ``N_t``, the people in the market holding it;
-- ``θ_t``, the share of them who fit.
-
-**A fired search is one sample of the AND of its keywords**, taken as independent, and
-both halves are hierarchical models fitted to those samples:
+Two numbers per keyword, a title word, a tag phrase, a seniority or a place: ``N_t``, the
+people in the market holding it, and ``θ_t``, the share of them who fit. **A fired search
+is one sample of the AND of its keywords**, taken as independent, and both halves are
+hierarchical models fitted to those samples:
 
     log N(q)     = log N₀ + Σ log s_t           s_t = N_t / N₀
     logit θ(q)   = α + Σ ℓ_t + e_q              α = logit π, ℓ_t the keyword's lift
 
-**The sizes are a log-linear count model.** The provider's count of a fired search is a
-Poisson draw around ``N(q)`` with a log-normal error of its own (``COUNT_NOISE``, what
-independence gets wrong), read on ``log(y + ½)`` with variance ``ε² + 1/(y + ½)``. A
-keyword's log share is its field's mean plus a learned multiple of its log share of the
-store plus its own deviation:
+**The sizes are a log-linear count model.** The provider's count is a Poisson draw around
+``N(q)`` with a log-normal error of its own (``COUNT_NOISE``, what independence gets
+wrong), read on ``log(y + ½)``. A keyword's log share is
 
     log s_t = μ_field + γ · log(store share of t) + u_t      u_t ~ Normal(0, τ²)
 
-The store is not the market, so its share enters as evidence whose weight ``γ`` the
-counts learn (about 1.5 on CaleafTech's batch 6), not as the prior's centre. ``log N₀``
-is anchored broadly at ``MARKET_PEOPLE``: no search counts the market itself, and fitted
-only to the counts it took the size of the first few, 4 to 21 people. Everything is
-Normal, so the posterior is exact, and the sizes are drawn from it jointly. Read on
-batch 6's 13 counts, each predicted from the ones before it, the median miss went from
-×3.1 to ×2.0 and the worst from ×235 to ×3.
+The store is not the market, so its share is evidence whose weight ``γ`` the counts
+learn, not the prior's centre. ``log N₀`` is anchored broadly at ``MARKET_PEOPLE``: no
+search counts the market itself. Everything is Normal, so the posterior is exact.
 
-**The fit rate is a logistic model of what searches brought.** Each fired search's
-people add ``evidence`` — a verdict at full weight, an unjudged person's fit rate at
-``SCORE_WEIGHT`` times the GP's confidence at them, each company once — as a binomial
-sample of its ``θ(q)``. ``α`` is the market's rate, learned from the searched people
-only: the store's rate, the customer's marks above all, is its prior and never its
-evidence. Batch 6 read every keyword nothing was known about at the store's 0.21, and so
-a page of food founders at 40 fits; the pages it brought held 2 fits in 16 verdicts. A
-keyword's lift is centred on its prior, the GP's score of the keyword's own embedding
-moved by the store's other people holding it (the marks above all) at
-``prior_companies``, and ``e_q`` is a fired search's own effect, so a page that came back
-bad says so about the search that brought it. The posterior is the Laplace approximation
-at the mode, found by Newton's method.
+**The fit rate is a logistic model of what searches brought.** Each fired search's people
+add ``evidence``, a binomial sample of its ``θ(q)``. ``α`` is learned from the searched
+people only: the store's rate, the customer's marks above all, is its prior and never its
+evidence. A keyword's lift is centred on its prior, the GP's score of the keyword's own
+embedding moved by the store's other people holding it, and ``e_q`` is a fired search's
+own effect, so a page that came back bad says so about the search that brought it. The
+posterior is the Laplace approximation at the mode, found by Newton's method.
 """
 from __future__ import annotations
 
@@ -58,14 +45,13 @@ from openoutfind.core.pipeline.terms import Terms, split_place
 logger = logging.getLogger(__name__)
 # What an unjudged person's fit rate weighs against a verdict.
 SCORE_WEIGHT = 0.25
-# Keep the draws of one seed apart: the unfitted keywords' lifts, the fit-rate model, the
-# sizes, the unfitted keywords' shares.
-_LIFT_STREAM, _RATE_STREAM, _SIZE_STREAM, _SHARE_STREAM = 0, 2, 1, 3
+# The random streams of one seed, so its draws stay apart.
+LIFT_STREAM, SIZE_STREAM, RATE_STREAM = 0, 1, 2
 # A rate is kept off 0 and 1, where its odds would end the sum.
-_MIN_RATE = 0.001
+MIN_RATE = 0.001
 
 # ── the sizes' priors ──
-# Where log N₀ is anchored, and how loosely: no search counts the market itself.
+# Where log N₀ is anchored, and how loosely.
 MARKET_PEOPLE = 10_000_000
 MARKET_SPREAD = 3.0
 # Each field's mean log share, before any count.
@@ -85,7 +71,7 @@ MARKET_RATE_SPREAD = 1.0
 LIFT_SPREAD = 1.0
 # e_q, a fired search's own effect.
 SEARCH_SPREAD = 0.5
-_NEWTON_STEPS, _NEWTON_TOLERANCE = 50, 1e-8
+NEWTON_STEPS, NEWTON_TOLERANCE = 50, 1e-8
 
 FIELDS = ("title", "tag", "seniority", "place")
 
@@ -132,7 +118,7 @@ def evidence(pks, people, judged: set[int]) -> tuple[float, float]:
             rate, weight = statistics.fmean(verdicts), 1.0
         else:
             rate = statistics.fmean(people.rates[pk] for pk in members)
-            weight = SCORE_WEIGHT * statistics.fmean(people.sureness(pk) for pk in members)
+            weight = SCORE_WEIGHT * statistics.fmean(people.confidence_in(pk) for pk in members)
         fits += weight * rate
         misses += weight * (1.0 - rate)
     return fits, misses
@@ -140,20 +126,20 @@ def evidence(pks, people, judged: set[int]) -> tuple[float, float]:
 
 # ── the prior ────────────────────────────────────────────────────────
 
-# A keyword's vector under its text, for this process: the frontier is read twice a
-# step, and the store's copy (``core.KeywordVector``) is read once.
-_VECTORS: dict[str, np.ndarray] = {}
+# A keyword's vector under its text, for this process; the store keeps them across
+# processes (``core.KeywordVector``).
+KEYWORD_VECTORS: dict[str, np.ndarray] = {}
 
 
-def _vectors(texts: list[str]) -> np.ndarray:
+def keyword_vectors(texts: list[str]) -> np.ndarray:
     """Each text's vector: from this process, else the store, else embedded and kept."""
-    missing = [text for text in dict.fromkeys(texts) if text not in _VECTORS]
+    missing = [text for text in dict.fromkeys(texts) if text not in KEYWORD_VECTORS]
     if missing:
-        _VECTORS.update(_stored_or_embedded(missing))
-    return np.array([_VECTORS[text] for text in texts], dtype=np.float64)
+        KEYWORD_VECTORS.update(load_or_embed_vectors(missing))
+    return np.array([KEYWORD_VECTORS[text] for text in texts], dtype=np.float64)
 
 
-def _stored_or_embedded(texts: list[str]) -> dict[str, np.ndarray]:
+def load_or_embed_vectors(texts: list[str]) -> dict[str, np.ndarray]:
     """``texts``' vectors, embedding and storing only those the store does not hold."""
     from openoutfind.core.conf import CAMPAIGN_CONFIG
     from openoutfind.core.ml.embeddings import embed_texts
@@ -180,42 +166,58 @@ def _stored_or_embedded(texts: list[str]) -> dict[str, np.ndarray]:
 
 def keyword_priors(keywords: list[Keyword], qualifier, fit_rate,
                    store_rate: float) -> dict[Keyword, float]:
-    """``g_t`` for each keyword: the GP's score of its embedding through ``fit_rate``, or
-    ``store_rate`` where the GP cannot score."""
+    """Each keyword's prior rate: the GP's score of its embedding through ``fit_rate``,
+    or ``store_rate`` where the GP cannot score."""
     if qualifier is None or not keywords:
         return dict.fromkeys(keywords, store_rate)
-    probs = qualifier.predict_probs(_vectors([keyword_text(k) for k in keywords]))
+    probs = qualifier.predict_probs(keyword_vectors([keyword_text(k) for k in keywords]))
     if probs is None:
         return dict.fromkeys(keywords, store_rate)
     return {keyword: float(rate) for keyword, rate in zip(keywords, fit_rate(probs))}
 
 
+def prior_moved_by_store(score: float, fits: float, misses: float) -> float:
+    """A keyword's prior rate: its GP ``score`` at ``prior_companies`` companies, moved by
+    the ``fits`` and ``misses`` of the store's people holding it."""
+    strength = WALK_CONFIG["prior_companies"]
+    return (strength * clip_rate(score) + fits) / (strength + fits + misses)
+
+
 # ── the market's size ────────────────────────────────────────────────
 
-def _log_share(keyword: Keyword, people) -> float:
+def store_log_share(keyword: Keyword, people) -> float:
     """``keyword``'s log share of the store's people."""
     return math.log((len(people.holding(keyword)) + 1) / (len(people.everyone) + 2))
 
 
 # The fixed effects' columns: log N₀, each field's mean, γ. The keywords' own follow.
-_MARKET, _GAMMA = 0, 1 + len(FIELDS)
-_FIXED = _GAMMA + 1
+MARKET_COLUMN, GAMMA_COLUMN = 0, 1 + len(FIELDS)
+FIXED_COLUMNS = GAMMA_COLUMN + 1
+
+
+def size_prior() -> tuple[np.ndarray, np.ndarray]:
+    """The fixed effects' prior means and precisions."""
+    mean = np.zeros(FIXED_COLUMNS)
+    precision = np.full(FIXED_COLUMNS, FIELD_SPREAD ** -2)
+    mean[MARKET_COLUMN], precision[MARKET_COLUMN] = math.log(MARKET_PEOPLE), MARKET_SPREAD ** -2
+    mean[GAMMA_COLUMN], precision[GAMMA_COLUMN] = STORE_SHARE_MEAN, STORE_SHARE_SPREAD ** -2
+    return mean, precision
 
 
 @dataclass(frozen=True)
 class SizeFit:
     """The Normal posterior over the sizes: the fixed effects and the deviation of every
-    keyword a count held, with how to draw them."""
+    keyword a count held."""
 
     keywords: tuple = ()
-    solution: np.ndarray = field(default_factory=lambda: _size_prior()[0])
-    root: np.ndarray = field(default_factory=lambda: np.diag(_size_prior()[1] ** -0.5))
+    solution: np.ndarray = field(default_factory=lambda: size_prior()[0])
+    root: np.ndarray = field(default_factory=lambda: np.diag(size_prior()[1] ** -0.5))
 
     def __post_init__(self):
-        object.__setattr__(self, "column", {k: _FIXED + i for i, k in enumerate(self.keywords)})
+        object.__setattr__(self, "column",
+                           {k: FIXED_COLUMNS + i for i, k in enumerate(self.keywords)})
 
     def mean(self) -> "Sizes":
-        """The sizes at the posterior mean."""
         return Sizes(self, self.solution, {})
 
     def draw(self, rng, unfitted=()) -> "Sizes":
@@ -229,8 +231,7 @@ class SizeFit:
 
 @dataclass(frozen=True)
 class Sizes:
-    """One reading of the sizes, the fit's mean or one draw of it: ``log N₀`` and each
-    keyword's ``log(N_t / N₀)``, never above 0."""
+    """One reading of the sizes, the fit's mean or one draw of it."""
 
     fit: SizeFit
     params: np.ndarray
@@ -238,49 +239,41 @@ class Sizes:
 
     @property
     def log_market(self) -> float:
-        return float(self.params[_MARKET])
+        return float(self.params[MARKET_COLUMN])
 
     def share(self, keyword: Keyword, people) -> float:
-        """``log(N_t / N₀)``: the field's mean, γ times the store's share, the deviation."""
-        store = _log_share(keyword, people)
+        """``log(N_t / N₀)``, never above 0: the field's mean, γ times the store's share,
+        the deviation."""
+        store = store_log_share(keyword, people)
         column = self.fit.column.get(keyword)
         deviation = (self.params[column] if column is not None
                      else self.deviations.get(keyword, 0.0))
         share = (self.params[1 + FIELDS.index(keyword_field(keyword))]
-                 + self.params[_GAMMA] * store + deviation)
+                 + self.params[GAMMA_COLUMN] * store + deviation)
         return min(float(share), 0.0)
-
-
-def _size_prior() -> tuple[np.ndarray, np.ndarray]:
-    """The fixed effects' prior means and precisions."""
-    mean = np.zeros(_FIXED)
-    precision = np.full(_FIXED, FIELD_SPREAD ** -2)
-    mean[_MARKET], precision[_MARKET] = math.log(MARKET_PEOPLE), MARKET_SPREAD ** -2
-    mean[_GAMMA], precision[_GAMMA] = STORE_SHARE_MEAN, STORE_SHARE_SPREAD ** -2
-    return mean, precision
 
 
 def fit_sizes(fired, people) -> SizeFit:
     """The sizes' posterior, fitted to the fired searches' counts. With none, the prior."""
     counted = [f for f in fired if f.found is not None]
-    keywords = tuple(sorted({keyword for f in counted for keyword in f.keywords}))
-    shares = {keyword: _log_share(keyword, people) for keyword in keywords}
     if not counted:
         return SizeFit()
+    keywords = tuple(sorted({keyword for f in counted for keyword in f.keywords}))
+    shares = {keyword: store_log_share(keyword, people) for keyword in keywords}
 
-    column = {keyword: _FIXED + i for i, keyword in enumerate(keywords)}
-    rows = np.zeros((len(counted), _FIXED + len(keywords)))
+    column = {keyword: FIXED_COLUMNS + i for i, keyword in enumerate(keywords)}
+    rows = np.zeros((len(counted), FIXED_COLUMNS + len(keywords)))
     target, weight = np.zeros(len(counted)), np.zeros(len(counted))
     for i, f in enumerate(counted):
-        rows[i, _MARKET] = 1.0
+        rows[i, MARKET_COLUMN] = 1.0
         for keyword in f.keywords:
             rows[i, 1 + FIELDS.index(keyword_field(keyword))] += 1.0
-            rows[i, _GAMMA] += shares[keyword]
+            rows[i, GAMMA_COLUMN] += shares[keyword]
             rows[i, column[keyword]] = 1.0
         target[i] = math.log(f.found + 0.5)
         weight[i] = 1.0 / (COUNT_NOISE ** 2 + 1.0 / (f.found + 0.5))
 
-    fixed_mean, fixed_precision = _size_prior()
+    fixed_mean, fixed_precision = size_prior()
     prior_mean = np.concatenate([fixed_mean, np.zeros(len(keywords))])
     precision = np.concatenate([fixed_precision, np.full(len(keywords), KEYWORD_SPREAD ** -2)])
     information = rows.T @ (weight[:, None] * rows) + np.diag(precision)
@@ -328,7 +321,7 @@ def fit_rates(store_rate: float, lift_priors: dict[Keyword, float],
         fits[i], trials[i] = hits, hits + misses
 
     prior_mean = np.zeros(size)
-    prior_mean[0] = _log_odds(_clip(store_rate))
+    prior_mean[0] = log_odds(clip_rate(store_rate))
     for keyword, i in column.items():
         prior_mean[i] = lift_priors[keyword]
     precision = np.concatenate([[MARKET_RATE_SPREAD ** -2],
@@ -336,15 +329,15 @@ def fit_rates(store_rate: float, lift_priors: dict[Keyword, float],
                                 np.full(len(samples), SEARCH_SPREAD ** -2)])
 
     solution = prior_mean.copy()
-    for _ in range(_NEWTON_STEPS):
-        rate = _sigmoid(rows @ solution)
+    for _ in range(NEWTON_STEPS):
+        rate = sigmoid(rows @ solution)
         gradient = rows.T @ (fits - trials * rate) - precision * (solution - prior_mean)
         information = rows.T @ ((trials * rate * (1.0 - rate))[:, None] * rows) + np.diag(precision)
         step = np.linalg.solve(information, gradient)
         solution += step
-        if np.max(np.abs(step)) < _NEWTON_TOLERANCE:
+        if np.max(np.abs(step)) < NEWTON_TOLERANCE:
             break
-    rate = _sigmoid(rows @ solution)
+    rate = sigmoid(rows @ solution)
     information = rows.T @ ((trials * rate * (1.0 - rate))[:, None] * rows) + np.diag(precision)
     root = np.linalg.cholesky(np.linalg.inv(information))
     return RateFit(keywords, tuple(key for key, *_ in samples), solution, root)
@@ -352,14 +345,25 @@ def fit_rates(store_rate: float, lift_priors: dict[Keyword, float],
 
 # ── the belief ───────────────────────────────────────────────────────
 
+@dataclass(frozen=True)
+class Draw:
+    """One joint draw of the belief: ``α``, a lift per keyword asked for, every fired
+    search's own ``θ``, and the sizes."""
+
+    alpha: float
+    lifts: dict
+    searches: dict
+    sizes: Sizes
+
+
 class Beliefs:
-    """What the store says about every keyword, read once per frontier."""
+    """What the store says about every keyword, fitted once per frontier."""
 
     def __init__(self, people, fired, judged: set[int], store_rate: float):
         self.people = people
         self.judged = judged
         self.fired = list(fired)
-        self.store_rate = _clip(store_rate)
+        self.store_rate = clip_rate(store_rate)
         self.sizes = fit_sizes(fired, people)
         self.brought: dict[Keyword, set[int]] = defaultdict(set)
         for f in fired:
@@ -369,34 +373,13 @@ class Beliefs:
         self.prior: dict[Keyword, float] = {}
         self.rates: RateFit | None = None
 
-    # ── the sizes ──
-
-    def count(self, keywords, sizes: Sizes | None = None) -> float:
-        """``N(q)``: the people the market holds with every one of ``keywords``, on the
-        fit's mean or on ``sizes``."""
-        sizes = sizes or self.sizes.mean()
-        return math.exp(sizes.log_market + sum(self.shares(keywords, sizes).values()))
-
-    def shares(self, keywords, sizes: Sizes | None = None) -> dict[Keyword, float]:
-        """Each keyword's ``log(N_t / N₀)`` on the fit's mean or on ``sizes``, what
-        ``count`` adds up."""
-        sizes = sizes or self.sizes.mean()
-        return {keyword: sizes.share(keyword, self.people) for keyword in keywords}
-
-    def draw_sizes(self, seed, keywords=()) -> Sizes:
-        """One joint draw of the sizes, seeded by ``seed``. Each of ``keywords`` no count
-        held draws its deviation from its field's line."""
-        return self.sizes.draw(_rng(seed, _SIZE_STREAM), keywords)
-
-    # ── the fit rate ──
-
     def settle(self, priors: dict[Keyword, float]) -> None:
-        """Fit the rate: each keyword's prior — ``priors`` moved by the store's people
-        holding it, at ``prior_companies`` — and every fired search's people as a sample of
+        """Fit the rate: each keyword's prior, ``priors`` moved by the store's people
+        holding it that no search brought, and every fired search's people as a sample of
         its keywords together."""
         for keyword, score in priors.items():
             brought = self.brought.get(keyword, set())
-            self.prior[keyword] = _held_to_strength(score, *evidence(
+            self.prior[keyword] = prior_moved_by_store(score, *evidence(
                 self.people.holding(keyword) - brought, self.people, self.judged))
         for f in self.fired:
             for keyword in f.keywords:
@@ -405,17 +388,30 @@ class Beliefs:
                    for f in self.fired]
         self.rates = fit_rates(self.store_rate, self.prior_lifts(), samples)
 
+    # ── at the mean ──
+
+    def count(self, keywords, sizes: Sizes | None = None) -> float:
+        """``N(q)``: the people the market holds with every one of ``keywords``, on the
+        fit's mean or on ``sizes``."""
+        sizes = sizes or self.sizes.mean()
+        return math.exp(sizes.log_market + sum(self.shares(keywords, sizes).values()))
+
+    def shares(self, keywords, sizes: Sizes | None = None) -> dict[Keyword, float]:
+        """Each keyword's ``log(N_t / N₀)`` on the fit's mean or on ``sizes``."""
+        sizes = sizes or self.sizes.mean()
+        return {keyword: sizes.share(keyword, self.people) for keyword in keywords}
+
     @property
     def market_rate(self) -> float:
         """``π``, the share of the searched market who fit; the store's before ``settle``."""
         if self.rates is None:
             return self.store_rate
-        return float(_sigmoid(self.rates.solution[0]))
+        return float(sigmoid(self.rates.solution[0]))
 
     def prior_lifts(self) -> dict[Keyword, float]:
         """Each keyword's prior lift, against the store's rate its prior was read on."""
-        store = _log_odds(self.store_rate)
-        return {keyword: _log_odds(_clip(rate)) - store for keyword, rate in self.prior.items()}
+        store = log_odds(self.store_rate)
+        return {keyword: log_odds(clip_rate(rate)) - store for keyword, rate in self.prior.items()}
 
     def lifts(self) -> dict[Keyword, float]:
         """Each keyword's lift at the posterior mean: ``logit θ_t − logit π``."""
@@ -427,61 +423,73 @@ class Beliefs:
     def means(self) -> dict[Keyword, float]:
         """Each keyword's expected ``θ_t``."""
         alpha = self.rates.solution[0]
-        return {keyword: _sigmoid(alpha + lift) for keyword, lift in self.lifts().items()}
+        return {keyword: sigmoid(alpha + lift) for keyword, lift in self.lifts().items()}
 
     def search_mean(self, key: str) -> float:
         """A fired search's expected share of fits, its own effect included."""
-        return _sigmoid(self._search_eta(key, self.rates.solution))
+        return sigmoid(self.search_log_odds(key, self.rates.solution))
 
     def rate(self, keywords, lifts: dict[Keyword, float], alpha: float | None = None) -> float:
         """``θ(q)`` for a query of ``keywords``, given a lift for each and ``α`` (the mean's
         where not given)."""
         if alpha is None:
-            alpha = _log_odds(self.market_rate)
-        return _sigmoid(alpha + sum(lifts[keyword] for keyword in keywords))
+            alpha = log_odds(self.market_rate)
+        return sigmoid(alpha + sum(lifts[keyword] for keyword in keywords))
 
-    def draw(self, seed, keywords) -> tuple[float, dict[Keyword, float]]:
-        """One ``(α, {keyword: lift})`` for ``keywords``, seeded by ``seed`` so a rerun
-        repeats: the fitted ones jointly, the rest about their prior lift."""
-        params = self.rates.draw(_rng(seed, _RATE_STREAM))
+    def theta_at_mean(self, keywords, lifts: dict[Keyword, float],
+                      search_key: str | None = None) -> float:
+        """``θ(q)`` at the mean: a fired search's own where ``search_key`` names one, else
+        its keywords' on ``lifts`` (``lifts()``, read once for many queries)."""
+        if search_key is not None:
+            return self.search_mean(search_key)
+        return self.rate(keywords, lifts)
+
+    # ── on a draw ──
+
+    def draw(self, seed, keywords) -> Draw:
+        """One joint draw, seeded by ``seed`` so a rerun repeats. The fitted lifts are
+        drawn jointly; each of ``keywords`` no search held draws its lift about its prior
+        and its size off its field's line."""
+        params = self.rates.draw(seeded_rng(seed, RATE_STREAM))
         priors = self.prior_lifts()
         unfitted = sorted(k for k in keywords if k not in self.rates.column)
-        noise = _rng(seed, _LIFT_STREAM).standard_normal(len(unfitted))
+        noise = seeded_rng(seed, LIFT_STREAM).standard_normal(len(unfitted))
         lifts = {k: priors[k] + LIFT_SPREAD * z for k, z in zip(unfitted, noise)}
         for keyword in keywords:
             if keyword in self.rates.column:
                 lifts[keyword] = float(params[self.rates.column[keyword]])
-        return float(params[0]), lifts
+        searches = {key: sigmoid(self.search_log_odds(key, params)) for key in self.rates.searches}
+        return Draw(float(params[0]), lifts, searches, self.draw_sizes(seed, keywords))
 
-    def draw_searches(self, seed) -> dict[str, float]:
-        """One share of fits for each fired search, on the same draw as ``draw``."""
-        params = self.rates.draw(_rng(seed, _RATE_STREAM))
-        return {key: _sigmoid(self._search_eta(key, params)) for key in self.rates.searches}
+    def draw_sizes(self, seed, keywords=()) -> Sizes:
+        """The sizes of the draw ``seed`` names."""
+        return self.sizes.draw(seeded_rng(seed, SIZE_STREAM), keywords)
 
-    def _search_eta(self, key: str, params: np.ndarray) -> float:
+    def theta_on(self, drawn: Draw, keywords, search_key: str | None = None) -> float:
+        """``θ(q)`` on ``drawn``: a fired search's own where ``search_key`` names one, else
+        its keywords'."""
+        if search_key is not None:
+            return drawn.searches[search_key]
+        return self.rate(keywords, drawn.lifts, drawn.alpha)
+
+    def search_log_odds(self, key: str, params: np.ndarray) -> float:
         held = self.search_keywords[key]
         return float(params[0] + sum(params[self.rates.column[k]] for k in held)
                      + params[self.rates.own[key]])
 
 
-def _rng(seed, stream: int):
+def seeded_rng(seed, stream: int):
     """A generator for one stream of ``seed`` — a round's number, or a round and a draw."""
     return np.random.default_rng([*np.atleast_1d(seed).tolist(), stream])
 
 
-def _held_to_strength(score: float, fits: float, misses: float) -> float:
-    """The prior's mean: ``score`` at ``prior_companies``, moved by ``fits`` and ``misses``."""
-    strength = WALK_CONFIG["prior_companies"]
-    return (strength * _clip(score) + fits) / (strength + fits + misses)
+def clip_rate(rate: float) -> float:
+    return min(max(rate, MIN_RATE), 1.0 - MIN_RATE)
 
 
-def _clip(rate: float) -> float:
-    return min(max(rate, _MIN_RATE), 1.0 - _MIN_RATE)
-
-
-def _log_odds(rate: float) -> float:
+def log_odds(rate: float) -> float:
     return math.log(rate / (1.0 - rate))
 
 
-def _sigmoid(x):
+def sigmoid(x):
     return 1.0 / (1.0 + np.exp(-x))

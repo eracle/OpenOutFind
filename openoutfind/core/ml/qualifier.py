@@ -291,7 +291,7 @@ class BayesianQualifier(GPBaldQualifier):
     # window, when a handful of fits is outweighed by the rejections around them; past
     # it, subsampling drops verdicts the run paid for (batch 5 at 54 fits kept 108 of
     # 375 no-fits, so a fresh one was usually left out and its lookalike topped the
-    # pool), and scores need only rank — ``frontier.fit_rate_map`` turns them into fit
+    # pool), and scores need only rank — ``store_snapshot.fit_rate_map`` turns them into fit
     # rates. Every verdict at 12% fits ranks only because the GP centres its labels
     # (``openoutlearn.qualifier.gpr_for``); uncentred, it fitted a flat score. 10 is a
     # placeholder until a replay measures where balancing stops helping.
