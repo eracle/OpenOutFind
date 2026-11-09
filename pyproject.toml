@@ -12,7 +12,7 @@ name = "openoutfind"
 version = "0.1.0"
 description = "Open-source AI lead finder: describe your product, get qualified leads with the reason each one fits."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 license = "GPL-3.0-or-later"
 license-files = ["LICENCE.md"]
 authors = [{ name = "OpenOutFind", email = "hello@openoutreach.app" }]
@@ -33,7 +33,6 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Office/Business",
 ]
@@ -64,6 +63,10 @@ dependencies = [
     # 0.1.8: the GP centres its labels (normalize_y), so it ranks on every verdict at few
     # fits instead of fitting a flat score; 0.1.7 sorted embed_texts by length.
     "openoutlearn>=0.1.8,<1",
+    # The walk's belief (`core/pipeline/belief.py`) is one posterior sampled by NUTS;
+    # nutpie compiles the PyMC model with numba, so no C++ compiler is needed.
+    "pymc>=6.4.0,<7",
+    "nutpie>=0.16.11,<1",
     "pytz>=2024.1",
     "imapclient>=3,<4",
     "tenacity>=8,<10",

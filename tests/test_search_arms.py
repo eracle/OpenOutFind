@@ -11,7 +11,7 @@ from openoutfind.core.models import PAGE_SIZE, Search
 from openoutfind.core.pipeline import belief, search_arms
 from openoutfind.core.pipeline.search_arms import Arm, Frontier
 from openoutfind.core.pipeline.terms import Terms, split_place
-from tests.store_builders import US, fire, make_companies, make_company, make_lead
+from tests.store_builders import US, fire, make_company, make_lead
 
 
 def arm_for(title, count=1000.0, new=100.0, seen=0, held_fits=0, rate=0.0):
@@ -20,9 +20,9 @@ def arm_for(title, count=1000.0, new=100.0, seen=0, held_fits=0, rate=0.0):
                held_fits=held_fits, new=new, rate=rate, cost=1.0)
 
 
-def settled_frontier(arms):
+def rated_frontier(arms):
     frontier = Frontier(None)
-    frontier.settle_beliefs(arms)
+    frontier.rate_at_mean(arms)
     return frontier
 
 
@@ -200,17 +200,19 @@ class TestTheNextSearch:
 
     def test_the_same_round_picks_the_same_search_whatever_the_order(self):
         arms = [arm_for(f"title{i}") for i in range(30)]
-        frontier = settled_frontier(arms)
+        frontier = rated_frontier(arms)
 
         assert frontier.pick(list(arms), 4) is frontier.pick(list(reversed(arms)), 4)
 
     def test_a_known_good_keyword_beats_an_unknown_one_and_an_unknown_one_a_known_bad(self):
-        make_companies("Founder", 1, 20)
-        make_companies("Clerk", 0, 20)
-        for i in range(20):
-            make_lead("Buyer", company=make_company(f"unjudged-{i}"))
+        """Known from what the searches holding them brought: the store alone moves no lift."""
+        fits = [make_lead("Founder", company=make_company(f"f{i}"), verdict=1) for i in range(15)]
+        misses = [make_lead("Clerk", company=make_company(f"c{i}"), verdict=0) for i in range(15)]
+        fire(Terms.written(title="founder", tag="cannabis"), fits, found=5000)
+        fire(Terms.written(title="clerk", tag="cannabis"), misses, found=5000,
+             origin=Search.Origin.DRAWN)
         good, bad, unknown = arm_for("founder"), arm_for("clerk"), arm_for("buyer")
-        frontier = settled_frontier([good, bad, unknown])
+        frontier = rated_frontier([good, bad, unknown])
 
         assert frontier.pick([good, bad, unknown], 1) is good
         assert frontier.pick([bad, unknown], 1) is unknown
@@ -230,7 +232,7 @@ class TestTheNextSearch:
         frontier = Frontier(None)
         (next_page,) = [frontier.next_page_arm(f) for f in frontier.fired]
         fresh = frontier.first_page_arm(untried, "drawn")
-        frontier.settle_beliefs([next_page, fresh])
+        frontier.rate_at_mean([next_page, fresh])
 
         assert frontier.beliefs.search_mean(fired.key) < frontier.beliefs.market_rate
         assert frontier.pick([next_page, fresh], 1) is fresh
@@ -245,7 +247,7 @@ class TestTheNextSearch:
         frontier = Frontier(None)
         (next_page,) = [frontier.next_page_arm(f) for f in frontier.fired]
         fresh = frontier.first_page_arm(Terms.written(title="owner", tag="wholesale"), "drawn")
-        frontier.settle_beliefs([next_page, fresh])
+        frontier.rate_at_mean([next_page, fresh])
 
         assert frontier.pick([next_page, fresh], 1) is next_page
 
@@ -265,6 +267,22 @@ class TestTheNextSearch:
         assert not arm.terms.holds_all_of(dead)
         assert not arm.terms.holds_all_of(drained)
 
+    def test_the_belief_refits_only_when_a_page_or_a_verdict_lands(self):
+        """It is rebuilt on every judge-or-search decision, and a fit takes seconds."""
+        people = [make_lead(company=make_company(f"c{i}")) for i in range(3)]
+        fire(Terms.written(title="purchasing", tag="cannabis"), people, found=5000)
+
+        with patch.object(belief, "sample_posterior", wraps=belief.sample_posterior) as fit:
+            Frontier(None), Frontier(None)
+            assert fit.call_count == 1
+            make_lead(verdict=1)
+            Frontier(None)
+            assert fit.call_count == 2
+            fire(Terms.written(title="purchasing", tag="cannabis"), [make_lead()], found=5000,
+                 number=2)
+            Frontier(None)
+            assert fit.call_count == 3
+
     def test_a_next_page_keeps_the_providers_count_on_any_draw(self):
         people = [make_lead("Purchasing Manager") for _ in range(3)]
         fire(Terms.written(title="purchasing", tag="cannabis"), people, found=5000)
@@ -281,10 +299,7 @@ class TestTheNextSearch:
         frontier = Frontier(None)
         narrower = Arm(Terms.written(title="purchasing manager"), 1, "stricter", seen=3,
                        keywords=belief.query_keywords(Terms.written(title="purchasing manager")))
-        frontier.settle_beliefs([narrower])
-
-        counts = [frontier.resized(narrower,
-                                   frontier.beliefs.draw_sizes(n, narrower.keywords)).count
+        counts = [frontier.resized(narrower, frontier.beliefs.draw_sizes(n)).count
                   for n in range(200)]
 
         assert max(counts) <= 40
@@ -293,7 +308,7 @@ class TestTheNextSearch:
 
     def test_the_pick_returns_the_arm_it_was_given_and_leaves_it_at_the_mean(self):
         arms = [arm_for(f"title{i}") for i in range(10)]
-        frontier = settled_frontier(arms)
+        frontier = rated_frontier(arms)
         counts = [arm.count for arm in arms]
 
         assert any(frontier.pick(arms, 1) is arm for arm in arms)

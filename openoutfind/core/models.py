@@ -192,28 +192,6 @@ class RunningMean(models.Model):
         return f"{self.name}: {self.total / self.count:.3f} over {self.count}"
 
 
-class KeywordVector(models.Model):
-    """A keyword's embedding, kept so a store embeds each keyword once.
-
-    Every keyword the store's people hold is valued on every draw, and its prior is the
-    GP's score of this vector (``belief.keyword_priors``). A store of 10,000 people holds
-    about 100,000 tag phrases, 14 minutes of embedding: a process holding them in memory
-    alone paid that on every ``find``. ``model`` is the embedding model that wrote it, so
-    a change of model re-embeds rather than mixing two spaces.
-    """
-
-    text = models.TextField()
-    model = models.CharField(max_length=100)
-    vector = models.BinaryField()
-
-    class Meta:
-        constraints = [models.UniqueConstraint(fields=["text", "model"],
-                                               name="one_vector_per_keyword_and_model")]
-
-    def __str__(self):
-        return self.text
-
-
 class Brief(models.Model):
     """Our reading of the customer's two texts: the rules every prompt is written from.
 

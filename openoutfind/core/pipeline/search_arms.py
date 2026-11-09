@@ -9,7 +9,7 @@ there:**
 
 - **An arm** is a search at a page: the next page of a fired search (``deepen``), a written
   search not yet fired, or one of the ``COMPOSED`` searches worth the most at the mean
-  belief, composed from every keyword the store holds (``compose``) — never a search
+  belief, composed from the qualified profiles' keywords (``compose``) — never a search
   already fired, dead, or holding all the terms of one that is, and never a search of the
   whole country where every written search names a state.
 - **N** is how many people the market holds for the search: the provider's count where it
@@ -117,9 +117,7 @@ class Frontier:
         from openoutfind.core.models import Page, PageLead, Search
         from openoutfind.core.pipeline.walk import FIRST_POLL_SECONDS
 
-        self.qualifier = qualifier
-        self.fit_rate = fit_rate_map()
-        self.people = People.load(*lead_fit_rates(qualifier, self.fit_rate))
+        self.people = People.load(*lead_fit_rates(qualifier, fit_rate_map()))
         self.judged = judged_leads()
         self.fits = judged_fits()
         self.fired = fired_searches()
@@ -153,10 +151,10 @@ class Frontier:
         arms += [self.first_page_arm(search.query, "written", search) for search in self.written
                  if not search.dead and search.key not in fired_keys]
         arms = [arm for arm in arms if self.in_market(arm.terms)]
-        self.settle_beliefs(arms)
-        composed = self.composed_arms(self.beliefs.lifts(), self.beliefs.sizes.mean())
-        self.rate_at_mean(composed)
-        return distinct_arms(arms + composed)
+        composed = self.composed_arms(self.beliefs.lifts(), self.beliefs.mean_sizes())
+        arms = distinct_arms(arms + composed)
+        self.rate_at_mean(arms)
+        return arms
 
     def composed_arms(self, lift: dict, sizes: belief.Sizes) -> list[Arm]:
         """Page 1 of the ``COMPOSED`` searches worth the most on ``lift`` and ``sizes``
@@ -214,10 +212,15 @@ class Frontier:
 
     @property
     def vocabulary(self) -> compose.Vocabulary:
-        """Every keyword a composed search may hold: the store's people's title words and
-        whole tags, the written searches' terms, every seniority, and the market's places —
-        the country and its states, or only the written states where every written search
-        names one. No written search, no market, nothing composed."""
+        """Every keyword a composed search may hold: the qualified profiles' title words and
+        whole tags (the customer's good marks and the run's fits), the written searches'
+        terms, every seniority, and the market's places — the country and its states, or
+        only the written states where every written search names one. No written search, no
+        market, nothing composed.
+
+        **The titles and tags come from the fits alone**: with every lift centred on the
+        market's rate, a keyword no search has held reads that rate, and the store's 10,000
+        would be ranked on size alone. The fits are how the marks reach the walk."""
         if self.loaded_vocabulary is None:
             self.loaded_vocabulary = self.load_vocabulary()
         return self.loaded_vocabulary
@@ -229,8 +232,8 @@ class Frontier:
         if not written:
             return compose.Vocabulary((), (), (), ())
         country = next((split_place(t.place)[1] for t in written if t.place), "")
-        titles = self.people.title_vocabulary() | {w for t in written for w in t.title}
-        tags = self.people.tag_vocabulary() | {t.tag for t in written if t.tag}
+        titles = self.people.title_vocabulary(self.fits) | {w for t in written for w in t.title}
+        tags = self.people.tag_vocabulary(self.fits) | {t.tag for t in written if t.tag}
         written_states = {split_place(t.place)[0] for t in written} - {""}
         states = written_states if self.market_is_states else (
             self.people.states_in(country) | written_states)
@@ -286,15 +289,6 @@ class Frontier:
         return sum(rates.get(pk, self.beliefs.store_rate) for pk in people)
 
     # ── the belief ──
-
-    def settle_beliefs(self, arms: list[Arm]) -> None:
-        """Fit the belief on every keyword of the vocabulary and of ``arms`` in one pass,
-        and rate ``arms`` at its mean."""
-        keywords = sorted({*self.vocabulary.keywords(),
-                           *(keyword for arm in arms for keyword in arm.keywords)})
-        self.beliefs.settle(belief.keyword_priors(keywords, self.qualifier, self.fit_rate,
-                                                  self.beliefs.store_rate))
-        self.rate_at_mean(arms)
 
     def rate_at_mean(self, arms: list[Arm]) -> None:
         """Each arm's ``θ(q)`` and fit rate at the mean belief."""

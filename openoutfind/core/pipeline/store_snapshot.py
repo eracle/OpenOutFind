@@ -117,15 +117,15 @@ class People:
         self.company: dict[int, object] = {}
         self.everyone: set[int] = set()
         self.by_term: dict[tuple, set[int]] = defaultdict(set)
-        self.standalone_titles: set[str] = set()
-        self.whole_tags: set[tuple[str, ...]] = set()
+        self.titles_of: dict[int, set[str]] = {}
+        self.tags_of: dict[int, set[tuple[str, ...]]] = {}
         self.states_by_country: dict[str, set[str]] = defaultdict(set)
         for pk, company_id, fields in rows:
             self.everyone.add(pk)
             self.company[pk] = company_key(pk, company_id, fields)
             for term in index_terms(fields):
                 self.by_term[term].add(pk)
-            self.add_to_vocabulary(fields)
+            self.add_to_vocabulary(pk, fields)
 
     @classmethod
     def load(cls, rates: dict[int, float],
@@ -135,9 +135,9 @@ class People:
         return cls(Lead.objects.filter(synthetic=False).exclude(source_fields={})
                    .values_list("pk", "company_id", "source_fields"), rates, confidence)
 
-    def add_to_vocabulary(self, fields: dict) -> None:
-        self.standalone_titles |= standalone_title_words(fields.get("contact_job_title", ""))
-        self.whole_tags.update(company_tags(fields.get("company_keywords", "")))
+    def add_to_vocabulary(self, pk: int, fields: dict) -> None:
+        self.titles_of[pk] = standalone_title_words(fields.get("contact_job_title", ""))
+        self.tags_of[pk] = set(company_tags(fields.get("company_keywords", "")))
         country = str(fields.get("contact_location_country") or "").strip().lower()
         state = str(fields.get("contact_location_state") or "").strip().lower()
         if country and state:
@@ -145,15 +145,16 @@ class People:
 
     # ── the vocabulary ──
 
-    def title_vocabulary(self) -> set[str]:
-        """Every title word a search may hold: never a piece of a hyphenated one, since
-        `co` alone reaches co-owners and co-CEOs."""
-        return self.standalone_titles
+    def title_vocabulary(self, among: set[int]) -> set[str]:
+        """Every title word ``among`` hold on its own: never a piece of a hyphenated one,
+        since `co` alone reaches co-owners and co-CEOs."""
+        return {word for pk in among for word in self.titles_of.get(pk, ())}
 
-    def tag_vocabulary(self) -> set[tuple[str, ...]]:
-        """Every whole tag, never a phrase inside one (``pre`` from ``pre-rolls`` reached
-        founders of pre-seed funds) and never stopwords alone."""
-        return {tag for tag in self.whole_tags if not is_stopword_phrase(tag)}
+    def tag_vocabulary(self, among: set[int]) -> set[tuple[str, ...]]:
+        """Every whole tag ``among`` hold, never a phrase inside one (``pre`` from
+        ``pre-rolls`` reached founders of pre-seed funds) and never stopwords alone."""
+        return {tag for pk in among for tag in self.tags_of.get(pk, ())
+                if not is_stopword_phrase(tag)}
 
     def states_in(self, country: str) -> set[str]:
         """The states the store's people live in inside ``country``."""

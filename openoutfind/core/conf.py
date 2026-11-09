@@ -157,10 +157,6 @@ CAMPAIGN_CONFIG = {
 # belief.py).
 WALK_CONFIG = {
     "population": 4,
-    # Pseudo-companies the GP's score of a keyword is worth against the store's people holding
-    # it, in the keyword's prior lift (core/pipeline/belief.py): the GP is trained on those
-    # same verdicts, so a few real companies overtake it.
-    "prior_companies": 3,
 }
 
 # What a verdict's model is billed, in dollars per million tokens (input, output), keyed by

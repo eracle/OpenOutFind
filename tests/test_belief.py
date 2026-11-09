@@ -1,9 +1,11 @@
 # tests/test_belief.py
-"""The walk's belief: the sizes and the fit rate per keyword, at the mean and on a draw."""
+"""The walk's belief: one posterior over the sizes and the fit rate, read at the mean and on
+a draw."""
 from __future__ import annotations
 
+import json
 import math
-from unittest.mock import patch
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -12,8 +14,31 @@ from openoutfind.core.models import Search
 from openoutfind.core.pipeline import belief
 from openoutfind.core.pipeline.store_snapshot import People, fired_searches
 from openoutfind.core.pipeline.terms import Terms
-from openoutfind.crm.models import Lead
-from tests.store_builders import US, fire, make_companies, make_company, make_lead
+from tests.store_builders import US, fire, make_company, make_lead
+
+BATCH_6 = Path(__file__).parent / "fixtures" / "batch6_belief.json"
+FIELD = {"title": "title", "tag": "tag", "seniority": "seniority", "state": "place",
+         "country": "place"}
+
+
+def batch_6_inputs(searches: int | None = None) -> belief.Inputs:
+    """Batch 6's first ``searches`` fired searches as the model reads them."""
+    raw = json.loads(BATCH_6.read_text())
+    fired = raw["searches"][:searches]
+    keywords = tuple(sorted({k for s in fired for k in s["keywords"]}))
+    column = {k: j for j, k in enumerate(keywords)}
+    member = np.zeros((len(fired), len(keywords)))
+    fields = np.zeros((len(fired), len(belief.FIELDS)))
+    for i, s in enumerate(fired):
+        for keyword in s["keywords"]:
+            member[i, column[keyword]] = 1.0
+            fields[i, belief.FIELDS.index(FIELD[keyword.split("|")[0]])] += 1.0
+    return belief.Inputs(
+        keywords=keywords, searches=tuple(f"s{i}" for i in range(len(fired))), member=member,
+        fields=fields, store_share=np.array([raw["store_log_share"][k] for k in keywords]),
+        counted=np.arange(len(fired)), counts=np.array([s["found"] for s in fired], float),
+        fits=np.array([s["fits"] for s in fired]), misses=np.array([s["misses"] for s in fired]),
+        market_log_odds=belief.log_odds(raw["store_rate"]))
 
 
 def make_beliefs(rates, judged=(), fired=(), store_rate=0.5):
@@ -21,90 +46,68 @@ def make_beliefs(rates, judged=(), fired=(), store_rate=0.5):
 
 
 def counted_beliefs():
-    """Two counted searches and a founder no search holds, settled."""
+    """Two counted searches, and a founder no search holds."""
     people = [make_lead("Purchasing Manager") for _ in range(4)] + [make_lead("Founder")]
     fire(Terms.written(title="purchasing"), people[:2], found=3000)
     fire(Terms.written(title="manager"), people[2:4], found=900, origin=Search.Origin.DRAWN)
-    beliefs = make_beliefs({}, fired=fired_searches())
-    beliefs.settle({("title", "founder"): 0.5, ("title", "purchasing"): 0.5})
-    return beliefs
+    return make_beliefs({}, fired=fired_searches())
+
+
+class TestTheSampler:
+    def test_batch_6_reads_its_market_rate(self):
+        """The Newton fit this replaced stopped at α = +17.86 on these 23 searches, and read
+        every arm at θ = 1."""
+        posterior = belief.sample_posterior(batch_6_inputs())
+
+        assert 0.005 < belief.sigmoid(posterior.alpha).mean() < 0.1
+
+    def test_three_fired_searches_fit(self):
+        posterior = belief.sample_posterior(batch_6_inputs(3))
+
+        assert posterior.draws == belief.CHAINS * belief.DRAWS
+        assert np.isfinite(posterior.alpha).all()
+
+    def test_with_no_fired_search_the_belief_is_the_prior(self):
+        posterior = belief.sample_posterior(batch_6_inputs(0))
+
+        assert posterior.log_market.mean() == pytest.approx(math.log(belief.MARKET_PEOPLE),
+                                                            abs=0.2)
+        assert posterior.alpha.std() == pytest.approx(belief.MARKET_RATE_SPREAD, abs=0.1)
 
 
 @pytest.mark.django_db
 class TestTheFitRate:
-    def test_a_judged_fit_a_search_brought_lifts_each_of_its_keywords_alike(self):
-        fit = make_lead("Founder", tags="cannabis", company=make_company("acme"), verdict=1)
-        fire(Terms.written(title="founder", tag="cannabis"), [fit], found=500)
-        beliefs = make_beliefs({fit.pk: 1.0}, judged=[fit.pk], fired=fired_searches())
-        title, tag = ("title", "founder"), ("tag", ("cannabis",))
+    def test_a_keyword_whose_page_brought_fits_lifts_above_one_whose_page_did_not(self):
+        fits = [make_lead("Founder", company=make_company(f"f{i}"), verdict=1) for i in range(10)]
+        misses = [make_lead("Clerk", company=make_company(f"c{i}"), verdict=0) for i in range(10)]
+        fire(Terms.written(title="founder"), fits, found=5000)
+        fire(Terms.written(title="clerk"), misses, found=5000, origin=Search.Origin.DRAWN)
+        rates = {lead.pk: 1.0 for lead in fits} | {lead.pk: 0.0 for lead in misses}
 
-        beliefs.settle({title: 0.5, tag: 0.5})
+        beliefs = make_beliefs(rates, judged=rates, fired=fired_searches())
 
         lifts = beliefs.lifts()
-        assert lifts[title] == pytest.approx(lifts[tag])
-        assert lifts[title] > 0.0
-
-    def test_a_person_only_holding_a_keyword_moves_its_prior_and_never_its_strength(self):
-        """The store is not the market: a mark is evidence about the customer's corner."""
-        fits = [make_lead("Founder", company=make_company(f"m{i}"), verdict=1) for i in range(30)]
-        beliefs = make_beliefs({lead.pk: 1.0 for lead in fits}, judged=[f.pk for f in fits])
-        keyword = ("title", "founder")
-
-        beliefs.settle({keyword: 0.5})
-
-        assert beliefs.prior[keyword] == pytest.approx((1.5 + 30) / (3 + 30))
-        assert keyword not in beliefs.rates.column
-
-    def test_a_fired_searchs_own_rate_reads_its_pages_people(self):
-        page = [make_lead("Founder", company=make_company(f"c{i}"), verdict=0) for i in range(5)]
-        terms = Terms.written(title="founder")
-        fire(terms, page, found=5000)
-        beliefs = make_beliefs({lead.pk: 0.0 for lead in page}, judged=[p.pk for p in page],
-                               fired=fired_searches())
-
-        beliefs.settle({("title", "founder"): 0.5})
-
-        assert beliefs.search_mean(terms.key) < beliefs.means()[("title", "founder")]
-        assert beliefs.search_mean(terms.key) < 0.2
+        assert lifts[("title", "founder")] > 0.0 > lifts[("title", "clerk")]
 
     def test_the_markets_rate_is_learned_from_what_searches_brought_never_the_store(self):
         """Batch 6 read every unknown keyword at the store's 0.21, its marks' rate; the pages
         it brought held 2 fits in 16 verdicts."""
         page = [make_lead("Founder", company=make_company(f"c{i}"), verdict=0) for i in range(16)]
-        fire(Terms.written(title="founder"), page, found=5000)
+        terms = Terms.written(title="founder")
+        fire(terms, page, found=5000)
+
         beliefs = make_beliefs({lead.pk: 0.0 for lead in page}, judged=[p.pk for p in page],
                                fired=fired_searches(), store_rate=0.21)
-        unknown = ("tag", ("food",))
-
-        assert beliefs.market_rate == pytest.approx(0.21)
-        beliefs.settle({("title", "founder"): 0.21, unknown: 0.21})
 
         assert beliefs.market_rate < 0.15
-        assert beliefs.means()[unknown] == pytest.approx(beliefs.market_rate)
+        assert beliefs.search_mean(terms.key) < 0.15
 
-    def test_a_keywords_prior_follows_its_score_and_counts_overtake_it(self):
-        keyword = ("title", "clerk")
-        empty = make_beliefs({})
-        empty.settle({keyword: 0.8})
-        assert empty.means()[keyword] == pytest.approx(0.8)
+    def test_a_keyword_no_search_held_reads_the_markets_rate(self):
+        beliefs = counted_beliefs()
+        unknown = ("tag", ("food",))
 
-        make_companies("Clerk", 0, 30)
-        rates = dict.fromkeys(Lead.objects.values_list("pk", flat=True), 0.0)
-        beliefs = make_beliefs(rates, judged=rates)
-        beliefs.settle({keyword: 0.8})
-        assert beliefs.means()[keyword] < 0.1
-
-    def test_a_searchs_keywords_fall_after_a_page_of_low_scored_people_nobody_judged(self):
-        """They hold no `purchasing` of their own: the search that brought them counts."""
-        page = [make_lead("Clerk", company=make_company(f"c{i}")) for i in range(8)]
-        fire(Terms.written(title="purchasing"), page, found=5000)
-        keyword = ("title", "purchasing")
-
-        beliefs = make_beliefs({lead.pk: 0.05 for lead in page}, fired=fired_searches())
-        beliefs.settle({keyword: 0.5})
-
-        assert beliefs.lifts()[keyword] < 0.0
-        assert beliefs.means()[keyword] < 0.5
+        assert beliefs.lifts()[unknown] == 0.0
+        assert beliefs.rate([unknown], beliefs.lifts()) == pytest.approx(beliefs.market_rate)
 
     def test_a_query_adds_its_keywords_lifts_to_the_markets_log_odds(self):
         beliefs = make_beliefs({})
@@ -115,16 +118,44 @@ class TestTheFitRate:
         assert beliefs.rate([first, second], {first: lift, second: lift},
                             alpha=0.0) == pytest.approx(0.9)
 
-    def test_a_draw_repeats_on_its_seed_and_reads_a_fired_searchs_own_rate(self):
+
+@pytest.mark.django_db
+class TestTheDraw:
+    def test_a_seed_names_one_posterior_draw_for_both_halves(self):
         beliefs = counted_beliefs()
         keywords = {("title", "purchasing"), ("title", "founder")}
         key = Terms.written(title="purchasing").key
 
         first, again = beliefs.draw((1, 0), keywords), beliefs.draw((1, 0), keywords)
+        sizes = beliefs.draw_sizes((1, 0))
 
         assert first.lifts == again.lifts and first.alpha == again.alpha
+        index = beliefs.draw_index((1, 0))
+        assert first.alpha == beliefs.posterior.alpha[index]
+        assert sizes.log_market == first.sizes.log_market == beliefs.posterior.log_market[index]
+        assert sizes.pairs(("title", "founder")) == first.sizes.pairs(("title", "founder"))
         assert beliefs.theta_on(first, (), key) == first.searches[key]
-        assert np.array_equal(first.sizes.params, beliefs.draw_sizes((1, 0)).params)
+
+    def test_the_draws_move_between_seeds(self):
+        beliefs = counted_beliefs()
+
+        assert len({beliefs.draw_sizes(n).log_market for n in range(20)}) > 1
+
+    def test_a_keyword_no_search_held_draws_its_pair_from_the_draws_own_spread(self):
+        beliefs = counted_beliefs()
+        unknown = ("title", "founder")
+        fitted = ("title", "purchasing")
+
+        pairs = np.array([beliefs.draw_sizes(n).pairs(unknown) for n in range(1000)])
+
+        chol = beliefs.posterior.chol
+        assert abs(pairs[:, 1].mean()) < 0.15
+        assert pairs[:, 1].std() == pytest.approx(
+            np.sqrt((chol[:, 1, 0] ** 2 + chol[:, 1, 1] ** 2).mean()), rel=0.15)
+        index = beliefs.draw_index(7)
+        column = beliefs.posterior.column[fitted]
+        assert beliefs.draw_sizes(7).pairs(fitted) == (
+            beliefs.posterior.size[index, column], beliefs.posterior.lift[index, column])
 
 
 @pytest.mark.django_db
@@ -178,37 +209,20 @@ class TestTheEvidence:
 @pytest.mark.django_db
 class TestTheSizes:
     def test_a_fired_searchs_own_count_is_recovered(self):
+        """Within a factor of 2: one count leaves its dispersion, φ, little known."""
         people = [make_lead("Purchasing Manager") for _ in range(4)]
         fire(Terms.written(title="purchasing manager"), people, found=3000)
 
         beliefs = make_beliefs({}, fired=fired_searches())
 
-        assert beliefs.count(belief.query_keywords(
-            Terms.written(title="purchasing manager"))) == pytest.approx(3000, rel=0.15)
-
-    def test_with_no_count_the_market_is_its_anchor(self):
-        make_lead()
-        assert make_beliefs({}).sizes.mean().log_market == pytest.approx(
-            math.log(belief.MARKET_PEOPLE))
-
-    def test_the_sizes_draw_repeats_on_a_round_and_moves_between_rounds(self):
-        beliefs = counted_beliefs()
-
-        assert np.array_equal(beliefs.draw_sizes(3).params, beliefs.draw_sizes(3).params)
-        assert not np.array_equal(beliefs.draw_sizes(3).params, beliefs.draw_sizes(4).params)
-
-    def test_the_sizes_draw_centres_on_the_fit(self):
-        beliefs = counted_beliefs()
-        query = [("title", "purchasing")]
-
-        drawn = [math.log(beliefs.count(query, beliefs.draw_sizes(n))) for n in range(2000)]
-
-        assert np.mean(drawn) == pytest.approx(math.log(beliefs.count(query)), abs=0.1)
+        count = beliefs.count(belief.query_keywords(Terms.written(title="purchasing manager")))
+        assert 1500 < count < 6000
 
     def test_a_large_count_is_held_tighter_than_a_small_one(self):
-        """A Poisson count of 2 says little; one of 20,000 says its size to a few percent."""
+        """A count of 2 says little; one of 20,000 says its size to a few percent."""
         def spread(found):
             Search.objects.all().delete()
+            belief.FITTED = None
             fire(Terms.written(title="purchasing"), [make_lead("Purchasing Manager")],
                  found=found)
             beliefs = make_beliefs({}, fired=fired_searches())
@@ -223,7 +237,7 @@ class TestTheSizes:
         counted, uncounted = ("title", "purchasing"), ("title", "founder")
 
         def spread(keyword):
-            return np.std([beliefs.draw_sizes(n, [keyword]).share(keyword, beliefs.people)
+            return np.std([beliefs.draw_sizes(n).share(keyword, beliefs.people)
                            for n in range(1000)])
 
         assert spread(uncounted) > spread(counted)
@@ -241,60 +255,4 @@ class TestTheSizes:
         keywords = [("title", "purchasing"), ("title", "founder"), ("tag", ("thc", "vape"))]
 
         for number in range(200):
-            assert max(beliefs.shares(keywords, beliefs.draw_sizes(number, keywords))
-                       .values()) <= 0.0
-
-
-@pytest.mark.django_db
-class TestThePrior:
-    def test_a_keywords_prior_is_the_gps_score_through_the_fit_rate_map(self):
-        class Fixed:
-            def predict_probs(self, X):
-                return np.array([0.8, 0.2])
-
-        with patch("openoutfind.core.ml.embeddings.embed_texts",
-                   side_effect=lambda texts: np.zeros((len(texts), 384))):
-            priors = belief.keyword_priors([("title", "a"), ("title", "b")], Fixed(),
-                                           lambda p: np.asarray(p) / 2, 0.3)
-
-        assert priors == {("title", "a"): 0.4, ("title", "b"): 0.1}
-
-    def test_a_keyword_is_embedded_once_and_read_back_from_the_store(self):
-        embedded = []
-
-        def embed(texts):
-            embedded.extend(texts)
-            return np.ones((len(texts), 384))
-
-        with patch("openoutfind.core.ml.embeddings.embed_texts", side_effect=embed):
-            belief.KEYWORD_VECTORS.clear()
-            first = belief.keyword_vectors(["founder", "cannabis"])
-            belief.KEYWORD_VECTORS.clear()
-            second = belief.keyword_vectors(["founder", "cannabis", "owner"])
-
-        assert embedded == ["founder", "cannabis", "owner"]
-        assert np.array_equal(first, second[:2])
-
-    def test_a_new_embedding_model_embeds_again(self):
-        from openoutfind.core.conf import CAMPAIGN_CONFIG
-
-        with patch("openoutfind.core.ml.embeddings.embed_texts",
-                   side_effect=lambda texts: np.ones((len(texts), 384))) as embed:
-            belief.KEYWORD_VECTORS.clear()
-            belief.keyword_vectors(["founder"])
-            belief.KEYWORD_VECTORS.clear()
-            with patch.dict(CAMPAIGN_CONFIG, {"embedding_model": "another"}):
-                belief.keyword_vectors(["founder"])
-
-        assert embed.call_count == 2
-
-    def test_a_gp_that_cannot_score_leaves_the_market_rate(self):
-        class Unfitted:
-            def predict_probs(self, X):
-                return None
-
-        with patch("openoutfind.core.ml.embeddings.embed_texts",
-                   side_effect=lambda texts: np.zeros((len(texts), 384))):
-            assert belief.keyword_priors([("title", "c")], Unfitted(), None, 0.3) == {
-                ("title", "c"): 0.3}
-        assert belief.keyword_priors([("title", "c")], None, None, 0.3) == {("title", "c"): 0.3}
+            assert max(beliefs.shares(keywords, beliefs.draw_sizes(number)).values()) <= 0.0

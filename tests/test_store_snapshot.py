@@ -60,14 +60,14 @@ class TestPeople:
 
     def test_a_hyphenated_title_offers_none_of_its_pieces(self):
         """`co` alone reaches co-owners and co-CEOs: 283,068 against 179,644 co-founders."""
-        make_lead("Co-Founder & CEO", "cannabis edibles, food & beverage", "Ohio")
-        make_lead("Founder", "cannabis", "Ohio")
+        both = {make_lead("Co-Founder & CEO", "cannabis edibles, food & beverage", "Ohio").pk,
+                make_lead("Founder", "cannabis", "Ohio").pk}
 
         people = People.load({})
 
-        assert people.title_vocabulary() == {"founder", "ceo"}
+        assert people.title_vocabulary(both) == {"founder", "ceo"}
         assert {("cannabis",), ("cannabis", "edibles"), ("food", "beverage")} <= (
-            people.tag_vocabulary())
+            people.tag_vocabulary(both))
         assert people.states_in("United States") == {"ohio"}
 
     def test_the_vocabulary_holds_whole_tags_and_a_phrase_inside_one_still_matches(self):
@@ -76,10 +76,19 @@ class TestPeople:
 
         people = People.load({})
 
-        assert people.tag_vocabulary() == {
+        assert people.tag_vocabulary({held.pk}) == {
             ("pre", "rolls"), ("health", "care"), ("cannabis", "extraction")}
         assert people.match(Terms.written(title="founder", tag="cannabis")) == {held.pk}
         assert people.match(Terms.written(title="founder", tag="pre")) == {held.pk}
+
+    def test_the_vocabulary_is_of_the_people_asked_for(self):
+        fit = make_lead("Extraction Lead", "live resin", "Ohio")
+        make_lead("Clerk", "insurance", "Ohio")
+
+        people = People.load({})
+
+        assert people.title_vocabulary({fit.pk}) == {"extraction", "lead"}
+        assert people.tag_vocabulary({fit.pk}) == {("live", "resin")}
 
     def test_a_store_with_nobody_scored_reads_as_neutral(self):
         make_lead()

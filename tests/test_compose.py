@@ -38,6 +38,8 @@ def _all(vocabulary: Vocabulary):
         for words in itertools.combinations(titles, size):
             for tag in vocabulary.tags:
                 for seniority in seniorities:
+                    if seniority and ("title", seniority[1]) in words:
+                        continue
                     for place in places:
                         yield tuple(k for k in (*words, tag, seniority, place) if k)
 
@@ -99,6 +101,17 @@ class TestCompose:
 
         assert {frozenset(s.title) for s in searches} == {frozenset({"founder"}),
                                                           frozenset({"owner"})}
+
+    def test_no_search_holds_a_seniority_its_title_word_names(self):
+        """Batch 6: 19 of 23 searches held title and seniority `founder`, one keyword twice."""
+        vocabulary = _vocabulary(titles=("founder", "ceo"), seniorities=("founder", "owner"))
+        lift = dict.fromkeys(vocabulary.keywords(), 1.0)
+        share = dict.fromkeys(vocabulary.keywords(), -1.0)
+
+        searches = compose.compose(vocabulary, lift, share, LOG_MARKET, _worth, limit=50)
+
+        assert any(s.seniority == "founder" for s in searches)
+        assert not any("founder" in s.title and s.seniority == "founder" for s in searches)
 
     def test_with_no_title_or_no_tag_nothing_is_composed(self):
         assert compose.compose(_vocabulary(titles=()), {}, {}, LOG_MARKET, _worth, 10) == []

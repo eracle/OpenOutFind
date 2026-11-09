@@ -1,6 +1,6 @@
 # openoutfind/core/pipeline/compose.py
-"""The searches worth the most at the mean belief, composed from every keyword the store
-holds.
+"""The searches worth the most at the mean belief, composed from every keyword of the
+vocabulary (``search_arms.Frontier.vocabulary``: the qualified profiles' titles and tags).
 
 An LLM scores its whole vocabulary at every step. The walk does the same: no term is cut
 before it is valued. A search is title words (any number, ANDed), one tag phrase, at most
@@ -13,8 +13,8 @@ brings two numbers, both adding up over a search's keywords:
 So a search's rate and size are sums, and the best searches are found without listing
 every one. At one size — a bin of the summed share — only the highest summed lift can be
 worth the most, so the fields are added one at a time, keeping the best per bin: title
-words (any subset of those that lift, plus every word alone), then a seniority or none,
-then the place, then every tag. Each finished search is valued at the fits a page of it
+words (any subset of those that lift, plus every word alone), then a seniority or none —
+never one a title word already names — then the place, then every tag. Each finished search is valued at the fits a page of it
 would bring (``worth``, from the frontier), and the best go back to the
 frontier, which values them exactly — the store's people they match, the counts of fired
 searches they narrow. A search the frontier refuses (fired, dead, drained) is what
@@ -162,11 +162,19 @@ def compose(vocabulary: Vocabulary, lift: dict, share: dict, log_market: float,
         return [(k, lift[k], share[k]) for k in keywords]
 
     best = _titles(options(vocabulary.titles), floor)
-    best = _add(best, options(vocabulary.seniorities), keep=True, floor=floor)
+    best = _add(best, options(vocabulary.seniorities), keep=True, floor=floor,
+                skip=_names_its_title)
     if vocabulary.places:
         best = _add(best, options(vocabulary.places), keep=False, floor=floor)
     return [as_terms(parts) for parts in _best_with_a_tag(best, options(vocabulary.tags),
                                                           floor, worth, limit)]
+
+
+def _names_its_title(parts, seniority: Keyword) -> bool:
+    """Whether ``seniority`` is a title word ``parts`` already hold: title `founder` and
+    seniority `founder` are near one keyword, and 19 of batch 6's 23 searches held both,
+    doubling the `founder` lift into the sum."""
+    return ("title", seniority[1]) in parts
 
 
 def _best_with_a_tag(best: _Best, tags, floor: float, worth: Worth, limit: int) -> list:
