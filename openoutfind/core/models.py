@@ -212,6 +212,39 @@ class Brief(models.Model):
         return f"brief by {self.written_by}, {self.updated_at:%Y-%m-%d %H:%M}"
 
 
+class MarketGuess(models.Model):
+    """An LLM's guess about the whole market, one row: how many people it holds and how
+    many of them fit. Guessed before any keyword, which are all guessed against it, so
+    they share one scale. ``core/pipeline/keyword_guess.py`` owns it; a replaced brief
+    clears it.
+    """
+
+    people = models.FloatField()
+    fits = models.FloatField()
+    written_by = models.CharField(max_length=100)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"market: ~{self.people:,.0f} people, ~{self.fits:,.0f} fit"
+
+
+class KeywordGuess(models.Model):
+    """An LLM's guess about one keyword of the walk, the prior the belief starts it from:
+    how many people in the market hold it, and how many of them fit, against the
+    ``MarketGuess``. The field is the keyword's own prefix (``tag|rosin``).
+    ``core/pipeline/keyword_guess.py`` owns it; a replaced brief clears it.
+    """
+
+    keyword = models.CharField(max_length=300, unique=True)
+    people = models.FloatField()
+    fits = models.FloatField()
+    written_by = models.CharField(max_length=100)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.keyword}: ~{self.people:,.0f} people, ~{self.fits:,.0f} fit"
+
+
 class CompanyEnrichPage(models.Model):
     """One explicitly authorized paid request, retained to prevent accidental replay.
 

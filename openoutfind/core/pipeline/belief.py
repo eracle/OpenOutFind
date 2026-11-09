@@ -8,22 +8,23 @@ people in the market holding it, and ``θ_t``, the share of them who fit. **A fi
 is one sample of the AND of its keywords**, taken as independent, and both halves are one
 hierarchical model, sampled whole by NUTS (PyMC, compiled by nutpie):
 
-    log N(q)   = log N₀ + Σ_{t∈q} ( μ_field(t) + γ · x_t + u_t )     x_t = log store share of t
-    logit θ(q) = α + Σ_{t∈q} v_t + e_q
+    log N(q)   = log N₀ + Σ_{t∈q} ( μ_field(t) + γ · x_t + u_t )     x_t = a log share of t
+    logit θ(q) = α + Σ_{t∈q} ( p_t + v_t ) + e_q
     (u_t, v_t) ~ MVNormal(0, diag(τ, s_ℓ) · R(ρ) · diag(τ, s_ℓ))    one pair per keyword
     e_q        ~ Normal(0, s_e²)
 
+- **The LLM's guess is the prior** (``Guesses``, written by ``keyword_guess``): the
+  market's people and fits, guessed once, and per keyword the people in the market holding
+  it and how many of them fit. ``x_t`` is ``log(people / market people)``, and ``p_t``
+  ``logit(fits / people) − logit(market fits / market people)``. An unguessed keyword's
+  ``x_t`` is its log share of the store, and its ``p_t`` 0.
 - **The count** is the provider's, a negative binomial draw around ``N(q)`` whose
-  dispersion ``φ`` is learned. The store is not the market, so its share of a keyword is
-  evidence whose weight ``γ`` the counts learn. ``log N₀`` is anchored broadly at
-  ``MARKET_PEOPLE``: no search counts the market itself.
+  dispersion ``φ`` is learned. ``x_t`` is evidence whose weight ``γ`` the counts learn.
+  ``log N₀`` is anchored broadly at ``MARKET_PEOPLE``: no search counts the market itself.
 - **The fit rate** is what searches brought: each fired search's people add
   ``evidence``, a binomial sample of its ``θ(q)``. ``α = logit π`` is learned from the
   searched people only, centred on the store's rate. ``e_q`` is a fired search's own
   effect, so a page that came back bad says so about the search that brought it.
-- **A keyword's lift is centred on ``p_t``**, an LLM's prior lift for the keyword read
-  against the brief (``OPENOUTFIND_KEYWORD_PRIOR``, every keyword in one output so they share
-  a scale), in logits against a neutral keyword of its field. Unscored, it is 0.
 - **The spreads are learned** — ``τ``, ``s_ℓ``, ``s_e``, ``φ`` and the correlation ``ρ``
   between a keyword's size and its lift — and a keyword no fired search holds draws its pair
   from the draw's own ``MVNormal(0, Σ)``.
@@ -34,17 +35,13 @@ when a page or a verdict lands** (``fitted``), about 3.5 s a refit.
 """
 from __future__ import annotations
 
-import functools
 import hashlib
-import json
 import logging
 import math
-import os
 import statistics
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from pathlib import Path
 
 import numpy as np
 
@@ -64,8 +61,9 @@ MARKET_PEOPLE = 10_000_000
 MARKET_SPREAD = 3.0
 # Each field's mean log share, before any count.
 FIELD_SPREAD = 3.0
-# γ, how far the store's share of a keyword says its market share: taken as said, at first.
-STORE_SHARE_MEAN, STORE_SHARE_SPREAD = 1.0, 1.0
+# γ, how far ``x_t`` (the guessed share, else the store's) says a keyword's market share:
+# taken as said, at first.
+SHARE_WEIGHT_MEAN, SHARE_WEIGHT_SPREAD = 1.0, 1.0
 # α, the searched market's log odds, about the store's.
 MARKET_RATE_SPREAD = 1.0
 # The scales of the learned spreads (each a half-normal): τ, a keyword's log share off its
@@ -77,9 +75,6 @@ KEYWORD_SPREAD, LIFT_SPREAD, SEARCH_SPREAD = 1.5, 1.0, 0.5
 COUNT_DISPERSION = 5.0
 # R's LKJ concentration: 2 leans away from a perfect correlation.
 CORRELATION_CONCENTRATION = 2.0
-# A JSON file of {"field|value": prior lift in logits}, every keyword of the vocabulary in one
-# output against the brief.
-KEYWORD_PRIOR_ENV = "OPENOUTFIND_KEYWORD_PRIOR"
 
 # ── the sampler ──
 CHAINS, TUNE, DRAWS = 4, 500, 500
@@ -138,26 +133,47 @@ def store_log_share(keyword: Keyword, people) -> float:
     return math.log((len(people.holding(keyword)) + 1) / (len(people.everyone) + 2))
 
 
-# ── the LLM's prior on the lifts ──
+# ── the LLM's guess: the prior ──
 
 def keyword_text(keyword: Keyword) -> str:
-    """``keyword`` as the scores file spells it: ``tag|cannabis extraction``,
+    """``keyword`` as a guess spells it: ``tag|cannabis extraction``,
     ``state|new york|united states``."""
     return "|".join(" ".join(part) if isinstance(part, tuple) else str(part)
                     for part in keyword)
 
 
-@functools.cache
-def keyword_priors(path: str | None) -> dict[str, float]:
-    """``p_t`` per keyword, as the file gives it."""
-    if not path:
-        return {}
-    return {k: float(v) for k, v in json.loads(Path(path).read_text()).items()}
+@dataclass(frozen=True)
+class Guesses:
+    """The LLM's guess per keyword, in the model's terms: ``x_t``, ``log(people / market
+    people)``, and ``p_t``, ``logit(fits / people) − logit(market fits / market people)``."""
 
+    shares: dict = field(default_factory=dict)
+    lifts: dict = field(default_factory=dict)
 
-def centre(keyword: Keyword) -> float:
-    """``p_t`` for ``keyword``, 0 where it was not scored."""
-    return keyword_priors(os.environ.get(KEYWORD_PRIOR_ENV)).get(keyword_text(keyword), 0.0)
+    @classmethod
+    def from_counts(cls, market: tuple[float, float], rows) -> Guesses:
+        """From the market's ``(people, fits)`` and ``(keyword, people, fits)`` rows."""
+        market_people, market_fits = market
+        market_log_odds = count_log_odds(market_people, market_fits)
+        shares, lifts = {}, {}
+        for keyword, people, fits in rows:
+            shares[keyword] = math.log(people / market_people)
+            lifts[keyword] = count_log_odds(people, fits) - market_log_odds
+        return cls(shares, lifts)
+
+    def lift(self, keyword: Keyword) -> float:
+        """``p_t``: 0 for a keyword not guessed, the market's rate."""
+        return self.lifts.get(keyword_text(keyword), 0.0)
+
+    def log_share(self, keyword: Keyword, people) -> float:
+        """``x_t``: the guessed share, or the store's for a keyword not guessed."""
+        guessed = self.shares.get(keyword_text(keyword))
+        return store_log_share(keyword, people) if guessed is None else guessed
+
+    @property
+    def digest(self) -> str:
+        return hashlib.sha256(repr((sorted(self.shares.items()),
+                                    sorted(self.lifts.items()))).encode()).hexdigest()
 
 
 # ── the model's inputs ───────────────────────────────────────────────
@@ -171,17 +187,19 @@ class Inputs:
     searches: tuple
     member: np.ndarray        # (searches, keywords): 1 where a search holds a keyword
     fields: np.ndarray        # (searches, FIELDS): its keywords per field
-    store_share: np.ndarray   # (keywords,): x_t
-    centre: np.ndarray        # (keywords,): p_t, the LLM's prior lift
+    log_share: np.ndarray     # (keywords,): x_t
+    centre: np.ndarray        # (keywords,): p_t, the guessed lift
     counted: np.ndarray       # the searches with a provider count
     counts: np.ndarray        # their counts
     fits: np.ndarray          # (searches,), fractional
     misses: np.ndarray
     market_log_odds: float    # α's centre, the store's rate
+    guesses: Guesses = field(default_factory=Guesses)
 
 
-def model_inputs(fired, people, judged: set[int], store_rate: float) -> Inputs:
-    """The fired searches' keywords, counts and evidence."""
+def model_inputs(fired, people, judged: set[int], store_rate: float,
+                 guesses: Guesses) -> Inputs:
+    """The fired searches' keywords, counts and evidence, and each keyword's guess."""
     keywords = tuple(sorted({keyword for f in fired for keyword in f.keywords}))
     column = {keyword: j for j, keyword in enumerate(keywords)}
     member = np.zeros((len(fired), len(keywords)))
@@ -196,10 +214,11 @@ def model_inputs(fired, people, judged: set[int], store_rate: float) -> Inputs:
     return Inputs(
         keywords=keywords, searches=tuple(f.search.key for f in fired), member=member,
         fields=fields,
-        store_share=np.array([store_log_share(keyword, people) for keyword in keywords]),
-        centre=np.array([centre(keyword) for keyword in keywords]),
+        log_share=np.array([guesses.log_share(keyword, people) for keyword in keywords]),
+        centre=np.array([guesses.lift(keyword) for keyword in keywords]),
         counted=counted, counts=np.array([fired[i].found for i in counted], dtype=np.float64),
-        fits=fits, misses=misses, market_log_odds=log_odds(clip_rate(store_rate)))
+        fits=fits, misses=misses, market_log_odds=log_odds(clip_rate(store_rate)),
+        guesses=guesses)
 
 
 # ── the posterior ────────────────────────────────────────────────────
@@ -219,6 +238,7 @@ class Posterior:
     size: np.ndarray          # (D, keywords): u_t
     lift: np.ndarray          # (D, keywords): v_t, p_t included
     own: np.ndarray           # (D, searches): e_q
+    guesses: Guesses = field(default_factory=Guesses)
     divergences: int = 0
     seconds: float = 0.0
     column: dict = field(init=False)
@@ -265,7 +285,7 @@ def sample_posterior(inputs: Inputs) -> Posterior:
         field_mean=flat("field_mean"), gamma=flat("gamma"), alpha=flat("alpha"),
         chol=flat("chol_matrix"), size=pair[:, 0, :keywords],
         lift=pair[:, 1, :keywords] + inputs.centre[None, :],
-        own=flat("own")[:, :searches],
+        own=flat("own")[:, :searches], guesses=inputs.guesses,
         divergences=int(trace.sample_stats["diverging"].values.sum()),
         seconds=time.perf_counter() - started)
 
@@ -300,13 +320,13 @@ def padded_data(inputs: Inputs, searches: int, keywords: int) -> dict[str, np.nd
     member[:rows, :columns] = inputs.member
     fields = np.zeros((searches, len(FIELDS)))
     fields[:rows] = inputs.fields
-    store_share, centres = np.zeros(keywords), np.zeros(keywords)
-    store_share[:columns], centres[:columns] = inputs.store_share, inputs.centre
+    log_share, centres = np.zeros(keywords), np.zeros(keywords)
+    log_share[:columns], centres[:columns] = inputs.log_share, inputs.centre
     counts, counted = np.zeros(searches), np.zeros(searches)
     counts[inputs.counted], counted[inputs.counted] = inputs.counts, 1.0
     fits, misses = np.zeros(searches), np.zeros(searches)
     fits[:rows], misses[:rows] = inputs.fits, inputs.misses
-    return {"member": member, "fields": fields, "store_share": store_share,
+    return {"member": member, "fields": fields, "log_share": log_share,
             "centre": centres, "counts": counts,
             "counted": counted, "fits": fits, "misses": misses,
             "market_log_odds": np.array(inputs.market_log_odds)}
@@ -321,7 +341,7 @@ def joint_model(searches: int, keywords: int):
     with pm.Model() as model:
         member = pm.Data("member", np.zeros((searches, keywords)))
         fields = pm.Data("fields", np.zeros((searches, len(FIELDS))))
-        store_share = pm.Data("store_share", np.zeros(keywords))
+        log_share = pm.Data("log_share", np.zeros(keywords))
         centres = pm.Data("centre", np.zeros(keywords))
         counts = pm.Data("counts", np.zeros(searches))
         counted = pm.Data("counted", np.zeros(searches))
@@ -331,7 +351,7 @@ def joint_model(searches: int, keywords: int):
 
         log_market = pm.Normal("log_market", math.log(MARKET_PEOPLE), MARKET_SPREAD)
         field_mean = pm.Normal("field_mean", 0.0, FIELD_SPREAD, shape=len(FIELDS))
-        gamma = pm.Normal("gamma", STORE_SHARE_MEAN, STORE_SHARE_SPREAD)
+        gamma = pm.Normal("gamma", SHARE_WEIGHT_MEAN, SHARE_WEIGHT_SPREAD)
         alpha = pm.Normal("alpha", market_log_odds, MARKET_RATE_SPREAD)
         chol, _, _ = pm.LKJCholeskyCov(
             "chol", n=2, eta=CORRELATION_CONCENTRATION, compute_corr=True,
@@ -345,7 +365,7 @@ def joint_model(searches: int, keywords: int):
         dispersion = pm.HalfNormal("dispersion", COUNT_DISPERSION)
 
         log_count = (log_market + pt.dot(fields, field_mean)
-                     + pt.dot(member, gamma * store_share + pair[0]))
+                     + pt.dot(member, gamma * log_share + pair[0]))
         count_logp = pm.logp(pm.NegativeBinomial.dist(mu=pt.exp(log_count), alpha=dispersion),
                              counts)
         pm.Potential("count", pt.dot(counted, count_logp))
@@ -371,31 +391,32 @@ def prior_draws(inputs: Inputs) -> Posterior:
         keywords=(), searches=(),
         log_market=rng.normal(math.log(MARKET_PEOPLE), MARKET_SPREAD, count),
         field_mean=rng.normal(0.0, FIELD_SPREAD, (count, len(FIELDS))),
-        gamma=rng.normal(STORE_SHARE_MEAN, STORE_SHARE_SPREAD, count),
+        gamma=rng.normal(SHARE_WEIGHT_MEAN, SHARE_WEIGHT_SPREAD, count),
         alpha=rng.normal(inputs.market_log_odds, MARKET_RATE_SPREAD, count),
         chol=chol, size=np.zeros((count, 0)), lift=np.zeros((count, 0)),
-        own=np.zeros((count, 0)))
+        own=np.zeros((count, 0)), guesses=inputs.guesses)
 
 
 # The posterior, under the key of the pages and verdicts it was fitted on.
 FITTED: tuple[str, Posterior] | None = None
 
 
-def evidence_key(fired, judged: set[int]) -> str:
-    """What a refit waits on: the fired pages and the judged people. Not the evidence
-    itself — an unjudged person's share of it moves with every GP refit, and a verdict,
-    which already changes this key, is what refits the GP."""
+def evidence_key(fired, judged: set[int], guesses: Guesses) -> str:
+    """What a refit waits on: the fired pages, the judged people and the guesses. Not the
+    evidence itself — an unjudged person's share of it moves with every GP refit, and a
+    verdict, which already changes this key, is what refits the GP."""
     pages = sorted((f.search.key, f.latest.pk, f.latest.number, f.found) for f in fired)
-    return hashlib.sha256(repr((pages, sorted(judged))).encode()).hexdigest()
+    return hashlib.sha256(repr((pages, sorted(judged), guesses.digest)).encode()).hexdigest()
 
 
-def fitted(fired, people, judged: set[int], store_rate: float) -> Posterior:
-    """The posterior, refitted only when a page or a verdict has landed since the last fit."""
+def fitted(fired, people, judged: set[int], store_rate: float, guesses: Guesses) -> Posterior:
+    """The posterior, refitted only when a page, a verdict or a guess has landed since the
+    last fit."""
     global FITTED
-    key = evidence_key(fired, judged)
+    key = evidence_key(fired, judged, guesses)
     if FITTED is not None and FITTED[0] == key:
         return FITTED[1]
-    posterior = sample_posterior(model_inputs(fired, people, judged, store_rate))
+    posterior = sample_posterior(model_inputs(fired, people, judged, store_rate, guesses))
     FITTED = (key, posterior)
     log_refit(posterior)
     return posterior
@@ -434,7 +455,7 @@ class Pairs:
         column = posterior.column.get(keyword)
         if self.index is None:
             if column is None:
-                return 0.0, centre(keyword)
+                return 0.0, posterior.guesses.lift(keyword)
             return float(posterior.size[:, column].mean()), float(posterior.lift[:, column].mean())
         if column is not None:
             return (float(posterior.size[self.index, column]),
@@ -443,7 +464,7 @@ class Pairs:
             [*np.atleast_1d(self.seed).tolist(), PAIR_STREAM, keyword_number(keyword)]
         ).standard_normal(2)
         size, lift = posterior.chol[self.index] @ noise
-        return float(size), float(lift + centre(keyword))
+        return float(size), float(lift + posterior.guesses.lift(keyword))
 
 
 @dataclass(frozen=True)
@@ -456,10 +477,11 @@ class Sizes:
     pairs: Pairs
 
     def share(self, keyword: Keyword, people) -> float:
-        """``log(N_t / N₀)``, never above 0: the field's mean, γ times the store's share,
-        the keyword's own deviation."""
+        """``log(N_t / N₀)``, never above 0: the field's mean, γ times ``x_t``, the
+        keyword's own deviation."""
+        guesses = self.pairs.posterior.guesses
         share = (self.field_mean[FIELDS.index(keyword_field(keyword))]
-                 + self.gamma * store_log_share(keyword, people) + self.pairs(keyword)[0])
+                 + self.gamma * guesses.log_share(keyword, people) + self.pairs(keyword)[0])
         return min(float(share), 0.0)
 
 
@@ -477,11 +499,12 @@ class Draw:
 class Beliefs:
     """What the store says about every keyword: the posterior, and every read of it."""
 
-    def __init__(self, people, fired, judged: set[int], store_rate: float):
+    def __init__(self, people, fired, judged: set[int], store_rate: float,
+                 guesses: Guesses = Guesses()):
         self.people = people
         self.store_rate = clip_rate(store_rate)
         self.search_keywords = {f.search.key: f.keywords for f in fired}
-        self.posterior = fitted(list(fired), people, judged, self.store_rate)
+        self.posterior = fitted(list(fired), people, judged, self.store_rate, guesses)
         self.mean_pairs = Pairs(self.posterior)
 
     # ── at the mean ──
@@ -511,7 +534,8 @@ class Beliefs:
         """Each keyword's lift at the posterior mean, ``logit θ_t − logit π``: ``p_t`` for a
         keyword no search held."""
         posterior = self.posterior
-        return Lifts(zip(posterior.keywords, posterior.lift.mean(axis=0).tolist()))
+        return Lifts(posterior.guesses,
+                     zip(posterior.keywords, posterior.lift.mean(axis=0).tolist()))
 
     def means(self) -> dict[Keyword, float]:
         """Each fitted keyword's expected ``θ_t``."""
@@ -577,10 +601,14 @@ class Beliefs:
 
 
 class Lifts(dict):
-    """The fitted keywords' mean lifts; any other keyword reads its prior ``p_t``."""
+    """The fitted keywords' mean lifts; any other keyword reads its guessed ``p_t``."""
+
+    def __init__(self, guesses: Guesses, items):
+        super().__init__(items)
+        self.guesses = guesses
 
     def __missing__(self, keyword: Keyword) -> float:
-        return centre(keyword)
+        return self.guesses.lift(keyword)
 
 
 def keyword_number(keyword: Keyword) -> int:
@@ -599,6 +627,12 @@ def clip_rate(rate: float) -> float:
 
 def log_odds(rate: float) -> float:
     return math.log(rate / (1.0 - rate))
+
+
+def count_log_odds(people: float, fits: float) -> float:
+    """The log odds of ``fits`` among ``people``, half a count added to each side so none
+    and all stay finite. Not ``clip_rate``: a guessed market's rate sits below its floor."""
+    return math.log((fits + 0.5) / (people - fits + 0.5))
 
 
 def sigmoid(x):

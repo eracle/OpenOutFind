@@ -111,6 +111,20 @@ def _no_live_brief_writer():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _no_live_keyword_guesses():
+    """No test may have a model guess the walk's market or keywords: the model path guesses
+    a market and no keyword, so every keyword reads the store's share and the market's
+    rate. Tests *of* the guesses patch the same targets themselves and win."""
+    from openoutfind.core.pipeline.keyword_guess import FieldAnswer, MarketAnswer
+
+    target = "openoutfind.core.pipeline.keyword_guess"
+    with patch(f"{target}.guess_market_with_llm",
+               return_value=MarketAnswer(people=10_000_000, fits=10_000)), \
+            patch(f"{target}.guess_field_with_llm", return_value=FieldAnswer(keywords=[])):
+        yield
+
+
 @pytest.fixture
 def configure(monkeypatch):
     """Set this run's configuration, the only way an install is configured: the environment.

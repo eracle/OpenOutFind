@@ -210,7 +210,7 @@ def run_round(site_config, qualifier) -> Round | None:
     number = 0 if last is None else last + 1
 
     arms = (search_arms.written_arms() if last is None
-            else search_arms.next_round(qualifier, number))
+            else search_arms.next_round(qualifier, number, site_config))
     if not arms:
         return None
     results = _fire_all(arms, site_config.bettercontact_api_key)

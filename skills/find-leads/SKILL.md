@@ -246,6 +246,30 @@ walks without them: a store seeded with `--labels` gets them in the same answer,
 store that has searches but no anchors stops once with `population_pending` before its next
 round (its searches part is not used). It is asked once per store; later runs never see it again.
 
+**Then it asks you to guess the market and its keywords, in plain counts.** Before a composed
+round, the market and every keyword the walk could search on (the title words and tags of the
+fits, the seniorities, the places) need a guess, and the run stops with
+`keyword_guess_pending` while any has none. Its error object carries `product_docs`,
+`campaign_target`, the brief as `rules`, `market` (its stored guess, or `null` when you guess
+it), under `fields` each field with keywords to guess (what the field means, its `keywords`,
+and the ones already `guessed` with their counts), and `refused`, the guesses refused last
+time with why. Guess the market first: how many people it holds and how many of them fit.
+Then, one field at a time and comparing the keywords with each other, how many people in the
+market hold each keyword and how many of those fit. Re-run the same command with:
+
+```bash
+outfind find 10 --agent-qualify --keyword-guesses '{
+  "market": {"people": 10000000, "fits": 5000},
+  "keywords": [{"keyword": "tag|live resin", "people": 400, "fits": 120},
+               {"keyword": "tag|retail", "people": 2000000, "fits": 200}, ...]}'
+```
+
+Leave `market` out once it is stored. Each keyword exactly as given, every one of them;
+`fits` never above `people`, and neither above the market's — a guess that breaks one is
+refused and asked again. Keep new ones on the scale of the ones already guessed. It comes
+back when new fits bring new titles or tags. A guess is where the walk starts, not where it
+stays: each keyword's own searches correct it.
+
 ## Reading the output
 
 **stdout is result-only; logs, counts and progress go to stderr.** That is the contract that makes
@@ -342,6 +366,7 @@ is a stable string worth branching on:
 | `bad_config` | A value is set but unusable (e.g. a negative count). | Read the message; it names the field. |
 | `qualify_pending` | `--agent-qualify` stopped one candidate short of the `AI_MODEL` call it opted out of. | Judge the candidate carried on the error object, then re-run with `--verdict`/`--reason` — see *Answering qualify yourself*. |
 | `population_pending` | `--agent-qualify` on a fresh store: the walk's 4 initial searches and the ideal profiles are needed first. | Write them from the error's `product_docs`/`campaign_target`/`rules` in its `schema`, then re-run with `--population '<json>'`. |
+| `keyword_guess_pending` | `--agent-qualify` before a composed round: the market or keywords the walk could search on have no guess yet. | Guess the market (if `market` is `null`) and each keyword's people and fits from the error's payload in its `schema`, then re-run with `--keyword-guesses '<json>'`. |
 | `unanchored` | The ideal profiles could not be written (the model failed or wrote none), and the walk does not start without them. Nothing was fired. | Transient on the model path; run again. |
 
 Treat a non-zero exit as *partial success with a stated reason*, not as "nothing happened" — the

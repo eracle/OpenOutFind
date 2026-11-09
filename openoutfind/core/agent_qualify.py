@@ -4,9 +4,11 @@ A contextvar rather than a parameter threaded through ``run_job -> cycle -> top_
 qualify`` — at most one verdict is ever in flight, and none of those layers has any
 other reason to know a calling agent is answering instead of a model.
 
-Two things can be answered: a candidate's **verdict** (``--verdict``/``--reason``) and,
+Three things can be answered: a candidate's **verdict** (``--verdict``/``--reason``);
 once per store, the **population** — the walk's initial searches and the ideal profiles
-(``--population``), which are the only other ``AI_MODEL`` calls a run makes.
+(``--population``); and the **keyword guesses** (``--keyword-guesses``), asked whenever
+the market or the walk's vocabulary holds keywords with none. Those are every ``AI_MODEL`` call a run
+makes.
 """
 from __future__ import annotations
 
@@ -26,14 +28,20 @@ _population: ContextVar[object | None] = ContextVar("agent_qualify_population",
                                                     default=None)
 
 
-def enable(verdict: Verdict | None, population=None) -> None:
+_keyword_guesses: ContextVar[object | None] = ContextVar("agent_qualify_keyword_guesses",
+                                                         default=None)
+
+
+def enable(verdict: Verdict | None, population=None, keyword_guesses=None) -> None:
     """Turn agent-qualify mode on for this process, with optional resume answers.
 
-    ``population`` is a validated ``icp.PopulationAnswer``, or ``None`` when none was given.
+    ``population`` is a validated ``icp.PopulationAnswer`` and ``keyword_guesses`` a
+    validated ``keyword_guess.KeywordGuesses``, or ``None`` when none was given.
     """
     _active.set(True)
     _verdict.set(verdict)
     _population.set(population)
+    _keyword_guesses.set(keyword_guesses)
 
 
 def active() -> bool:
@@ -51,3 +59,9 @@ def population_answer():
     """The ``--population`` answer, if one was given. Not consumed: the searches and the
     anchors are written at different moments of one run and both read it."""
     return _population.get()
+
+
+def keyword_guesses_answer():
+    """The ``--keyword-guesses`` answer, if one was given. Not consumed: storing it again
+    is a no-op."""
+    return _keyword_guesses.get()

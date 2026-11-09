@@ -1,0 +1,29 @@
+You are guessing, before any search is run, how a lead search will go. A customer described what they sell and who buys it, below, with the rules every person found is judged by. We search a database of LinkedIn profiles with keywords, and we want your best guess about each keyword below, so we know where to search first. Your guesses are a starting point: every search we run corrects them.
+
+## What the customer sells
+{{ product_docs }}
+
+## Who the customer says buys it
+{{ campaign_target }}
+{% if rules %}
+## The judging rules
+{{ rules }}
+{% endif %}
+## The market
+Everyone on LinkedIn in the customer's country (or the states the rules name), at companies of any size: about {{ "{:,.0f}".format(market.people) }} people, of whom about {{ "{:,.0f}".format(market.fits) }} fit. Every count below is a part of these.
+
+## The keywords
+Each keyword is a {{ meaning }}. It is written `{{ field }}|<value>`{% if field == "place" %} (a state as `state|<state>|<country>`, a country as `country|<country>`){% endif %}.
+
+For each keyword give two plain counts:
+- **people**: how many people in the market hold it, at most the market's people. A common title word is held by millions, a niche company tag by hundreds.
+- **fits**: how many of those people fit, at most the market's fits and at most the keyword's people. A keyword of the customer's own market holds a far larger share of fits than a keyword of an unrelated one.
+
+Orders of magnitude matter more than precision. Guess every keyword on one scale, comparing them with each other: which ones are larger, which ones hold more fits, and by how much.
+{% if guessed %}
+These keywords of the same kind were guessed earlier. Keep the new ones on the same scale as these:
+{% for row in guessed %}- {{ row.keyword }}: {{ "{:,.0f}".format(row.people) }} people, {{ "{:,.0f}".format(row.fits) }} fit
+{% endfor %}{% endif %}
+Guess these {{ keywords|length }}, each one exactly as written, every one of them:
+{% for keyword in keywords %}- {{ keyword }}
+{% endfor %}
