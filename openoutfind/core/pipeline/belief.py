@@ -21,8 +21,9 @@ hierarchical model, sampled whole by NUTS (PyMC, compiled by nutpie):
   ``evidence``, a binomial sample of its ``θ(q)``. ``α = logit π`` is learned from the
   searched people only, centred on the store's rate. ``e_q`` is a fired search's own
   effect, so a page that came back bad says so about the search that brought it.
-- **A keyword's lift is centred on 0, the market's rate.** There is no prior from the GP:
-  the customer's marks reach the walk through the vocabulary instead (``search_arms``).
+- **A keyword's lift is centred on ``p_t``**, an LLM's prior lift for the keyword read
+  against the brief (``OPENOUTFIND_KEYWORD_PRIOR``, every keyword in one output so they share
+  a scale), in logits against a neutral keyword of its field. Unscored, it is 0.
 - **The spreads are learned** — ``τ``, ``s_ℓ``, ``s_e``, ``φ`` and the correlation ``ρ``
   between a keyword's size and its lift — and a keyword no fired search holds draws its pair
   from the draw's own ``MVNormal(0, Σ)``.
@@ -33,13 +34,17 @@ when a page or a verdict lands** (``fitted``), about 3.5 s a refit.
 """
 from __future__ import annotations
 
+import functools
 import hashlib
+import json
 import logging
 import math
+import os
 import statistics
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 
@@ -72,6 +77,9 @@ KEYWORD_SPREAD, LIFT_SPREAD, SEARCH_SPREAD = 1.5, 1.0, 0.5
 COUNT_DISPERSION = 5.0
 # R's LKJ concentration: 2 leans away from a perfect correlation.
 CORRELATION_CONCENTRATION = 2.0
+# A JSON file of {"field|value": prior lift in logits}, every keyword of the vocabulary in one
+# output against the brief.
+KEYWORD_PRIOR_ENV = "OPENOUTFIND_KEYWORD_PRIOR"
 
 # ── the sampler ──
 CHAINS, TUNE, DRAWS = 4, 500, 500
@@ -130,6 +138,28 @@ def store_log_share(keyword: Keyword, people) -> float:
     return math.log((len(people.holding(keyword)) + 1) / (len(people.everyone) + 2))
 
 
+# ── the LLM's prior on the lifts ──
+
+def keyword_text(keyword: Keyword) -> str:
+    """``keyword`` as the scores file spells it: ``tag|cannabis extraction``,
+    ``state|new york|united states``."""
+    return "|".join(" ".join(part) if isinstance(part, tuple) else str(part)
+                    for part in keyword)
+
+
+@functools.cache
+def keyword_priors(path: str | None) -> dict[str, float]:
+    """``p_t`` per keyword, as the file gives it."""
+    if not path:
+        return {}
+    return {k: float(v) for k, v in json.loads(Path(path).read_text()).items()}
+
+
+def centre(keyword: Keyword) -> float:
+    """``p_t`` for ``keyword``, 0 where it was not scored."""
+    return keyword_priors(os.environ.get(KEYWORD_PRIOR_ENV)).get(keyword_text(keyword), 0.0)
+
+
 # ── the model's inputs ───────────────────────────────────────────────
 
 @dataclass(frozen=True)
@@ -142,6 +172,7 @@ class Inputs:
     member: np.ndarray        # (searches, keywords): 1 where a search holds a keyword
     fields: np.ndarray        # (searches, FIELDS): its keywords per field
     store_share: np.ndarray   # (keywords,): x_t
+    centre: np.ndarray        # (keywords,): p_t, the LLM's prior lift
     counted: np.ndarray       # the searches with a provider count
     counts: np.ndarray        # their counts
     fits: np.ndarray          # (searches,), fractional
@@ -166,6 +197,7 @@ def model_inputs(fired, people, judged: set[int], store_rate: float) -> Inputs:
         keywords=keywords, searches=tuple(f.search.key for f in fired), member=member,
         fields=fields,
         store_share=np.array([store_log_share(keyword, people) for keyword in keywords]),
+        centre=np.array([centre(keyword) for keyword in keywords]),
         counted=counted, counts=np.array([fired[i].found for i in counted], dtype=np.float64),
         fits=fits, misses=misses, market_log_odds=log_odds(clip_rate(store_rate)))
 
@@ -185,7 +217,7 @@ class Posterior:
     alpha: np.ndarray         # (D,)
     chol: np.ndarray          # (D, 2, 2): Σ's Cholesky factor, size then lift
     size: np.ndarray          # (D, keywords): u_t
-    lift: np.ndarray          # (D, keywords): v_t
+    lift: np.ndarray          # (D, keywords): v_t, p_t included
     own: np.ndarray           # (D, searches): e_q
     divergences: int = 0
     seconds: float = 0.0
@@ -231,7 +263,8 @@ def sample_posterior(inputs: Inputs) -> Posterior:
     return Posterior(
         keywords=inputs.keywords, searches=inputs.searches, log_market=flat("log_market"),
         field_mean=flat("field_mean"), gamma=flat("gamma"), alpha=flat("alpha"),
-        chol=flat("chol_matrix"), size=pair[:, 0, :keywords], lift=pair[:, 1, :keywords],
+        chol=flat("chol_matrix"), size=pair[:, 0, :keywords],
+        lift=pair[:, 1, :keywords] + inputs.centre[None, :],
         own=flat("own")[:, :searches],
         divergences=int(trace.sample_stats["diverging"].values.sum()),
         seconds=time.perf_counter() - started)
@@ -267,13 +300,14 @@ def padded_data(inputs: Inputs, searches: int, keywords: int) -> dict[str, np.nd
     member[:rows, :columns] = inputs.member
     fields = np.zeros((searches, len(FIELDS)))
     fields[:rows] = inputs.fields
-    store_share = np.zeros(keywords)
-    store_share[:columns] = inputs.store_share
+    store_share, centres = np.zeros(keywords), np.zeros(keywords)
+    store_share[:columns], centres[:columns] = inputs.store_share, inputs.centre
     counts, counted = np.zeros(searches), np.zeros(searches)
     counts[inputs.counted], counted[inputs.counted] = inputs.counts, 1.0
     fits, misses = np.zeros(searches), np.zeros(searches)
     fits[:rows], misses[:rows] = inputs.fits, inputs.misses
-    return {"member": member, "fields": fields, "store_share": store_share, "counts": counts,
+    return {"member": member, "fields": fields, "store_share": store_share,
+            "centre": centres, "counts": counts,
             "counted": counted, "fits": fits, "misses": misses,
             "market_log_odds": np.array(inputs.market_log_odds)}
 
@@ -288,6 +322,7 @@ def joint_model(searches: int, keywords: int):
         member = pm.Data("member", np.zeros((searches, keywords)))
         fields = pm.Data("fields", np.zeros((searches, len(FIELDS))))
         store_share = pm.Data("store_share", np.zeros(keywords))
+        centres = pm.Data("centre", np.zeros(keywords))
         counts = pm.Data("counts", np.zeros(searches))
         counted = pm.Data("counted", np.zeros(searches))
         fits = pm.Data("fits", np.zeros(searches))
@@ -314,7 +349,7 @@ def joint_model(searches: int, keywords: int):
         count_logp = pm.logp(pm.NegativeBinomial.dist(mu=pt.exp(log_count), alpha=dispersion),
                              counts)
         pm.Potential("count", pt.dot(counted, count_logp))
-        log_odds_q = alpha + pt.dot(member, pair[1]) + own
+        log_odds_q = alpha + pt.dot(member, centres + pair[1]) + own
         # log σ(x) = −softplus(−x), stable at either end.
         pm.Potential("fit", -pt.dot(fits, pt.softplus(-log_odds_q))
                      - pt.dot(misses, pt.softplus(log_odds_q)))
@@ -370,8 +405,8 @@ def log_refit(posterior: Posterior) -> None:
     if not posterior.searches:
         return
     spreads = posterior.spreads()
-    logger.debug("  belief: %d search(es), %d keyword(s) · π %.3f · γ %.2f · τ %.2f · "
-                 "s_ℓ %.2f · ρ %+.2f · %d divergence(s) · %.1fs",
+    logger.debug("  belief: %d search(es), %d keyword(s) · π %.3f · γ %.2f · "
+                 "τ %.2f · s_ℓ %.2f · ρ %+.2f · %d divergence(s) · %.1fs",
                  len(posterior.searches), len(posterior.keywords),
                  float(sigmoid(posterior.alpha).mean()), float(posterior.gamma.mean()),
                  spreads["tau"], spreads["s_lift"], spreads["rho"], posterior.divergences,
@@ -399,7 +434,7 @@ class Pairs:
         column = posterior.column.get(keyword)
         if self.index is None:
             if column is None:
-                return 0.0, 0.0
+                return 0.0, centre(keyword)
             return float(posterior.size[:, column].mean()), float(posterior.lift[:, column].mean())
         if column is not None:
             return (float(posterior.size[self.index, column]),
@@ -408,7 +443,7 @@ class Pairs:
             [*np.atleast_1d(self.seed).tolist(), PAIR_STREAM, keyword_number(keyword)]
         ).standard_normal(2)
         size, lift = posterior.chol[self.index] @ noise
-        return float(size), float(lift)
+        return float(size), float(lift + centre(keyword))
 
 
 @dataclass(frozen=True)
@@ -473,10 +508,10 @@ class Beliefs:
         return float(sigmoid(self.posterior.alpha.mean()))
 
     def lifts(self) -> dict[Keyword, float]:
-        """Each keyword's lift at the posterior mean, ``logit θ_t − logit π``: 0 for a
+        """Each keyword's lift at the posterior mean, ``logit θ_t − logit π``: ``p_t`` for a
         keyword no search held."""
         posterior = self.posterior
-        return defaultdict(float, zip(posterior.keywords, posterior.lift.mean(axis=0).tolist()))
+        return Lifts(zip(posterior.keywords, posterior.lift.mean(axis=0).tolist()))
 
     def means(self) -> dict[Keyword, float]:
         """Each fitted keyword's expected ``θ_t``."""
@@ -539,6 +574,13 @@ class Beliefs:
         held = [posterior.column[k] for k in self.search_keywords[key]]
         return (posterior.alpha + posterior.lift[:, held].sum(axis=1)
                 + posterior.own[:, posterior.search_column[key]])
+
+
+class Lifts(dict):
+    """The fitted keywords' mean lifts; any other keyword reads its prior ``p_t``."""
+
+    def __missing__(self, keyword: Keyword) -> float:
+        return centre(keyword)
 
 
 def keyword_number(keyword: Keyword) -> int:

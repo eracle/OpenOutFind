@@ -36,7 +36,7 @@ def batch_6_inputs(searches: int | None = None) -> belief.Inputs:
     return belief.Inputs(
         keywords=keywords, searches=tuple(f"s{i}" for i in range(len(fired))), member=member,
         fields=fields, store_share=np.array([raw["store_log_share"][k] for k in keywords]),
-        counted=np.arange(len(fired)), counts=np.array([s["found"] for s in fired], float),
+        centre=np.zeros(len(keywords)), counted=np.arange(len(fired)), counts=np.array([s["found"] for s in fired], float),
         fits=np.array([s["fits"] for s in fired]), misses=np.array([s["misses"] for s in fired]),
         market_log_odds=belief.log_odds(raw["store_rate"]))
 
