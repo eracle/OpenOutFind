@@ -290,7 +290,7 @@ class TestTheNextSearch:
         frontier.rate_at_mean([next_page, fresh])
 
         assert frontier.beliefs.search_mean(fired.key) < frontier.beliefs.market_rate
-        assert frontier.pick([next_page, fresh], 1) is fresh
+        assert sum(frontier.pick([next_page, fresh], n) is fresh for n in range(20)) > 10
 
     def test_a_page_whose_probe_came_back_fits_is_paged_again(self):
         for i in range(10):
@@ -304,7 +304,7 @@ class TestTheNextSearch:
         fresh = frontier.first_page_arm(Terms.written(title="owner", tag="wholesale"), "drawn")
         frontier.rate_at_mean([next_page, fresh])
 
-        assert frontier.pick([next_page, fresh], 1) is next_page
+        assert sum(frontier.pick([next_page, fresh], n) is next_page for n in range(20)) > 10
 
     def test_the_next_search_is_nothing_fired_dead_or_drained(self):
         people = [make_lead(verdict=1) for _ in range(3)]
