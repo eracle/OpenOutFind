@@ -214,8 +214,30 @@ class TestTheNextSearch:
 
         assert frontier.pick(list(arms), 4) is frontier.pick(list(reversed(arms)), 4)
 
+    def test_another_round_can_pick_another_of_the_top_k(self):
+        arms = [arm_for(f"title{i}") for i in range(search_arms.TOP_K)]
+        frontier = rated_frontier(arms)
+
+        assert len({id(frontier.pick(arms, round_number)) for round_number in range(20)}) > 1
+
+    def test_an_arm_outside_the_top_k_is_never_picked(self):
+        arms = [arm_for(f"title{i}", new=10.0 + i) for i in range(3 * search_arms.TOP_K)]
+        frontier = rated_frontier(arms)
+        top = search_arms.top_at_mean(arms)
+
+        assert len(top) == search_arms.TOP_K
+        assert all(frontier.pick(arms, round_number) in top for round_number in range(20))
+
+    def test_the_pick_records_its_fits_on_the_draw_and_its_rank_among_the_k(self):
+        arms = [arm_for(f"title{i}") for i in range(30)]
+        chosen = rated_frontier(arms).pick(arms, 1)
+
+        assert chosen.score is not None
+        assert 1 <= chosen.rank <= search_arms.TOP_K
+
     def test_a_known_good_keyword_beats_an_unknown_one_and_an_unknown_one_a_known_bad(self):
-        """Known from what the searches holding them brought: the store alone moves no lift."""
+        """Known from what the searches holding them brought: the store alone moves no lift.
+        One draw decides a round, so the known-good arm wins most rounds, not every one."""
         fits = [make_lead("Founder", company=make_company(f"f{i}"), verdict=1) for i in range(15)]
         misses = [make_lead("Clerk", company=make_company(f"c{i}"), verdict=0) for i in range(15)]
         fire(Terms.written(title="founder", tag="cannabis"), fits, found=5000)
@@ -223,10 +245,10 @@ class TestTheNextSearch:
              origin=Search.Origin.DRAWN)
         good, bad, unknown = arm_for("founder"), arm_for("clerk"), arm_for("buyer")
         frontier = rated_frontier([good, bad, unknown])
+        rounds = range(20)
 
-        assert frontier.pick([good, bad, unknown], 1) is good
-        assert frontier.pick([bad, unknown], 1) is unknown
-        assert good.score is not None
+        assert sum(frontier.pick([good, bad, unknown], n) is good for n in rounds) > 15
+        assert sum(frontier.pick([bad, unknown], n) is unknown for n in rounds) > 10
 
     def test_an_unfired_keyword_starts_from_its_guess(self):
         """The LLM's guess is the prior: a likelier fit lifts more, a larger keyword counts
