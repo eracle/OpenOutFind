@@ -77,6 +77,9 @@ class SiteConfig:
     # paid email lookup behind `--emails`.
     bettercontact_api_key: str = ""
 
+    # Inert unless find explicitly selects a bounded CompanyEnrich page and budget.
+    companyenrich_api_key: str = ""
+
     # The operator's own ISO-3166 alpha-2 jurisdiction — not to be confused with
     # `Lead.country_code`, the per-lead target country an ICP search surfaced someone
     # under. Optional: an EEA/UK/CH country turns the contacts-store give-back off
