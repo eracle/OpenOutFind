@@ -214,19 +214,25 @@ round (its searches part is not used). It is asked once per store; later runs ne
 **Then it asks you to guess the market and its keywords, in plain counts.** Before a composed
 round, the market and every keyword the walk could search on (the title words and tags of the
 fits, the seniorities, the places) need a guess, and the run stops with
-`keyword_guess_pending` while any has none. Its error object carries `product_docs`,
-`campaign_target`, the brief as `rules`, `market` (its stored guess, or `null` when you guess
-it), under `fields` each field with keywords to guess (what the field means, its `keywords`,
-and the ones already `guessed` with their counts), and `refused`, the guesses refused last
-time with why. Guess the market first: how many people it holds and how many of them fit.
-Then, one field at a time and comparing the keywords with each other, how many people in the
-market hold each keyword and how many of those fit. Re-run the same command with:
+`keyword_guess_pending` while any has none. Its error object carries `counts_mean` (what
+every count is counted over: read it first), `product_docs`, `campaign_target`, the brief as
+`rules`, `market` (its stored guess, or `null` when you guess it), under `fields` each field
+with keywords to guess (what the field means, its `keywords`, and the ones already `guessed`
+with their counts), and `refused`, the guesses refused last time with why. **The market is
+everyone on LinkedIn in the customer's country, not the customer's buyers**: a search runs
+over all of them. Guess it first: how many people it holds (for the US, about 200 million)
+and how many of them fit. Then, one field at a time and comparing the keywords with each
+other, how many of those people hold each keyword, in the customer's trade or any other, and
+how many of them fit. A tag other trades share (`processing`, `manufacturing`) is held by
+everyone in all of them, so it comes out large and thin; guessed as the customer's trade
+alone, the walk searches it and gets food and payments companies. Re-run the same command
+with:
 
 ```bash
 outfind find 10 --agent-qualify --keyword-guesses '{
-  "market": {"people": 10000000, "fits": 5000},
-  "keywords": [{"keyword": "tag|live resin", "people": 400, "fits": 120},
-               {"keyword": "tag|retail", "people": 2000000, "fits": 200}, ...]}'
+  "market": {"people": 200000000, "fits": 5000},
+  "keywords": [{"keyword": "tag|live resin", "people": 600, "fits": 120},
+               {"keyword": "tag|processing", "people": 400000, "fits": 110}, ...]}'
 ```
 
 Leave `market` out once it is stored. Each keyword exactly as given, every one of them;
@@ -331,7 +337,7 @@ is a stable string worth branching on:
 | `bad_config` | A value is set but unusable (e.g. a negative count). | Read the message; it names the field. |
 | `qualify_pending` | `--agent-qualify` stopped one candidate short of the `AI_MODEL` call it opted out of. | Judge the candidate carried on the error object, then re-run with `--verdict`/`--reason` — see *Answering qualify yourself*. |
 | `population_pending` | `--agent-qualify` on a fresh store: the walk's 4 initial searches and the ideal profiles are needed first. | Write them from the error's `product_docs`/`campaign_target`/`rules` in its `schema`, then re-run with `--population '<json>'`. |
-| `keyword_guess_pending` | `--agent-qualify` before a composed round: the market or keywords the walk could search on have no guess yet. | Guess the market (if `market` is `null`) and each keyword's people and fits from the error's payload in its `schema`, then re-run with `--keyword-guesses '<json>'`. |
+| `keyword_guess_pending` | `--agent-qualify` before a composed round: the market or keywords the walk could search on have no guess yet. | Guess the market (if `market` is `null`) and each keyword's people and fits, counted over everyone on LinkedIn in the country as `counts_mean` says, from the error's payload in its `schema`, then re-run with `--keyword-guesses '<json>'`. |
 | `unanchored` | The ideal profiles could not be written (the model failed or wrote none), and the walk does not start without them. Nothing was fired. | Transient on the model path; run again. |
 
 Treat a non-zero exit as *partial success with a stated reason*, not as "nothing happened" — the

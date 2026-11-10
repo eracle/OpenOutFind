@@ -75,6 +75,38 @@ class TestTheSampler:
         assert posterior.alpha.std() == pytest.approx(belief.MARKET_RATE_SPREAD, abs=0.1)
 
 
+def two_guessed_searches(found: tuple[int, int]) -> belief.Inputs:
+    """``ceo`` · tag ``a`` and ``ceo`` · tag ``b``, both tags guessed alike (1,000 of a
+    1,000,000 market, at the market's rate), counted ``found``, no verdict on either."""
+    keywords = ("tag|a", "tag|b", "title|ceo")
+    return belief.Inputs(
+        keywords=keywords, searches=("s0", "s1"),
+        member=np.array([[1.0, 0.0, 1.0], [0.0, 1.0, 1.0]]),
+        fields=np.array([[1.0, 1.0, 0.0, 0.0], [1.0, 1.0, 0.0, 0.0]]),
+        log_share=np.log([1e-3, 1e-3, 0.1]), centre=np.zeros(3),
+        counted=np.arange(2), counts=np.array(found, float),
+        fits=np.zeros(2), misses=np.zeros(2), market_log_odds=belief.log_odds(0.01),
+        guesses=belief.Guesses(market_people=1_000_000))
+
+
+class TestTheSizeAndTheRate:
+    def test_a_count_far_above_its_guess_lowers_the_rate_before_any_verdict(self):
+        """Batch 6: `processing`, guessed at cannabis processors only, counted 61× that."""
+        lift = belief.sample_posterior(two_guessed_searches((100, 5_000))).lift.mean(axis=0)
+
+        assert lift[1] < lift[0] - 1.0
+
+    def test_a_count_at_its_guess_leaves_the_rates_alike(self):
+        lift = belief.sample_posterior(two_guessed_searches((100, 100))).lift.mean(axis=0)
+
+        assert lift[1] == pytest.approx(lift[0], abs=0.3)
+
+    def test_the_markets_size_is_centred_on_its_guess(self):
+        posterior = belief.prior_draws(two_guessed_searches((100, 100)))
+
+        assert posterior.log_market.mean() == pytest.approx(math.log(1_000_000), abs=0.2)
+
+
 @pytest.mark.django_db
 class TestTheFitRate:
     def test_a_keyword_whose_page_brought_fits_lifts_above_one_whose_page_did_not(self):
@@ -149,9 +181,11 @@ class TestTheDraw:
         pairs = np.array([beliefs.draw_sizes(n).pairs(unknown) for n in range(1000)])
 
         chol = beliefs.posterior.chol
+        # The lift is the fits' deviation less the size's: w − u.
         assert abs(pairs[:, 1].mean()) < 0.15
         assert pairs[:, 1].std() == pytest.approx(
-            np.sqrt((chol[:, 1, 0] ** 2 + chol[:, 1, 1] ** 2).mean()), rel=0.15)
+            np.sqrt(((chol[:, 1, 0] - chol[:, 0, 0]) ** 2 + chol[:, 1, 1] ** 2).mean()),
+            rel=0.15)
         index = beliefs.draw_index(7)
         column = beliefs.posterior.column[fitted]
         assert beliefs.draw_sizes(7).pairs(fitted) == (
