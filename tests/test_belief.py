@@ -182,10 +182,11 @@ class TestTheDraw:
 
         chol = beliefs.posterior.chol
         # The lift is the fits' deviation less the size's: w − u.
-        assert abs(pairs[:, 1].mean()) < 0.15
-        assert pairs[:, 1].std() == pytest.approx(
-            np.sqrt(((chol[:, 1, 0] - chol[:, 0, 0]) ** 2 + chol[:, 1, 1] ** 2).mean()),
-            rel=0.15)
+        spread = np.sqrt(((chol[:, 1, 0] - chol[:, 0, 0]) ** 2 + chol[:, 1, 1] ** 2).mean())
+        # Centred on the guess (0 here), within five standard errors of a mean over these
+        # draws: the posterior is sampled, and CI's sampling differs from a laptop's.
+        assert abs(pairs[:, 1].mean()) < 5 * spread / np.sqrt(len(pairs))
+        assert pairs[:, 1].std() == pytest.approx(spread, rel=0.15)
         index = beliefs.draw_index(7)
         column = beliefs.posterior.column[fitted]
         assert beliefs.draw_sizes(7).pairs(fitted) == (
