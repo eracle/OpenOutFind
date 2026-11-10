@@ -138,6 +138,17 @@ class TestGuessing:
         assert payload["fields"]["tag"]["keywords"] == ["tag|rosin"]
         assert payload["schema"]["title"] == "KeywordGuesses"
 
+    def test_the_calling_agent_is_told_the_counts_are_over_everyone_a_search_runs_on(
+            self, described):
+        """Handed the payload without it, batch 6's session guessed the customer's market."""
+        agent_qualify.enable(None)
+
+        with pytest.raises(KeywordGuessPending) as stop:
+            keyword_guess.ensure(described, [ROSIN])
+
+        assert stop.value.payload["counts_mean"] == keyword_guess.COUNTS_MEAN
+        assert "not only the customer's buyers" in keyword_guess.COUNTS_MEAN
+
     def test_the_agents_answer_is_kept_and_the_run_goes_on(self, described):
         agent_qualify.enable(None, keyword_guesses=KeywordGuesses(
             market=MARKET, keywords=keywords(("tag|rosin", 400.0, 40.0))))
@@ -175,11 +186,13 @@ class TestGuessing:
         assert "10,000,000 people, of whom about 5,000 fit" in prompt
         assert "tag|rosin: 400 people, 40 fit" in prompt
         assert "- tag|live resin" in prompt
+        assert keyword_guess.COUNTS_MEAN in prompt
 
     def test_the_market_prompt_renders(self, described):
         prompt = keyword_guess.render("guess_market.j2", keyword_guess.prompt_context(described))
 
         assert "We sell cart hardware." in prompt
+        assert keyword_guess.COUNTS_MEAN in prompt
 
 
 class TestInTheModelsTerms:

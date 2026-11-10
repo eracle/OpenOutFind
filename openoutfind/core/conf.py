@@ -152,9 +152,9 @@ CAMPAIGN_CONFIG = {
 
 # The walk (core/pipeline/walk.py): one search at a time. `population` is how many searches
 # the LLM writes to start it, fired whole as round 0; every later round fires the arm of the
-# frontier whose page brings the most fits at its mean plus one σ, the searches composed
-# from every keyword the store holds among them (core/pipeline/search_arms.py, compose.py,
-# belief.py).
+# frontier that one draw of the belief puts first among the TOP_K worth the most at the
+# mean, the searches composed from every keyword the store holds among them
+# (core/pipeline/search_arms.py, compose.py, belief.py).
 WALK_CONFIG = {
     "population": 4,
 }

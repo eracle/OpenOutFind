@@ -9,15 +9,17 @@ You are guessing, before any search is run, how a lead search will go. A custome
 ## The judging rules
 {{ rules }}
 {% endif %}
-## The market
-Everyone on LinkedIn in the customer's country (or the states the rules name), at companies of any size: about {{ "{:,.0f}".format(market.people) }} people, of whom about {{ "{:,.0f}".format(market.fits) }} fit. Every count below is a part of these.
+## What the counts are counted over
+{{ counts_mean }}
+
+The market holds about {{ "{:,.0f}".format(market.people) }} people, of whom about {{ "{:,.0f}".format(market.fits) }} fit. Every count below is a part of these.
 
 ## The keywords
 Each keyword is a {{ meaning }}. It is written `{{ field }}|<value>`{% if field == "place" %} (a state as `state|<state>|<country>`, a country as `country|<country>`){% endif %}.
 
 For each keyword give two plain counts:
-- **people**: how many people in the market hold it, at most the market's people. A common title word is held by millions, a niche company tag by hundreds.
-- **fits**: how many of those people fit, at most the market's fits and at most the keyword's people. A keyword of the customer's own market holds a far larger share of fits than a keyword of an unrelated one.
+- **people**: how many people in the market hold it, in the customer's trade or in any other, at most the market's people. A common title word is held by millions, a niche company tag by hundreds, and a tag other trades use too by everyone in all of them.
+- **fits**: how many of those people fit, at most the market's fits and at most the keyword's people. A keyword only the customer's trade uses holds a far larger share of fits than one every trade uses, even where both hold the same fits.
 
 Orders of magnitude matter more than precision. Guess every keyword on one scale, comparing them with each other: which ones are larger, which ones hold more fits, and by how much.
 {% if guessed %}

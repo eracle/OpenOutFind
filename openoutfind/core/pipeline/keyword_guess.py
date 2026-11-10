@@ -8,9 +8,12 @@ of the market the store was searched from (``retail`` was put at 338 people and 
 provider counted 103,785). A model reading the brief knows ``live resin`` is a cart buyer's
 tag and ``retail`` is not, and that ``manager`` is held by millions.
 
-**The guess is plain counts.** First the market, once: how many people it holds and how
-many of them fit. Then per keyword: how many people in the market hold it and how many of
-those fit. Every keyword is guessed against the stored market, so all of them share its
+**The guess is plain counts, over what a search runs on** (``COUNTS_MEAN``): the market is
+everyone on LinkedIn in the customer's country, not the customer's buyers. First the
+market, once: how many people it holds and how many of them fit. Then per keyword: how many
+people in the market hold it, inside the customer's trade or outside it, and how many of
+those fit — so a word shared with other trades (``processing``) is guessed large and thin,
+as its searches come back. Every keyword is guessed against the stored market, so all of them share its
 scale, and each field's keywords (titles, tags, seniorities, places) are guessed in one
 answer beside the ones of that field already guessed. The belief turns the counts into its
 own terms (``belief.Guesses``) and learns how far keywords stray from them. A keyword is
@@ -38,6 +41,22 @@ logger = logging.getLogger(__name__)
 
 # What a guess handed in with ``--keyword-guesses`` is recorded as having been written by.
 GIVEN = "--keyword-guesses"
+
+# What the counts are counted over, for whoever guesses them: the population a search runs
+# on, not the customer's market. Batch 6's session, handed the payload without it, read the
+# market as the customer's (60,000 people, `country|united states` at 60,000) and put
+# `processing` at 2,000 people and 110 fits: cannabis processors only. Its search counted
+# 61× what that implied, food and payments companies.
+COUNTS_MEAN = (
+    "The market is everyone on LinkedIn in the customer's country (or the states the rules "
+    "name), at companies of any size and in any job, not only the customer's buyers: a "
+    "search runs over all of them, and its count counts all of them. Its fits are the few "
+    "of them the rules accept. A keyword's people are everyone in that market holding it, "
+    "wherever they work: a word the customer's trade shares with others (`processing`, "
+    "`manufacturing`, `distribution`, `ceo`) is held mostly outside that trade, and every "
+    "one of those holders counts. Its fits are the ones among them who fit, so such a word "
+    "holds few fits for its people."
+)
 
 # What each field's keywords are, for whoever guesses them.
 FIELD_MEANINGS = {
@@ -243,7 +262,7 @@ def prompt_context(site_config, field: str | None = None, texts=()) -> dict:
     """Everything a guess is written from: the market's prompt without ``field``."""
     context = {"product_docs": site_config.product_docs,
                "campaign_target": site_config.campaign_target, "rules": brief_rules(),
-               "market": market_counts()}
+               "market": market_counts(), "counts_mean": COUNTS_MEAN}
     if field is not None:
         context |= {"field": field, "meaning": FIELD_MEANINGS[field],
                     "guessed": guessed(field), "keywords": list(texts)}
@@ -285,9 +304,10 @@ def raise_pending(site_config, missing: dict[str, list[str]], refused: dict[str,
     ask_for = (f"{count} keyword(s)" if market is not None
                else f"the market and {count} keyword(s)")
     raise KeywordGuessPending(
-        f"{ask_for} have no guess yet — guess how many people hold each and how many of "
-        f"them fit",
+        f"{ask_for} have no guess yet — guess how many people on LinkedIn hold each, "
+        f"inside the customer's trade or not, and how many of them fit (see counts_mean)",
         payload={
+            "counts_mean": COUNTS_MEAN,
             "product_docs": site_config.product_docs,
             "campaign_target": site_config.campaign_target,
             "rules": brief_rules(),

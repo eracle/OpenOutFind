@@ -4,15 +4,23 @@ of them the customer would like — and every read of it the walk makes, at the 
 a draw.
 
 Two numbers per keyword, a title word, a whole tag, a seniority or a place: ``N_t``, the
-people in the market holding it, and ``θ_t``, the share of them who fit. **A fired search
-is one sample of the AND of its keywords**, taken as independent, and both halves are one
-hierarchical model, sampled whole by NUTS (PyMC, compiled by nutpie):
+people holding it over everyone a search runs on (all of LinkedIn in the market's country,
+the customer's trade and every other), and ``F_t``, how many of them fit. Its rate is
+``θ_t = F_t / N_t``. **A fired search is one sample of the AND of its keywords**, taken as
+independent, and both halves are one hierarchical model, sampled whole by NUTS (PyMC,
+compiled by nutpie):
 
     log N(q)   = log N₀ + Σ_{t∈q} ( μ_field(t) + γ · x_t + u_t )     x_t = a log share of t
-    logit θ(q) = α + Σ_{t∈q} ( p_t + v_t ) + e_q
-    (u_t, v_t) ~ MVNormal(0, diag(τ, s_ℓ) · R(ρ) · diag(τ, s_ℓ))    one pair per keyword
+    logit θ(q) = α + Σ_{t∈q} ( p_t + w_t − u_t ) + e_q
+    (u_t, w_t) ~ MVNormal(0, diag(τ, s_f) · R(ρ) · diag(τ, s_f))    one pair per keyword
     e_q        ~ Normal(0, s_e²)
 
+- **A keyword's lift is its fits less its size**: ``u_t`` is how far its log people stray
+  from the guess, ``w_t`` how far its log fits do, and the rate moves by the difference. So a
+  count far above the guess lowers the rate before any verdict, with the fits held where
+  they were guessed: ``processing``, guessed at cannabis processors' 2,000 people, counted
+  61× that on its first search, and a lift that was free of the size took 14 no-fits to come
+  down. Verdicts move ``w_t``; ``ρ`` learns whether fits follow size.
 - **The LLM's guess is the prior** (``Guesses``, written by ``keyword_guess``): the
   market's people and fits, guessed once, and per keyword the people in the market holding
   it and how many of them fit. ``x_t`` is ``log(people / market people)``, and ``p_t``
@@ -20,13 +28,14 @@ hierarchical model, sampled whole by NUTS (PyMC, compiled by nutpie):
   ``x_t`` is its log share of the store, and its ``p_t`` 0.
 - **The count** is the provider's, a negative binomial draw around ``N(q)`` whose
   dispersion ``φ`` is learned. ``x_t`` is evidence whose weight ``γ`` the counts learn.
-  ``log N₀`` is anchored broadly at ``MARKET_PEOPLE``: no search counts the market itself.
+  ``log N₀`` is anchored broadly at the guessed market's people, else ``MARKET_PEOPLE``: no
+  search counts the market itself.
 - **The fit rate** is what searches brought: each fired search's people add
   ``evidence``, a binomial sample of its ``θ(q)``. ``α = logit π`` is learned from the
   searched people only, centred on the store's rate. ``e_q`` is a fired search's own
   effect, so a page that came back bad says so about the search that brought it.
-- **The spreads are learned** — ``τ``, ``s_ℓ``, ``s_e``, ``φ`` and the correlation ``ρ``
-  between a keyword's size and its lift — and a keyword no fired search holds draws its pair
+- **The spreads are learned** — ``τ``, ``s_f``, ``s_e``, ``φ`` and the correlation ``ρ``
+  between a keyword's size and its fits — and a keyword no fired search holds draws its pair
   from the draw's own ``MVNormal(0, Σ)``.
 
 Sampling has no mode to reach: the Newton fit this replaced fell into a 2-cycle on batch 6
@@ -67,8 +76,9 @@ SHARE_WEIGHT_MEAN, SHARE_WEIGHT_SPREAD = 1.0, 1.0
 # α, the searched market's log odds, about the store's.
 MARKET_RATE_SPREAD = 1.0
 # The scales of the learned spreads (each a half-normal): τ, a keyword's log share off its
-# field's line (×4.5 measured on 37 queries); s_ℓ, its lift; s_e, a search's own effect.
-KEYWORD_SPREAD, LIFT_SPREAD, SEARCH_SPREAD = 1.5, 1.0, 0.5
+# field's line (×4.5 measured on 37 queries); s_f, its log fits off its guess; s_e, a
+# search's own effect.
+KEYWORD_SPREAD, FITS_SPREAD, SEARCH_SPREAD = 1.5, 1.0, 0.5
 # φ, the count's dispersion about N(q), what independence gets wrong. A negative binomial
 # beat the log-normal on log(y + ½) inside this model on batch 6's counts: 16 of 20 inside
 # the 80% interval against 14.
@@ -145,10 +155,12 @@ def keyword_text(keyword: Keyword) -> str:
 @dataclass(frozen=True)
 class Guesses:
     """The LLM's guess per keyword, in the model's terms: ``x_t``, ``log(people / market
-    people)``, and ``p_t``, ``logit(fits / people) − logit(market fits / market people)``."""
+    people)``, and ``p_t``, ``logit(fits / people) − logit(market fits / market people)``;
+    and the market's people, where ``log N₀`` is centred."""
 
     shares: dict = field(default_factory=dict)
     lifts: dict = field(default_factory=dict)
+    market_people: float = MARKET_PEOPLE
 
     @classmethod
     def from_counts(cls, market: tuple[float, float], rows) -> Guesses:
@@ -159,7 +171,7 @@ class Guesses:
         for keyword, people, fits in rows:
             shares[keyword] = math.log(people / market_people)
             lifts[keyword] = count_log_odds(people, fits) - market_log_odds
-        return cls(shares, lifts)
+        return cls(shares, lifts, float(market_people))
 
     def lift(self, keyword: Keyword) -> float:
         """``p_t``: 0 for a keyword not guessed, the market's rate."""
@@ -172,8 +184,8 @@ class Guesses:
 
     @property
     def digest(self) -> str:
-        return hashlib.sha256(repr((sorted(self.shares.items()),
-                                    sorted(self.lifts.items()))).encode()).hexdigest()
+        return hashlib.sha256(repr((sorted(self.shares.items()), sorted(self.lifts.items()),
+                                    self.market_people)).encode()).hexdigest()
 
 
 # ── the model's inputs ───────────────────────────────────────────────
@@ -195,6 +207,11 @@ class Inputs:
     misses: np.ndarray
     market_log_odds: float    # α's centre, the store's rate
     guesses: Guesses = field(default_factory=Guesses)
+
+    @property
+    def log_market_centre(self) -> float:
+        """Where ``log N₀`` is centred: the guessed market's people."""
+        return math.log(self.guesses.market_people)
 
 
 def model_inputs(fired, people, judged: set[int], store_rate: float,
@@ -234,9 +251,9 @@ class Posterior:
     field_mean: np.ndarray    # (D, FIELDS)
     gamma: np.ndarray         # (D,)
     alpha: np.ndarray         # (D,)
-    chol: np.ndarray          # (D, 2, 2): Σ's Cholesky factor, size then lift
+    chol: np.ndarray          # (D, 2, 2): Σ's Cholesky factor, size then fits
     size: np.ndarray          # (D, keywords): u_t
-    lift: np.ndarray          # (D, keywords): v_t, p_t included
+    lift: np.ndarray          # (D, keywords): p_t + w_t − u_t
     own: np.ndarray           # (D, searches): e_q
     guesses: Guesses = field(default_factory=Guesses)
     divergences: int = 0
@@ -255,9 +272,9 @@ class Posterior:
     def spreads(self) -> dict[str, float]:
         """The learned spreads and correlation at their posterior means."""
         tau = self.chol[:, 0, 0]
-        s_lift = np.hypot(self.chol[:, 1, 0], self.chol[:, 1, 1])
-        return {"tau": float(tau.mean()), "s_lift": float(s_lift.mean()),
-                "rho": float((self.chol[:, 1, 0] / s_lift).mean())}
+        s_fits = np.hypot(self.chol[:, 1, 0], self.chol[:, 1, 1])
+        return {"tau": float(tau.mean()), "s_fits": float(s_fits.mean()),
+                "rho": float((self.chol[:, 1, 0] / s_fits).mean())}
 
 
 def sample_posterior(inputs: Inputs) -> Posterior:
@@ -284,7 +301,7 @@ def sample_posterior(inputs: Inputs) -> Posterior:
         keywords=inputs.keywords, searches=inputs.searches, log_market=flat("log_market"),
         field_mean=flat("field_mean"), gamma=flat("gamma"), alpha=flat("alpha"),
         chol=flat("chol_matrix"), size=pair[:, 0, :keywords],
-        lift=pair[:, 1, :keywords] + inputs.centre[None, :],
+        lift=pair[:, 1, :keywords] - pair[:, 0, :keywords] + inputs.centre[None, :],
         own=flat("own")[:, :searches], guesses=inputs.guesses,
         divergences=int(trace.sample_stats["diverging"].values.sum()),
         seconds=time.perf_counter() - started)
@@ -329,7 +346,8 @@ def padded_data(inputs: Inputs, searches: int, keywords: int) -> dict[str, np.nd
     return {"member": member, "fields": fields, "log_share": log_share,
             "centre": centres, "counts": counts,
             "counted": counted, "fits": fits, "misses": misses,
-            "market_log_odds": np.array(inputs.market_log_odds)}
+            "market_log_odds": np.array(inputs.market_log_odds),
+            "log_market_centre": np.array(inputs.log_market_centre)}
 
 
 def joint_model(searches: int, keywords: int):
@@ -348,14 +366,15 @@ def joint_model(searches: int, keywords: int):
         fits = pm.Data("fits", np.zeros(searches))
         misses = pm.Data("misses", np.zeros(searches))
         market_log_odds = pm.Data("market_log_odds", np.array(0.0))
+        log_market_centre = pm.Data("log_market_centre", np.array(math.log(MARKET_PEOPLE)))
 
-        log_market = pm.Normal("log_market", math.log(MARKET_PEOPLE), MARKET_SPREAD)
+        log_market = pm.Normal("log_market", log_market_centre, MARKET_SPREAD)
         field_mean = pm.Normal("field_mean", 0.0, FIELD_SPREAD, shape=len(FIELDS))
         gamma = pm.Normal("gamma", SHARE_WEIGHT_MEAN, SHARE_WEIGHT_SPREAD)
         alpha = pm.Normal("alpha", market_log_odds, MARKET_RATE_SPREAD)
         chol, _, _ = pm.LKJCholeskyCov(
             "chol", n=2, eta=CORRELATION_CONCENTRATION, compute_corr=True,
-            sd_dist=pm.HalfNormal.dist(sigma=np.array([KEYWORD_SPREAD, LIFT_SPREAD]), shape=2))
+            sd_dist=pm.HalfNormal.dist(sigma=np.array([KEYWORD_SPREAD, FITS_SPREAD]), shape=2))
         pm.Deterministic("chol_matrix", chol)
         raw_pair = pm.Normal("raw_pair", 0.0, 1.0, shape=(2, keywords))
         pair = pm.Deterministic("pair", chol @ raw_pair)
@@ -369,7 +388,8 @@ def joint_model(searches: int, keywords: int):
         count_logp = pm.logp(pm.NegativeBinomial.dist(mu=pt.exp(log_count), alpha=dispersion),
                              counts)
         pm.Potential("count", pt.dot(counted, count_logp))
-        log_odds_q = alpha + pt.dot(member, centres + pair[1]) + own
+        # A keyword's lift is its fits off the guess less its size off the guess.
+        log_odds_q = alpha + pt.dot(member, centres + pair[1] - pair[0]) + own
         # log σ(x) = −softplus(−x), stable at either end.
         pm.Potential("fit", -pt.dot(fits, pt.softplus(-log_odds_q))
                      - pt.dot(misses, pt.softplus(log_odds_q)))
@@ -380,7 +400,7 @@ def prior_draws(inputs: Inputs) -> Posterior:
     """The globals' prior as draws: what a store with no fired search believes."""
     rng = np.random.default_rng(SAMPLER_SEED)
     count = CHAINS * DRAWS
-    sds = np.abs(rng.normal(0.0, [KEYWORD_SPREAD, LIFT_SPREAD], size=(count, 2)))
+    sds = np.abs(rng.normal(0.0, [KEYWORD_SPREAD, FITS_SPREAD], size=(count, 2)))
     # LKJ(η) on a 2×2 correlation: (ρ + 1) / 2 ~ Beta(η, η).
     rho = 2.0 * rng.beta(CORRELATION_CONCENTRATION, CORRELATION_CONCENTRATION, count) - 1.0
     chol = np.zeros((count, 2, 2))
@@ -389,7 +409,7 @@ def prior_draws(inputs: Inputs) -> Posterior:
     chol[:, 1, 1] = sds[:, 1] * np.sqrt(1.0 - rho ** 2)
     return Posterior(
         keywords=(), searches=(),
-        log_market=rng.normal(math.log(MARKET_PEOPLE), MARKET_SPREAD, count),
+        log_market=rng.normal(inputs.log_market_centre, MARKET_SPREAD, count),
         field_mean=rng.normal(0.0, FIELD_SPREAD, (count, len(FIELDS))),
         gamma=rng.normal(SHARE_WEIGHT_MEAN, SHARE_WEIGHT_SPREAD, count),
         alpha=rng.normal(inputs.market_log_odds, MARKET_RATE_SPREAD, count),
@@ -427,19 +447,20 @@ def log_refit(posterior: Posterior) -> None:
         return
     spreads = posterior.spreads()
     logger.debug("  belief: %d search(es), %d keyword(s) · π %.3f · γ %.2f · "
-                 "τ %.2f · s_ℓ %.2f · ρ %+.2f · %d divergence(s) · %.1fs",
+                 "τ %.2f · s_f %.2f · ρ %+.2f · %d divergence(s) · %.1fs",
                  len(posterior.searches), len(posterior.keywords),
                  float(sigmoid(posterior.alpha).mean()), float(posterior.gamma.mean()),
-                 spreads["tau"], spreads["s_lift"], spreads["rho"], posterior.divergences,
+                 spreads["tau"], spreads["s_fits"], spreads["rho"], posterior.divergences,
                  posterior.seconds)
 
 
 # ── one reading: the mean, or a draw ─────────────────────────────────
 
 class Pairs:
-    """Each keyword's ``(u_t, v_t)`` on one reading of the posterior: a fitted keyword's own;
-    for one no search held, 0 at the mean, or on a draw a pair from that draw's
-    ``MVNormal(0, Σ)``, seeded by the draw's seed and the keyword so every read agrees."""
+    """Each keyword's size and lift, ``(u_t, p_t + w_t − u_t)``, on one reading of the
+    posterior: a fitted keyword's own; for one no search held, ``(0, p_t)`` at the mean, or
+    on a draw ``(u_t, w_t)`` from that draw's ``MVNormal(0, Σ)``, seeded by the draw's seed
+    and the keyword so every read agrees."""
 
     def __init__(self, posterior: Posterior, index: int | None = None, seed=None):
         self.posterior, self.index, self.seed = posterior, index, seed
@@ -463,8 +484,8 @@ class Pairs:
         noise = np.random.default_rng(
             [*np.atleast_1d(self.seed).tolist(), PAIR_STREAM, keyword_number(keyword)]
         ).standard_normal(2)
-        size, lift = posterior.chol[self.index] @ noise
-        return float(size), float(lift + posterior.guesses.lift(keyword))
+        size, fits = posterior.chol[self.index] @ noise
+        return float(size), float(fits - size + posterior.guesses.lift(keyword))
 
 
 @dataclass(frozen=True)

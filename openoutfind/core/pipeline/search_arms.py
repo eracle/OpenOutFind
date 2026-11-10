@@ -22,10 +22,13 @@ there:**
 - **the cost** is dollars (``calibration.dollars``): a search's measured ready time, and
   for each new person the measured ingest time and a verdict.
 
-**The search fired is the best at its mean plus one σ** (``Frontier.pick``), read on
-``DRAWS`` draws of the belief seeded by the round's number so a rerun repeats. A search
-little is known about is worth trying once; the five random verdicts ``probe`` takes from
-its page then settle it. Searches are composed at the mean only: composed on each draw,
+**The search fired is Thompson sampling over the ``TOP_K`` arms worth the most at the
+mean** (``Frontier.pick``): one draw of the belief, seeded by the round's number so a rerun
+repeats, values each of them, and the one with the most fits on its page on that draw is
+fired. The top ``k`` keeps the pick to arms that make sense at the mean; the draw spreads
+the picks among them by how sure the belief is. The five random verdicts ``probe`` takes
+from a fired search's page then pull its keywords' lifts toward what it brought, and the
+next round's ``k`` moves on. Searches are composed at the mean only: composed on each draw,
 across 10,000 keywords near their prior one always drew high, and only 9 of 50 draws
 stayed in the customer's market.
 
@@ -60,11 +63,10 @@ FITS_WORTH_A_SEARCH = 1.0
 # The composed searches valued exactly: room for the ones the frontier refuses (fired,
 # dead, drained) below the best.
 COMPOSED = 200
-# The draws of the belief an arm's mean and σ are read off.
-DRAWS = 200
-# How many σ above its mean an arm's fits are taken at: at two σ an untried search read
-# three times the market's rate.
-OPTIMISM = 1.0
+# The arms worth the most at the mean that one draw of the belief picks among. The greedy
+# pick (mean plus one σ over 200 draws) fired one idea round after round on batch 6: 46 of
+# rounds 16–66 were `ceo`/`chief`/`executive`/`officer` in another combination.
+TOP_K = 10
 
 
 @dataclass
@@ -83,7 +85,8 @@ class Arm:
     theta: float | None = None  # θ(q) at the mean belief, None on an arm chosen unvalued
     rate: float = 0.0        # the fit rate expected of the new people, at the mean belief
     cost: float = 0.0        # dollars to fire it, take its new people in and judge them
-    score: float | None = None  # fits on its page at mean + OPTIMISM σ, set when picked
+    score: float | None = None  # fits on its page on the round's draw, set when picked
+    rank: int | None = None     # its place among the TOP_K at the mean, set when picked
 
     @property
     def is_next_page(self) -> bool:
@@ -311,26 +314,23 @@ class Frontier:
     # ── the pick ──
 
     def pick(self, arms: list[Arm], round_number: int) -> Arm:
-        """The arm whose page brings the most fits at its mean plus ``OPTIMISM`` σ over
-        the draws of round ``round_number``. Sets the arm's ``score``."""
-        arms = in_one_order(distinct_arms(arms))
-        fits = self.fits_on_draws(arms, round_number)
-        scores = fits.mean(axis=0) + OPTIMISM * fits.std(axis=0)
-        chosen = arms[int(np.argmax(scores))]
-        chosen.score = float(scores.max())
+        """Thompson sampling over the ``TOP_K`` arms worth the most at the mean: one draw
+        of the belief, seeded by ``round_number``, values each, and the one whose page
+        brings the most fits on it is fired. Sets the arm's ``score`` and ``rank``."""
+        top = top_at_mean(arms)
+        drawn = self.beliefs.draw((round_number, 0),
+                                  {keyword for arm in top for keyword in arm.keywords})
+        fits = [self.fits_on(arm, drawn) for arm in top]
+        index = int(np.argmax(fits))
+        chosen = top[index]
+        chosen.score, chosen.rank = fits[index], index + 1
         return chosen
 
-    def fits_on_draws(self, arms: list[Arm], round_number: int) -> np.ndarray:
-        """``(DRAWS, arms)``: the fits each arm's page brings on each draw."""
-        keywords = {keyword for arm in arms for keyword in arm.keywords}
-        fits = np.zeros((DRAWS, len(arms)))
-        for n in range(DRAWS):
-            drawn = self.beliefs.draw((round_number, n), keywords)
-            for i, arm in enumerate(arms):
-                theta = self.beliefs.theta_on(drawn, arm.keywords, arm.fired_key)
-                sized = self.resized(arm, drawn.sizes)
-                fits[n, i] = sized.new * sized.density(theta)
-        return fits
+    def fits_on(self, arm: Arm, drawn: belief.Draw) -> float:
+        """The fits ``arm``'s page brings on one draw of the belief."""
+        theta = self.beliefs.theta_on(drawn, arm.keywords, arm.fired_key)
+        sized = self.resized(arm, drawn.sizes)
+        return sized.new * sized.density(theta)
 
 
 def distinct_arms(arms: list[Arm]) -> list[Arm]:
@@ -344,6 +344,12 @@ def distinct_arms(arms: list[Arm]) -> list[Arm]:
 def in_one_order(arms: list[Arm]) -> list[Arm]:
     """The arms in one order whatever made them, so a rerun breaks a tie the same way."""
     return sorted(arms, key=lambda arm: (arm.terms.key, arm.number))
+
+
+def top_at_mean(arms: list[Arm]) -> list[Arm]:
+    """The ``TOP_K`` arms whose page brings the most fits at the mean, best first."""
+    ranked = sorted(in_one_order(distinct_arms(arms)), key=lambda arm: -arm.expected_fits)
+    return ranked[:TOP_K]
 
 
 def worth_firing(arms: list[Arm], qualifier) -> list[Arm]:
@@ -394,9 +400,10 @@ def written_arms() -> list[Arm]:
 
 def log_chosen(chosen: Arm, candidates: int) -> None:
     logger.debug("  frontier: %d arm(s) · %-9s θ %.2f · density %.2f · N ~%.0f · seen %d · "
-                 "~%.0f new · %.1f fits at +%gσ  %s", candidates, chosen.move, chosen.theta,
-                 chosen.rate, chosen.count, chosen.seen, chosen.new, chosen.score, OPTIMISM,
-                 chosen)
+                 "~%.0f new · %.1f fits on the draw, %.1f at the mean · rank %d of %d  %s",
+                 candidates, chosen.move, chosen.theta, chosen.rate, chosen.count, chosen.seen,
+                 chosen.new, chosen.score, chosen.expected_fits, chosen.rank,
+                 min(candidates, TOP_K), chosen)
 
 
 def log_last_page(frontier: Frontier) -> None:
