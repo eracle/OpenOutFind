@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from openoutfind.crm.models import DealState
-from openoutfind.enrichment import bettercontact, fullenrich, provider
+from openoutfind.enrichment import bettercontact, enrow, fullenrich, leadmagic, provider
 from openoutfind.enrichment.lookup import buy_address
 from openoutfind.enrichment.provider import Lookup, PollOutcome, ProviderUnavailable
 from tests.factories import DealFactory, LeadFactory
@@ -200,12 +200,50 @@ class TestTheChainIsPriceOrdered:
             assert provider.active() is keyed
 
 
+# the shipped roster, with no stand-ins
+
+
+class TestTheRealRoster:
+    """The real modules, not doubles: the order the pricing actually justifies.
+
+    A mocked chain proves the sort. This proves the roster, so a registered finder
+    whose price or key wiring drifted fails here instead of quietly overspending.
+    """
+
+    def test_the_shipped_finders_run_cheapest_first(self, config):
+        config(
+            bettercontact_api_key="bc",
+            enrow_api_key="enrow",
+            fullenrich_api_key="fr",
+            leadmagic_api_key="lm",
+        )
+
+        assert [module.NAME for module in provider.chain()] == [
+            "enrow",
+            "leadmagic",
+            "fullenrich",
+            "bettercontact",
+        ]
+
+    def test_only_the_keyed_finders_are_in_the_chain(self, config):
+        config(enrow_api_key="enrow")
+
+        assert [module.NAME for module in provider.chain()] == ["enrow"]
+        assert provider.active() is enrow
+
+
 # a stored handle names the vendor that minted it
 
 
 class TestByName:
     def test_a_fullenrich_handle_is_polled_by_fullenrich(self):
         assert provider.by_name("fullenrich") is fullenrich
+
+    def test_an_enrow_handle_is_polled_by_enrow(self):
+        assert provider.by_name("enrow") is enrow
+
+    def test_a_leadmagic_handle_is_polled_by_leadmagic(self):
+        assert provider.by_name("leadmagic") is leadmagic
 
     def test_an_unknown_handle_yields_nothing(self):
         assert provider.by_name("no-such-finder") is None

@@ -3,10 +3,11 @@
 
 ``lookup.py`` drives *a* provider, never a named one. Which module answers is decided
 here, and it is a price rather than an order: the configured finders sort by what one
-verified address costs on each vendor's entry plan, and the cheapest leads. Two
-waterfalls ship, BetterContact and FullEnrich, and which of them is cheaper flips with
-volume (see ``UNIT_COST_USD`` in each), so the ranking is computed every run instead of
-being written down here.
+verified address costs on each vendor's entry plan, and the cheapest leads. Four
+finders ship, BetterContact and FullEnrich (waterfalls), LeadMagic (synchronous) and
+Enrow (asynchronous, cheapest per hit), and which of them is cheaper flips with volume
+(see ``UNIT_COST_USD`` in each), so the ranking is computed every run instead of being
+written down here.
 
 **The interface spans sync and async, because finders differ.** BetterContact is a
 waterfall that takes seconds to minutes: ``start`` fires a job and returns a handle, the
@@ -104,9 +105,9 @@ class Lookup:
 
 def _providers() -> tuple:
     """Every finder upstream ships. Order here is not preference: ``_cost`` decides."""
-    from openoutfind.enrichment import bettercontact, fullenrich, leadmagic
+    from openoutfind.enrichment import bettercontact, enrow, fullenrich, leadmagic
 
-    return (bettercontact, fullenrich, leadmagic)
+    return (bettercontact, enrow, fullenrich, leadmagic)
 
 
 def _cost(module) -> float:
@@ -123,8 +124,8 @@ def _cost(module) -> float:
 def active():
     """The cheapest configured provider module, or ``None`` if none is configured.
 
-    Cheapest, not first-listed: the two waterfalls trade places with volume, so the
-    ranking is computed per run from each module's current ``UNIT_COST_USD``.
+    Cheapest, not first-listed: the finders trade places with volume, so the ranking
+    is computed per run from each module's current ``UNIT_COST_USD``.
     """
     configured = [module for module in _providers() if module.is_configured()]
     return min(configured, key=_cost) if configured else None

@@ -83,9 +83,15 @@ class SiteConfig:
     fullenrich_api_key: str = ""
 
     # LeadMagic's key powers the paid email lookup behind `--emails` and nothing else.
-    # A single synchronous call where the other two are waterfalls, so it is the cheapest
-    # address on the entry plan and `provider.active()` reaches for it first when it is keyed.
+    # A single synchronous call where the others run a job, so a hit lands without the
+    # lead ever parking on a vendor-held handle.
     leadmagic_api_key: str = ""
+
+    # Enrow's key powers the paid email lookup behind `--emails` and nothing else.
+    # Asynchronous like the waterfalls, and the cheapest address per hit on the entry
+    # plan ($17 buys 1,000 credits), so `provider.active()` reaches for it first when
+    # it is keyed.
+    enrow_api_key: str = ""
 
     # The operator's own ISO-3166 alpha-2 jurisdiction — not to be confused with
     # `Lead.country_code`, the per-lead target country an ICP search surfaced someone

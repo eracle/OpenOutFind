@@ -1,4 +1,4 @@
-"""LeadMagic: the paid finder's third waterfall, and the one that answers in a single call.
+"""LeadMagic: the paid finder that answers in a single call.
 
 The other two adapters speak a two-leg handshake because their APIs run a job: ``start``
 returns a handle and ``poll_once`` finishes it later. LeadMagic's email finder is
@@ -8,11 +8,10 @@ there is no ``poll_once`` here at all: a hit lands on RESOLVED without the deal 
 entering FINDING_EMAIL, and nothing ever parks on a handle that a vendor could strand.
 
 Why a third adapter: the seam's job is to pick the finder that is cheapest on the
-operator's plan (``provider.py``), and the three quote different prices per credit at
-different tiers. LeadMagic is the cheapest of the three at entry ($99 buys 5,000 credits),
-FullEnrich is next, and BetterContact is cheapest at the very top but dearest at the
-bottom. That is a pricing decision, not an architecture change, which is the point of the
-seam.
+operator's plan (``provider.py``), and every vendor quotes a different price per credit
+at a different tier. LeadMagic answers in one call and undercuts both waterfalls at
+entry ($99 buys 5,000 credits), though Enrow's entry plan is cheaper again. That is a
+pricing decision, not an architecture change, which is the point of the seam.
 
 Discovery is **not** here either. Lead Finder is BetterContact's free index and stays on
 BetterContact's key, so a LeadMagic-only install can resolve an address but cannot
