@@ -77,6 +77,11 @@ class SiteConfig:
     # paid email lookup behind `--emails`.
     bettercontact_api_key: str = ""
 
+    # FullEnrich's key powers the paid email lookup behind `--emails` and nothing else.
+    # Discovery stays on BetterContact's Lead Finder, so a FullEnrich-only install can
+    # resolve an address but cannot search (core/readiness.py: REQUIRED_DISCOVERY_FIELDS).
+    fullenrich_api_key: str = ""
+
     # The operator's own ISO-3166 alpha-2 jurisdiction — not to be confused with
     # `Lead.country_code`, the per-lead target country an ICP search surfaced someone
     # under. Optional: an EEA/UK/CH country turns the contacts-store give-back off
