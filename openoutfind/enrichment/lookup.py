@@ -79,52 +79,62 @@ def buy_address(deal) -> DealState | None:
 
 
 def _submit(deal) -> DealState | None:
-    """Run the configured finder — resolving outright, or parking on a job handle.
+    """Walk the configured finders in price order until one can take the lookup.
 
-    Which vendor answers is ``provider.active()``'s decision and nothing here knows the
-    name; the branch that matters is *sync or async*, and the provider reports that by
-    what ``start`` returns. A synchronous hit lands on RESOLVED without the deal ever
-    entering FINDING_EMAIL, so it never occupies a poll slot and never risks the
-    stranded-handle case ``reclaim_lookup`` exists for.
+    Which vendor answers is ``provider.chain()``'s decision and nothing here knows the
+    names: it hands back every configured provider, cheapest first, and each is tried in
+    turn. A provider that cannot run (no key, no credits, API down) raises
+    ``ProviderUnavailable`` and the walk moves to the next; only after every one has
+    refused does the deal go back to waiting. A provider that does run is authoritative,
+    miss included: a terminal miss is the answer to the lookup, not a reason to spend a
+    second credit at the next vendor.
 
-    A couldn't-run (no key, no credits, API down) leaves the deal in
-    `READY_TO_FIND_EMAIL` — no credit was spent and there is no handle to poll — but
-    **backs it off first**. Without that the row is still due on the very next pass,
-    so the same deal is re-picked
-    immediately and forever: noise every few seconds under the old daemon, and a job that
-    never returns now that a bounded run stops only when nothing can advance. Writing
-    ``not_before`` is the architecture's one waiting mechanism, and an unreachable
-    provider is exactly the case it exists for.
+    Inside a single provider the branch that matters is *sync or async*, and the provider
+    reports it by what ``start`` returns. A synchronous hit lands on RESOLVED without the
+    deal ever entering FINDING_EMAIL, so it never occupies a poll slot and never risks
+    the stranded-handle case ``reclaim_lookup`` exists for.
+
+    A couldn't-run leaves the deal in `READY_TO_FIND_EMAIL` (no credit spent, no handle
+    to poll) but **backs it off first**. Without that the row is still due on the very
+    next pass, so the same deal is re-picked immediately and forever: noise every few
+    seconds under the old daemon, and a job that never returns now that a bounded run
+    stops only when nothing can advance. Writing ``not_before`` is the architecture's one
+    waiting mechanism, and an unreachable provider is exactly the case it exists for.
     """
     from openoutfind.enrichment import provider
 
-    finder = provider.active()
-    if finder is None:
+    finders = provider.chain()
+    if not finders:
         logger.info("%s", step_line(
-            "finder", "unconfigured — left queued", glyph="⚠", color="yellow"))
+            "finder", "unconfigured: left queued", glyph="⚠", color="yellow"))
         _back_off(deal, advance=True)
         return None
 
-    try:
-        lookup = finder.start(deal.lead.profile_url)
-    except provider.ProviderUnavailable as exc:
+    for finder in finders:
+        try:
+            lookup = finder.start(deal.lead.profile_url)
+        except provider.ProviderUnavailable as exc:
+            logger.info("%s", step_line(
+                finder.NAME, f"unavailable ({exc}), trying next",
+                glyph="⚠", color="yellow"))
+            continue
+
+        if not lookup.pending:
+            return _finish(deal, finder, lookup.outcome)
+
+        deal.lookup_request_id = lookup.request_id
+        deal.lookup_provider = finder.NAME
+        deal.lookup_attempt = 0
+        deal.not_before = timezone.now() + timedelta(seconds=COLLECT_BACKOFF_BASE_S)
         logger.info("%s", step_line(
-            finder.NAME, f"unavailable ({exc}) — left queued",
-            glyph="⚠", color="yellow"))
-        _back_off(deal, advance=True)
-        return None
+            finder.NAME, f"submitted · req {lookup.request_id[:12]}… → FINDING_EMAIL · polling",
+            glyph="✓", color="green"))
+        return DealState.FINDING_EMAIL
 
-    if not lookup.pending:
-        return _finish(deal, finder, lookup.outcome)
-
-    deal.lookup_request_id = lookup.request_id
-    deal.lookup_provider = finder.NAME
-    deal.lookup_attempt = 0
-    deal.not_before = timezone.now() + timedelta(seconds=COLLECT_BACKOFF_BASE_S)
     logger.info("%s", step_line(
-        finder.NAME, f"submitted · req {lookup.request_id[:12]}… → FINDING_EMAIL · polling",
-        glyph="✓", color="green"))
-    return DealState.FINDING_EMAIL
+        "finder", "no provider could run: left queued", glyph="⚠", color="yellow"))
+    _back_off(deal, advance=True)
+    return None
 
 
 def reclaim_lookup(deal) -> DealState:

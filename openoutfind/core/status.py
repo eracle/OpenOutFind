@@ -170,7 +170,12 @@ def _credits() -> dict:
         return {"balance": finder.credit_balance(), "provider": finder.NAME, "error": None}
     except provider.ProviderUnavailable as exc:
         logger.debug("Could not read the credit balance: %s", exc)
-        return {"balance": None, "error": exc.error_type, "detail": str(exc)}
+        return {
+            "balance": None,
+            "provider": finder.NAME,
+            "error": exc.error_type,
+            "detail": str(exc),
+        }
 
 
 def _signup_url() -> str:
@@ -203,25 +208,30 @@ def _blocked(config: dict, credits: dict, totals: dict) -> list[dict]:
             "message": "this run was not given: " + ", ".join(config["missing"]),
         })
 
+    # The finder that actually ran is the one an operator has to act on. When no key is
+    # set there is no finder to name, so the sentence describes the missing piece instead
+    # of picking a vendor the install never configured.
+    finder = credits.get("provider") or "the email finder"
+
     if credits["error"] == ErrorType.NO_CREDENTIAL:
         blocked.append({
             "type": ErrorType.NO_CREDENTIAL,
-            "message": "no BetterContact key — discovery and email finding are both off",
+            "message": "no email-finder key set: discovery and email finding are both off",
         })
     elif credits["error"] == ErrorType.PROVIDER_AUTH:
         blocked.append({
             "type": ErrorType.PROVIDER_AUTH,
-            "message": "BetterContact rejected the API key",
+            "message": f"{finder} rejected the API key",
         })
     elif credits["error"] == ErrorType.PROVIDER_OUT_OF_CREDITS:
         blocked.append({
             "type": ErrorType.PROVIDER_OUT_OF_CREDITS,
-            "message": "BetterContact reports the credits are exhausted",
+            "message": f"{finder} reports the credits are exhausted",
         })
     elif credits["error"] == ErrorType.PROVIDER_RATE_LIMITED:
         blocked.append({
             "type": ErrorType.PROVIDER_RATE_LIMITED,
-            "message": "BetterContact is rate-limiting this client — the run is backing off",
+            "message": f"{finder} is rate-limiting this client, the run is backing off",
         })
     elif credits["balance"] == 0 and totals["ranked_for_lookup"]:
         blocked.append({

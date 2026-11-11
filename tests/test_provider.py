@@ -13,9 +13,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from openoutfind.crm.models import DealState
-from openoutfind.enrichment import bettercontact, provider
+from openoutfind.enrichment import bettercontact, enrow, fullenrich, leadmagic, provider
 from openoutfind.enrichment.lookup import buy_address
-from openoutfind.enrichment.provider import Lookup, PollOutcome
+from openoutfind.enrichment.provider import Lookup, PollOutcome, ProviderUnavailable
 from tests.factories import DealFactory, LeadFactory
 
 
@@ -42,6 +42,25 @@ def _sync_finder(outcome: PollOutcome):
         is_configured=lambda: True,
         start=MagicMock(return_value=Lookup(outcome=outcome)),
     )
+
+
+def _finder(name: str, outcome=None, cost=None, fails: bool = False):
+    """A configured finder with an optional price tag, able to refuse the call.
+
+    Price is left off by default so a test can prove the unpriced case sorts last
+    rather than winning on a fluke. Refusal is a side effect, not a return value,
+    because that is how a real adapter reports it cannot run.
+    """
+    module = SimpleNamespace(
+        NAME=name,
+        is_configured=lambda: True,
+        start=MagicMock(return_value=Lookup(outcome=outcome)),
+    )
+    if cost is not None:
+        module.UNIT_COST_USD = cost
+    if fails:
+        module.start.side_effect = ProviderUnavailable(f"{name} is down")
+    return module
 
 
 # ── selection ─────────────────────────────────────────────────────
@@ -118,3 +137,113 @@ class TestEitherTransportResolves:
             assert buy_address(deal) == DealState.RESOLVED
 
         start.assert_not_called()
+
+
+# the chain steps over a refusal, and only a refusal
+
+
+class TestTheChainStepsOverARefusal:
+    def test_a_provider_that_cannot_run_hands_the_lookup_to_the_next(self, config, site_config):
+        """Availability outranks price: a vendor that cannot run does not get paid."""
+        deal = _ready_to_find(site_config)
+        down = _finder("down", fails=True)
+        up = _finder("up", outcome=PollOutcome(running=False, email="alice@acme.com"))
+
+        with patch.object(provider, "_providers", return_value=(down, up)), \
+             patch("openoutfind.contacts.service.contribute"):
+            assert buy_address(deal) == DealState.RESOLVED
+
+        assert deal.lead.email == "alice@acme.com"
+        up.start.assert_called_once()
+
+    def test_a_terminal_miss_does_not_pay_a_second_vendor(self, config, site_config):
+        """A miss is an answer. Paying a second vendor to hear it again is waste."""
+        deal = _ready_to_find(site_config)
+        first = _finder("first", outcome=PollOutcome(running=False))
+        second = _finder("second", outcome=PollOutcome(running=False, email="late@acme.com"))
+
+        with patch.object(provider, "_providers", return_value=(first, second)):
+            assert buy_address(deal) == DealState.NO_EMAIL_FOUND
+
+        second.start.assert_not_called()
+
+
+# the chain is price ordered, and unpriced sorts last
+
+
+class TestTheChainIsPriceOrdered:
+    def test_the_cheapest_configured_provider_leads(self):
+        cheap = _finder("cheap", cost=0.05)
+        dear = _finder("dear", cost=0.09)
+
+        with patch.object(provider, "_providers", return_value=(dear, cheap)):
+            assert [module.NAME for module in provider.chain()] == ["cheap", "dear"]
+            assert provider.active() is cheap
+
+    def test_a_provider_with_no_published_price_sorts_last(self):
+        priced = _finder("priced", cost=0.2)
+        unpriced = _finder("unpriced")
+
+        with patch.object(provider, "_providers", return_value=(unpriced, priced)):
+            assert [module.NAME for module in provider.chain()] == ["priced", "unpriced"]
+
+    def test_an_unconfigured_provider_is_not_in_the_chain(self):
+        keyed = _finder("keyed", cost=0.1)
+        blank = SimpleNamespace(
+            NAME="blank",
+            is_configured=lambda: False,
+            start=MagicMock(),
+        )
+
+        with patch.object(provider, "_providers", return_value=(keyed, blank)):
+            assert [module.NAME for module in provider.chain()] == ["keyed"]
+            assert provider.active() is keyed
+
+
+# the shipped roster, with no stand-ins
+
+
+class TestTheRealRoster:
+    """The real modules, not doubles: the order the pricing actually justifies.
+
+    A mocked chain proves the sort. This proves the roster, so a registered finder
+    whose price or key wiring drifted fails here instead of quietly overspending.
+    """
+
+    def test_the_shipped_finders_run_cheapest_first(self, config):
+        config(
+            bettercontact_api_key="bc",
+            enrow_api_key="enrow",
+            fullenrich_api_key="fr",
+            leadmagic_api_key="lm",
+        )
+
+        assert [module.NAME for module in provider.chain()] == [
+            "enrow",
+            "leadmagic",
+            "fullenrich",
+            "bettercontact",
+        ]
+
+    def test_only_the_keyed_finders_are_in_the_chain(self, config):
+        config(enrow_api_key="enrow")
+
+        assert [module.NAME for module in provider.chain()] == ["enrow"]
+        assert provider.active() is enrow
+
+
+# a stored handle names the vendor that minted it
+
+
+class TestByName:
+    def test_a_fullenrich_handle_is_polled_by_fullenrich(self):
+        assert provider.by_name("fullenrich") is fullenrich
+
+    def test_an_enrow_handle_is_polled_by_enrow(self):
+        assert provider.by_name("enrow") is enrow
+
+    def test_a_leadmagic_handle_is_polled_by_leadmagic(self):
+        assert provider.by_name("leadmagic") is leadmagic
+
+    def test_an_unknown_handle_yields_nothing(self):
+        assert provider.by_name("no-such-finder") is None

@@ -1,9 +1,13 @@
 # openoutfind/enrichment/provider.py
-"""The email-finder seam: one interface, one configured provider, two transports.
+"""The email-finder seam: one interface, a ranked set of providers, two transports.
 
 ``lookup.py`` drives *a* provider, never a named one. Which module answers is decided
-here by ``active()`` — today that is BetterContact whenever its key is set, the only
-finder upstream ships.
+here, and it is a price rather than an order: the configured finders sort by what one
+verified address costs on each vendor's entry plan, and the cheapest leads. Four
+finders ship, BetterContact and FullEnrich (waterfalls), LeadMagic (synchronous) and
+Enrow (asynchronous, cheapest per hit), and which of them is cheaper flips with volume
+(see ``UNIT_COST_USD`` in each), so the ranking is computed every run instead of being
+written down here.
 
 **The interface spans sync and async, because finders differ.** BetterContact is a
 waterfall that takes seconds to minutes: ``start`` fires a job and returns a handle, the
@@ -25,19 +29,20 @@ implements:
     poll_once(id)   PollOutcome — async providers only; sync ones never see a call
 
 **Adding a provider (including in a fork).** Write the module against the six names
-above, add it to ``_providers()`` below and give it a key in ``core/config.py`` — that
-is the whole integration; nothing else in the codebase names a vendor. With more than
-one key set, the first configured entry in ``_providers()`` wins.
+above, give it a ``UNIT_COST_USD`` saying what one hit costs on its entry plan, add it to
+``_providers()`` below and give it a key in ``core/config.py``. That is the whole
+integration; nothing else in the codebase names a vendor. With more than one key set the
+cheapest configured entry leads and the rest follow it in price order (``chain()``).
 
 ``NAME`` is the part that leaves the machine. ``lookup`` passes it straight to
 ``contacts.contribute`` as the give-back's ``origin``, and it travels to the hub as
-that **string**, never as a number — so pick a short lowercase slug for your vendor
+that **string**, never as a number. Pick a short lowercase slug for your vendor
 (``"hunter"``, ``"dropcontact"``) and keep it stable, because it is what your
 contributions are grouped by forever after. The hub stores it verbatim whether or not
 it has ever heard of you, so a fork's own finder stays legible on the analytics side
 with no change needed there; only the small-int fast path in the hub's
 ``Contribution.Origin`` is limited to the vendors upstream ships. Do not reuse another
-vendor's ``NAME`` to "fit in" — that silently merges your spend into theirs.
+vendor's ``NAME`` to "fit in": that silently merges your spend into theirs.
 """
 from __future__ import annotations
 
@@ -99,15 +104,43 @@ class Lookup:
 
 
 def _providers() -> tuple:
-    """Every finder upstream ships, in the order ``active`` prefers them."""
-    from openoutfind.enrichment import bettercontact
+    """Every finder upstream ships. Order here is not preference: ``_cost`` decides."""
+    from openoutfind.enrichment import bettercontact, enrow, fullenrich, leadmagic
 
-    return (bettercontact,)
+    return (bettercontact, enrow, fullenrich, leadmagic)
+
+
+def _cost(module) -> float:
+    """What one verified address costs on *module*'s entry plan.
+
+    Read from the module rather than kept in a table here so a finder's price lives
+    beside the finder, and a fork that adds a vendor states its own. A module that
+    carries no ``UNIT_COST_USD`` sorts last instead of failing: an unpriced finder is
+    still usable, just never preferred.
+    """
+    return getattr(module, "UNIT_COST_USD", float("inf"))
 
 
 def active():
-    """The provider module this install resolves with, or ``None`` if none is configured."""
-    return next((module for module in _providers() if module.is_configured()), None)
+    """The cheapest configured provider module, or ``None`` if none is configured.
+
+    Cheapest, not first-listed: the finders trade places with volume, so the ranking
+    is computed per run from each module's current ``UNIT_COST_USD``.
+    """
+    configured = [module for module in _providers() if module.is_configured()]
+    return min(configured, key=_cost) if configured else None
+
+
+def chain() -> tuple:
+    """Every configured provider, cheapest first: the order a lookup tries them.
+
+    ``active()`` leads, so a caller that pins one provider for a test or a retry still
+    sees the same head, and everything after it is the fallback order. Empty when
+    nothing is configured.
+    """
+    head = active()
+    rest = [module for module in _providers() if module.is_configured() and module is not head]
+    return ((head,) if head is not None else ()) + tuple(sorted(rest, key=_cost))
 
 
 def by_name(name: str):

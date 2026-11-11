@@ -329,7 +329,7 @@ is a stable string worth branching on:
 | `goal_unreached` | Ran, produced fewer than asked. The rows are on stdout. | Read the message: a drained index is a dead end, addresses on order are a reason to run again later. |
 | `not_initialized` | No pipeline at this database yet. | `outfind check` |
 | `onboarding_incomplete` | The run was not given everything it needs. | The message names every missing variable; `outfind status` does too. |
-| `no_credential` | No BetterContact key. | Configure one; discovery needs it too, and the free tier has 40 credits. |
+| `no_credential` | No BetterContact key. | Configure one; discovery needs it too, and the free tier has 50 credits. |
 | `provider_auth` | The key was rejected. | Do not retry; the key is wrong. |
 | `provider_out_of_credits` | Credits exhausted. | Free `find N` still works; addresses do not. |
 | `provider_rate_limited` | 429. | Back off. **Never retry at speed** — the provider's docs say that can block the account. |

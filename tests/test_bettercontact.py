@@ -31,6 +31,17 @@ def unkeyed(db, configure):
     return configure(bettercontact_api_key="")
 
 
+@pytest.fixture(autouse=True)
+def _fresh_request_window():
+    """The request budget is one per process, so the tests share its window.
+
+    ``RequestBudget.take`` waits for real once the minute is full, which turns a
+    long file into real minutes of sleep. Emptying the window per test keeps the
+    real ``take`` in every path and the suite quick.
+    """
+    bettercontact._BUDGET._sent.clear()
+
+
 def _response(body, error=None, status_code=200, headers=None):
     resp = MagicMock()
     resp.json.return_value = body

@@ -76,6 +76,14 @@ _HTTP_TIMEOUT_S = 30
 REQUESTS_PER_MINUTE = 15
 _BUDGET_WINDOW_S = 60.0
 
+# **What one credit costs on the entry plan, used only to rank finders against each
+# other.** Starter is $15 for 200 credits, so $0.075 a hit; the rate falls as the plan
+# grows (their ladder runs to $0.02 at volume), and a bigger plan reorders the waterfall.
+# So this is an anchor for the cheapest paid tier, not a measurement of what an
+# operator's own account charges — the seam picks the cheapest *listed* finder and the
+# prices are re-checked when a plan changes.
+UNIT_COST_USD = 0.075
+
 # **A 429 is backed off, never retried at speed** — their docs warn that a client which
 # keeps firing through one can get the *account* blocked, which costs the operator far
 # more than the throttled call was worth. urllib3 already does this correctly: waits of
@@ -108,11 +116,19 @@ class RequestBudget:
     spend about 12, a later round's one about 3, so a run rarely waits.
     """
 
-    def __init__(self, limit: int, window: float, clock=time.monotonic, sleep=time.sleep):
+    def __init__(
+        self,
+        limit: int,
+        window: float,
+        clock=time.monotonic,
+        sleep=time.sleep,
+        label: str = NAME,
+    ):
         self._limit = limit
         self._window = window
         self._clock = clock
         self._sleep = sleep
+        self._label = label
         self._sent: deque[float] = deque()
         self._lock = threading.Lock()
 
@@ -126,7 +142,9 @@ class RequestBudget:
                     self._sent.append(now)
                     return
                 wait = self._window - (now - self._sent[0])
-            logger.debug("bettercontact: request budget full — waiting %.1fs", wait)
+                logger.debug(
+                    "%s: request budget full, waiting %.1fs", self._label, wait
+                )
             self._sleep(wait)
 
 

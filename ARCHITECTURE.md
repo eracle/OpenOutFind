@@ -28,8 +28,10 @@ openoutfind/
                      #   config.py (the environment) + readiness.py, llm.py, conf.py,
                      #   ML (qualifier/embeddings), discovery+qualify pipeline,
                      #   the lead export, db/ helpers, geo, management commands
-  enrichment/        # the one paid step (not an app — no models) — the BetterContact
-                     #   client and the two-step buy/check lookup
+  enrichment/        # the one paid step (not an app, no models): the finder clients
+                     #   (Enrow, BetterContact, FullEnrich, and LeadMagic, the
+                     #   last synchronous), the price-aware selection seam
+                     #   (provider.py), and the buy/check lookup
   crm/               # app (label: outfind_crm) — Lead, Company, Deal
   contacts/          # central contacts-store client (service.py only — no models, not an app)
 ```
@@ -196,9 +198,15 @@ What a program depends on, and the reason both exist as one place rather than a 
   `bad_config: OPENOUTFIND_LLM_API_KEY`. It used to catch `Exception`, so when `anthropic` 1.0.0
   dropped `temperature` the resulting `TypeError` in our own process read as a rejected key and sent
   the operator after credentials that were fine. A broken install is a bug and gets its traceback.
-- **The provider's refusals are three different things**, typed at the HTTP boundary in
-  `bettercontact._request`: 401 → `provider_auth`, 402 → `provider_out_of_credits`, an exhausted 429
-  backoff → `provider_rate_limited`. Everything else stays `provider_unavailable`.
+- **A provider's refusals are three different things**, typed at the HTTP boundary in each adapter's
+  `_request` (`bettercontact`, `enrow`, `fullenrich` and `leadmagic`): 401 → `provider_auth`, 402 →
+  `provider_out_of_credits`, an exhausted 429 backoff → `provider_rate_limited`. Everything else
+  stays `provider_unavailable`, which is also what a finder that cannot run at all raises (each
+  adapter's own `BetterContactUnavailable` / `EnrowUnavailable` / `FullEnrichUnavailable` /
+  `LeadMagicUnavailable`, all subclasses of `provider.ProviderUnavailable`, carrying the vendor's
+  message). Every one of them is a
+  *couldn't-run*, and that is the distinction `lookup.buy_address` acts on: it steps to the next
+  finder in the chain, where a terminal miss ends the lookup rather than spending a second credit.
 - **A 429 is backed off, never retried at speed** — their docs warn that a client which keeps firing
   can get the *account* blocked. The backoff is `urllib3.Retry` mounted on the session
   (`_RETRY`: 5 attempts, `backoff_factor=5` doubling, `backoff_max=120`, `respect_retry_after_header`,
@@ -282,7 +290,7 @@ the job.
 |:----|:----------------|
 | `config` | `complete`, the satisfied groups, and per-group the variables that would satisfy the rest |
 | `totals` | the pipeline counts |
-| `credits` | `balance` + `error` — `GET /api/v2/account` → `credits_left` |
+| `credits` | `balance` + `error` for the finder `active()` names, with `provider` beside them — Enrow's read is the free `GET /account/info` → `credits`, BetterContact's is `GET /api/v2/account` → `credits_left`, LeadMagic's is the free `GET /v1/credits`; FullEnrich has none, so it is *unknown* |
 | `hub` | `balance` + `known` — the give-to-get counter (`contacts.service.hub_balance`), a different number on a different service than `credits` |
 | `blocked` | what stands between now and more qualified rows, typed from `core/errors.py` |
 | `next_action` | the one thing to do next, with what it unlocks and the command or URL that does it |
@@ -301,13 +309,17 @@ Three decisions inside it:
   not break the *never before value* rule — `ranked_for_lookup > 0` is itself the proof that
   qualified leads with written reasons exist, and an install that has qualified nobody is asked for
   no money, only told to go and find some (`find_leads`).
-- **The hub balance is not the `Credits:` line.** `credits` is BetterContact's own prepaid balance
-  (`GET /api/v2/account`); `hub` is the give-to-get counter on the contacts store — a different
-  number on a different service, so it gets its own key rather than being folded into or shown
-  beside `credits` under one label. Read via `hub_balance()`, which piggybacks on `register` (a
+- **The hub balance is not the `Credits:` line.** `credits` is whichever finder `provider.active()`
+  names, which is the cheapest configured one, reported with a `provider` key beside its balance
+  (`GET /account/info` for Enrow, `GET /api/v2/account` for BetterContact, `GET /v1/credits` for
+  LeadMagic); `hub` is the give-to-get counter on the contacts store, a different number on a
+  different service, so it gets its own key rather than being folded into or shown beside `credits`
+  under one label. Read via `hub_balance()`, which piggybacks on `register` (a
   record-less call is idempotent server-side and already returns `credits`), so checking it spends
   nothing. `known: False` (no token yet, or a hub outage) must render as *unknown*, never as zero —
-  the same rule the provider balance already follows.
+  the same rule the provider balance already follows, and a FullEnrich install lives under that rule
+  permanently because FullEnrich exposes no balance read, so `credit_balance()` raises rather than
+  guess.
 
 ## Configuration (`core/config.py`) and the readiness check (`core/readiness.py`)
 
@@ -326,6 +338,9 @@ in its own `SiteConfig` and exports these names to both children.
 campaign        OPENOUTFIND_PRODUCT_DOCS, OPENOUTFIND_CAMPAIGN_TARGET  (+ MAX_PER_COMPANY, optional)
 llm             OPENOUTFIND_AI_MODEL, OPENOUTFIND_LLM_API_KEY  (+ LLM_API_BASE, required for openai_compatible:*)
 bettercontact   OPENOUTFIND_BETTERCONTACT_API_KEY
+fullenrich      OPENOUTFIND_FULLENRICH_API_KEY
+enrow           OPENOUTFIND_ENROW_API_KEY
+leadmagic       OPENOUTFIND_LEADMAGIC_API_KEY
 account         OPENOUTFIND_OPERATOR_EMAIL, OPENOUTFIND_OPERATOR_COUNTRY  (optional)
 hub             OPENOUTFIND_CONTACTS_API_TOKEN  (optional)
 ```
@@ -377,7 +392,8 @@ stops. `core/export.py` reads it from there.
 - **`FINDING_EMAIL`** — a provider job is in flight; the deal is excluded from the candidate pool (so the next cycle can't re-select it and double-charge) while `check_lookup` polls to termination. The job handle (`lookup_request_id`) and the poll backoff (`lookup_attempt` + `not_before`) live **on the deal**, so an in-flight lookup survives a restart and its wait gates that one row and nothing else.
 - **`RESOLVED`** — an address is in hand. Where a fully-enriched deal comes to rest, at no cost, since nothing iterates it.
 
-**The paid lookup runs behind a provider seam** (`enrichment/provider.py`): `active()` names the finder from whichever key is configured — BetterContact is the only one upstream ships — and nothing above the package knows the vendor. `buy_address` resolves free-hub-first (hit → `RESOLVED` with no job/credit), then calls the finder's `start`. **The transport is the provider's, and the interface spans both**: a synchronous finder (a match-style API a fork might add) comes back already terminated and lands on `RESOLVED`/`NO_EMAIL_FOUND` without ever entering `FINDING_EMAIL`; an async one (BetterContact's waterfall) returns a handle and parks there. A couldn't-run (no key / API down) stays `READY_TO_FIND_EMAIL`. The handle records **which** finder minted it (`Deal.lookup_provider`), so swapping keys mid-flight cannot hand one vendor's `request_id` to another. `check_lookup` (poll) is then **tri-state**: hit → `RESOLVED` (address given back to the hub); **miss** (job terminated, no address) → `NO_EMAIL_FOUND` — its own terminal, with **no reason and blank outcome**, critically not `FAILED+wrong_fit`, which the ML labeler reads as a negative: a lead we simply couldn't reach was still an LLM fit positive and stays label=1; **still running** → chains the next poll with doubled backoff on the same `request_id`, with no deadline and no attempt limit.
+**The paid lookup runs behind a provider seam** (`enrichment/provider.py`): `active()` names the cheapest finder by `UNIT_COST_USD` among those holding a key, and `chain()` is that one followed by every other configured finder, cheapest first. Nothing above the package knows the vendor. `buy_address` resolves free-hub-first (hit → `RESOLVED` with no job/credit), then walks the chain. **The transport is each provider's, and the interface spans both**: a synchronous finder (LeadMagic's one-call finder, or a match-style API a fork adds) comes back already terminated and lands on `RESOLVED`/`NO_EMAIL_FOUND` without ever entering `FINDING_EMAIL`; an async one (Enrow's single search, BetterContact's waterfall, FullEnrich's bulk enrich) returns a
+handle and parks there. A finder that cannot run — every `ProviderUnavailable`, whether a typed refusal or a missing key or an API that is down — steps to the next finder in the chain, and only when the whole chain has refused does the deal stay `READY_TO_FIND_EMAIL`. A finder that *does* run is authoritative: a terminal miss ends the lookup there rather than spending a second credit. The handle records **which** finder minted it (`Deal.lookup_provider`), so swapping keys mid-flight cannot hand one vendor's `request_id` to another and `check_lookup` dispatches by name. The poll is then **tri-state**: hit → `RESOLVED` (address given back to the hub); **miss** (job terminated, no address) → `NO_EMAIL_FOUND` — its own terminal, with **no reason and blank outcome**, critically not `FAILED+wrong_fit`, which the ML labeler reads as a negative: a lead we simply couldn't reach was still an LLM fit positive and stays label=1; **still running** → chains the next poll with doubled backoff on the same `request_id`, with no deadline and no attempt limit.
 
 `crm/models/deal.py:Outcome` is down to **two** values: `wrong_fit` and `unknown`. The reply
 outcomes it used to carry — converted, not_interested, no_budget, has_solution, bad_timing,
@@ -527,7 +543,7 @@ end honestly: a row that waits stops being due, so `run_one_action` can return `
 `HALTING_ERRORS` (today `ModelHTTPError`) is the exception: a misconfigured LLM key ends the job with
 a typed `bad_config` line rather than being retried forever behind an `alive` log line.
 
-1. **`buy_address`** (`enrichment/lookup.py`) — resolves cheapest-first: an address already on the lead → `RESOLVED`; the free hub cache (`contacts.resolve`) → `RESOLVED`; else `bettercontact.submit` fires a job, stores `lookup_request_id`, and parks at `FINDING_EMAIL`. Couldn't-submit (no key, API down) stays in `READY_TO_FIND_EMAIL` — no credit spent, no handle to poll — but **backs the deal off first** (`_back_off`, the same doubling the poll uses). Without that the row is still due on the next pass, so the same deal is re-picked immediately and forever: noise every few seconds under the daemon, an endless job now that a run stops only when nothing can advance. *Queued* and *due* are different things.
+1. **`buy_address`** (`enrichment/lookup.py`) — resolves cheapest-first: an address already on the lead → `RESOLVED`; the free hub cache (`contacts.resolve`) → `RESOLVED`; else the chain's leading finder (cheapest configured first) fires a job through its `start`, `Deal.lookup_provider` records which one, and the handle lands in `lookup_request_id` as the deal parks at `FINDING_EMAIL`. Couldn't-submit (no finder key, API down) stays in `READY_TO_FIND_EMAIL` — no credit spent, no handle to poll — but **backs the deal off first** (`_back_off`, the same doubling the poll uses). Without that the row is still due on the next pass, so the same deal is re-picked immediately and forever: noise every few seconds under the daemon, an endless job now that a run stops only when nothing can advance. *Queued* and *due* are different things.
 2. **`check_lookup`** (same module) — polls `lookup_request_id` once: hit → `RESOLVED` + hub give-back; miss → `NO_EMAIL_FOUND` (no reason, blank outcome); still-running → double `not_before`. **The only terminal outcomes are the provider's own** — no deadline, no attempt limit. Both were tried: past the deadline the leg abandoned the job and reverted the deal, where the buy step bought a *second* job for the same lead, so a provider outage became a hot resubmit loop (418 submits and 4,512 polls in a week for ~40 leads, none terminating). Doubling makes waiting nearly free (a week costs 17 polls) and refuses to mislabel — a timeout is evidence about the provider, not about the lead. The interval rails at `COLLECT_BACKOFF_MAX_S` (a month) only so `datetime` can still express it. A deal parked here with an **empty** `lookup_request_id` has no job and never cost a credit, so row 1 routes it to **`reclaim_lookup`** → `READY_TO_FIND_EMAIL` instead. The row used to `.exclude(lookup_request_id="")` and skip it, which stranded it in a state no other row claims — measured on a live install: two deals stuck for 206 hours.
 
 A third and fourth step stood here — `send_first_email` and `answer_reply` — and both left with
@@ -707,7 +723,7 @@ rather than pinned to a single hallucination.
 
 - **`core`** — Engine: the `Search` / `Page` / `PageLead` walk models; the cycle, operator lookup, LLM factory, the environment config + readiness check, the ML/discovery/qualify pipeline, the lead export, geo.
 - **`crm`** — `Lead` (identity + embedding + email), `Company` (the shared employer row) and `Deal` (`crm/models/lead.py`, `crm/models/company.py`, `crm/models/deal.py`); also defines `DealState` and `Outcome`.
-- **`enrichment`** — **not an app** (no models). `bettercontact.py` (paid finder: the two-leg `submit(query)→request_id` + `poll_once(request_id)→PollOutcome`, the blocking `search_and_poll` transport used by discovery, the shared `RequestBudget`, `is_configured`, `BetterContactQuery`/`Result`/`PollOutcome`/`Unavailable`); `lookup.py` (`buy_address`/`check_lookup`/`reclaim_lookup` — one entity in, the next `DealState` or `None` out). It sat under `emails/` while a resolved address existed to be written to; that coupling is exactly what made a mailbox-less install produce nothing.
+- **`enrichment`** — **not an app** (no models). `bettercontact.py` (paid finder: the two-leg `submit(query)→request_id` + `poll_once(request_id)→PollOutcome`, the blocking `search_and_poll` transport used by discovery, the shared `RequestBudget`, `is_configured`, `BetterContactQuery`/`Result`/`PollOutcome`/`Unavailable`); `fullenrich.py` (the second finder, and a different shape of one: the bare `professional_network_url` is a complete query, `submit` → `enrichment_id` and `poll_once` → `PollOutcome` once `FINISHED`, the vendor's statuses mapped through, its own `RequestBudget`, and no balance read because the vendor exposes none); `leadmagic.py` (the third finder and the only synchronous one: `start` is the whole lookup and returns a finished `PollOutcome`, so it has no `poll_once` and leaves no handle to strand, one POST to `/v1/people/email-finder` with nothing but the profile URL, a `valid` status or a miss, and a real balance read from the free `GET /v1/credits`); `enrow.py` (the fourth finder added, and the cheapest: `start(profile_url)` POSTs one `linkedin_url` and returns the vendor's `id`, `poll_once(id)` → `PollOutcome` while it runs at HTTP 202, `valid`/`invalid` mapped through, a `lookup_failed` LinkedIn status deferred rather than read as a miss because the vendor bills nothing for it, a `RequestBudget` of 120 a minute with the free `GET /account/info` exempt, and a real balance read from that same endpoint); `provider.py` (`configured`/`active`/`chain`/`by_name` — which finder is cheapest among those holding a key, and the order the rest are tried in; no HTTP of its own); `lookup.py` (`buy_address`/`check_lookup`/`reclaim_lookup` — one entity in, the next `DealState` or `None` out). It sat under `emails/` while a resolved address existed to be written to; that coupling is exactly what made a mailbox-less install produce nothing.
 - **`contacts`** — the central contacts-store client (`service.py`, no models, **not** an installed app) — "the hub" (`hub.openoutreach.app`), logged under the `hub:` prefix. `resolve(lead)` (free read-back before the paid finder) `contribute(lead, emails, origin)` (give-back, non-EEA only, registers on first use), `share_profiles(rows, country_code)` (every discovery page, non-EEA only, no credit) and `share_companies(rows, country_code)` (that page's distinct employers, same gates, no person attached). All best-effort; an outage or missing token degrades to a no-op.
 
 **Three apps are gone.** `emails` (Mailbox, the mail log, sender, the send guards, two steps) went
@@ -954,6 +970,10 @@ Paths relative to `openoutfind/`.
 - **`core/llm.py`** — `get_llm_model()` factory (reads the run's `SiteConfig`, `split_model_id` parses the provider out of `ai_model`, dispatches to the per-provider builder), `build_llm_model` (from explicit creds), `verify_llm_credentials` (one live ping, tenacity-retried, run before every pass by `readiness.check_ready` — it returns only the failures a *configuration* causes and lets anything else propagate, since its caller blames `LLM_API_KEY` for whatever comes back), and `run_agent_sync(coro)` — the sync boundary that drives async pydantic-ai on a dedicated long-lived worker-thread loop (never `Agent.run_sync`, whose anyio portal poisons the caller thread's loop slot; never per-call `asyncio.run`, which closes loops the SDK HTTP clients still reference).
 - **`core/geo.py`** — jurisdiction sets + predicates: `is_gdpr_protected` (broad opt-in set, read only by OpenOutreach's wizard for its newsletter default) and `is_eea_located` / `EEA_UK_CH` (narrow EEA/UK/CH collection-regime set — the client-side pre-gate for contacts-store contribution; the server re-gates authoritatively). The operator's country is `OPENOUTFIND_OPERATOR_COUNTRY`; a lead's is the one its query node searched. Neither ever comes from a scrape.
 - **`enrichment/bettercontact.py`** — the provider client. The paid finder is the two-leg `submit(query) → request_id` + `poll_once(request_id) → PollOutcome`, so a run never blocks on a poll; the free Lead Finder index uses the blocking `search_and_poll` transport from the same module, since `discovery.search` genuinely wants a page back: its first poll goes at the measured ready time, the rest a second apart (enrichment keeps `_POLL_INTERVAL_S`, 5s). Every request but `GET /account` first takes a place in `_BUDGET` (`RequestBudget`, `REQUESTS_PER_MINUTE` = 15 in any 60 seconds, thread-safe), one process's share of the key's 100/min. `is_configured()` reads `OPENOUTFIND_BETTERCONTACT_API_KEY` — one key, two endpoints, and only one of them bills.
+- **`enrichment/fullenrich.py`** — the second finder, and a different shape of one: a bare `professional_network_url` is a complete query, so `submit(url) → enrichment_id` + `poll_once(enrichment_id) → PollOutcome` mirror the first finder's two legs without the name/company fields. The vendor's job statuses are mapped through (`CREDITS_INSUFFICIENT` → out of credits, `RATE_LIMIT` → rate limited, `CANCELED` → a miss, anything unfinished → still running), only `DELIVERABLE` / `HIGH_PROBABILITY` count as a usable address, and `credit_balance()` raises instead of guessing because the vendor exposes no balance read at all (so a FullEnrich install renders its balance as *unknown*). It carries its own `_BUDGET` with no exempt account read, since there is no account read to exempt.
+- **`enrichment/leadmagic.py`** — the third finder and the only synchronous one: `start(profile_url)` is the whole lookup, a single POST to `/v1/people/email-finder` carrying nothing but the URL, so the answer comes back already finished (`valid` and an address, or a free miss) and there is no `poll_once` here at all, no handle for a vendor to strand. It keeps its own `RequestBudget` (60 a minute, a courtesy fifth of the 300 the entry plan publishes per organisation) with the free `GET /v1/credits` exempt, and unlike FullEnrich it reads a real balance, floor-don't-round, since `status` shows it.
+- **`enrichment/enrow.py`** — the fourth finder added, and the cheapest: `start(profile_url)` POSTs a single `linkedin_url` to `/email/find/single` and returns the vendor's handle (`id`), `poll_once(id)` reads it back as a `PollOutcome` while the search runs at HTTP 202, and `valid`/`invalid` are the only two verdicts that settle a lookup (`valid` carries the address). A `lookup_failed` LinkedIn status is transient and free, so it defers rather than recording a miss, and an unknown or expired handle comes back as a 500 rather than a 404, which also defers. It keeps its own `RequestBudget` (120 a minute, a courtesy fifth of the documented 10 a second) with the free `GET /account/info` exempt, and unlike FullEnrich it reads a real balance, floor-don't-round, since `status` shows it.
+- **`enrichment/provider.py`** — the selection seam and no HTTP of its own: `configured()` (the finders holding a key), `active()` (the cheapest of them by `UNIT_COST_USD`), `chain()` (that one first, then the rest cheapest-first), and `by_name()` (dispatch for a parked lookup, from `Deal.lookup_provider`). Also home to `ProviderUnavailable` (the couldn't-run base every adapter subclasses), `PollOutcome`, and `Lookup`.
 - **`enrichment/lookup.py`** — the two pipeline steps, `buy_address` / `check_lookup` / `reclaim_lookup`, plus `_store_identity` (the name parts the provider echoes back with the address) and the backoff helpers. The enrichment query is **URL-only by decision** — the provider accepts name and company and resolves better with them, but the less of a lead's record leaves for a third party the better, and URL-only measures ~42% usable. The docstring says not to widen it without a decision to widen it.
 - **`core/business_time.py`** — `business_days_between(start, end)`: whole Mon–Fri days elapsed. It was the agent's only sense of a thread's age; with no agent it is now unused by the pipeline and kept as a small, correct utility. Public holidays are not modelled (per-country data we don't carry).
 - **`core/logging.py`** — `configure_logging` + `print_banner`; `SILENCED_LOGGERS` quiets urllib3/httpx/pydantic_ai/openai/fastembed/etc.; `format_elapsed` (`52s` / `4m09s` / `1h04m`) for the milestones.
