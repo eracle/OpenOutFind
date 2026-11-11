@@ -104,9 +104,9 @@ class Lookup:
 
 def _providers() -> tuple:
     """Every finder upstream ships. Order here is not preference: ``_cost`` decides."""
-    from openoutfind.enrichment import bettercontact, fullenrich
+    from openoutfind.enrichment import bettercontact, fullenrich, leadmagic
 
-    return (bettercontact, fullenrich)
+    return (bettercontact, fullenrich, leadmagic)
 
 
 def _cost(module) -> float:
