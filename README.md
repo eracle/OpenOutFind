@@ -47,9 +47,28 @@ It has **zero platform-ToS surface**: browserless, no social-network account, no
 4. **An LLM qualifies each candidate** against your ICP and **writes down why**. A model of your ICP (Gaussian Process over profile embeddings) learns from those verdicts and picks who to qualify next
 5. **Every lead you have prints as CSV when the run ends** — name, title, company, website, profile URL, and the `reason` — so `> leads.csv` is the only file there is. Ask for addresses (`find 10 emails`, or `--emails`) and the best-fit leads get a **paid email lookup** first, one credit per verified hit, gated on the model's confidence so the spend goes to the leads most likely to fit
 
-Searching the licensed source is free, so the system can afford to look at a lot and spend paid lookups only on the best fits. *(The learning loop is an active experiment — it is not yet shown to beat picking at random, and no claim is made that it does.)*
+Searching the default BetterContact source is free, so the system can afford to look at a lot and spend paid lookups only on the best fits. *(The learning loop is an active experiment — it is not yet shown to beat picking at random, and no claim is made that it does.)*
 
 ---
+
+## Optional CompanyEnrich source
+
+[CompanyEnrich](https://companyenrich.com/) provides B2B company and people data APIs.
+Its people search can supply a bounded page of professional profiles for the existing
+qualification and export workflow. It is **paid and explicitly opt-in**: setting
+`OPENOUTFIND_COMPANYENRICH_API_KEY` alone changes nothing.
+
+```bash
+outfind find 5 --companyenrich-query people.json \
+  --companyenrich-request-id founders-page-1 --discovery-credit-budget 20
+```
+
+The query file controls filters and page size; ten requested profiles reserve at most
+20 CompanyEnrich credits at the current published rate. Reuse the request ID when
+resuming to avoid duplicate purchases. CompanyEnrich data is excluded from the shared
+contacts hub, including later email contributions. People search supplies no emails.
+See [setup, query example, spending and data handling](docs/companyenrich.md).
+The default free BetterContact discovery and separate `--emails` opt-in remain unchanged.
 
 ## 📤 What You Get Out
 
@@ -76,7 +95,7 @@ outfind status --json     # the same thing, for a script or an agent
 email, first_name, last_name, company, title, website, linkedin_url, reason, lead_id, qualified_at, full_name
 ```
 
-Those column names are **the importers', not ours**. Instantly and Smartlead both require `email`/`first_name`/`last_name` and recognise `company`/`title`/`website`/`linkedin_url` as standard fields, so an exported file imports **without column mapping**. Anything else — including `reason` — arrives as a custom variable you can merge into a template. `first_name`/`last_name` come from the email lookup, so a leads-only file has them blank; `full_name` always names the person.
+Those column names are **the importers', not ours**. Instantly and Smartlead both require `email`/`first_name`/`last_name` and recognise `company`/`title`/`website`/`linkedin_url` as standard fields, so an exported file imports **without column mapping**. Anything else — including `reason` — arrives as a custom variable you can merge into a template. `first_name`/`last_name` come from the provider when supplied (CompanyEnrich discovery or the email lookup), never a guessed split; `full_name` always names the person.
 
 - **`reason` is the point.** Everybody exports rows; almost nobody exports *why this lead*.
 - **There is no score column, on purpose.** The model's confidence is a spend gate for the paid lookup, not a quality signal, and thresholding on it would be reading a number that was never calibrated to mean "good lead". The fit verdict is the LLM's, and it is already in the file as a sentence.
@@ -125,7 +144,7 @@ Two things that are *not* privileges, and that is the point:
 - 📝 **A stated reason per lead** — read exactly why the agent picked someone, and fix the description when it is wrong
 - 🔍 **Nothing decides in the dark** — the ICP, the verdicts and the whole pipeline are on your machine and open to read
 - 🛡️ **Zero platform-ToS surface** — browserless, no social-network account, no scraping — nothing to get banned
-- 💸 **Pay only for what resolves** — searching is free; a paid lookup is rationed and billed on a verified hit
+- 💸 **Default discovery is free** — BetterContact searching is free; a paid lookup is rationed and billed on a verified hit
 - 📤 **Exports where you already work** — CSV in the shape the sequencer importers expect
 - ⚡ **One-command setup** — `uvx --from openoutfind outfind find 10`, configured by four environment variables, no container required
 

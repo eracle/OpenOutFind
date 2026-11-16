@@ -34,6 +34,9 @@ class Lead(models.Model):
     # walk's moves can draw terms from them. See ``discovery.SOURCE_FIELDS``. A lead
     # stored without one of them matches no search term on that field.
     source_fields = models.JSONField(default=dict, blank=True)
+    # CompanyEnrich-sourced identities must never reach the shared contacts hub,
+    # including a later email lookup or a duplicate seen by another source.
+    discovery_source = models.CharField(max_length=32, default="bettercontact")
     # Who this person is and where they work — the record the product accumulates, and
     # what the lead export hands to whatever the operator sends with. Deliberately
     # absent from ``profile_text`` and the embedding: a name carries no ICP signal, and

@@ -61,7 +61,7 @@ from typing import IO, Iterable
 # flag would have been the obvious alternative and is wrong: invocation-relative state
 # written into a file that outlives the invocation is a lie the second time it is read.
 # Ours: full_name — the one name discovery reports, verbatim. ``first_name``/``last_name``
-# stay null until the paid lookup returns the provider's own split, so without this a
+# are supplied by CompanyEnrich discovery or a paid lookup, never guessed, so without this a
 # leads-only file (no addresses bought) names nobody. Last, because the contract only
 # ever adds: a reader indexing the older columns by position is not moved.
 RECORD_FIELDS = (
@@ -119,7 +119,7 @@ def lead_record(deal) -> dict:
         company = None
     return {
         "email": lead.email,
-        # From the enrichment provider's own response, never split in-house. Null for a
+        # From a discovery/enrichment provider response, never split in-house. Null for a
         # lead resolved through the free hub cache, which never calls BetterContact.
         "first_name": lead.first_name,
         "last_name": lead.last_name,
