@@ -354,12 +354,12 @@ class TestTheNextRound:
         assert Search.objects.filter(pages__number=1).count() == Page.objects.filter(
             number=1).count()
 
-    def test_nothing_is_fired_when_no_arm_is_expected_to_bring_a_fit(self, site):
+    def test_nothing_is_fired_when_no_arm_brings_anybody_new(self, site):
         _run(site, FakeLeadFinder())
         _judge("founder")
         finder = FakeLeadFinder()
 
-        with patch.object(walk.search_arms, "FITS_WORTH_A_SEARCH", 1e9):
+        with patch.object(walk.search_arms, "bringing_somebody_new", return_value=[]):
             assert _run(site, finder) is None
         assert finder.calls == []
 

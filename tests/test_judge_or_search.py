@@ -176,7 +176,7 @@ class TestTheRule:
 
         assert (unbilled, billed) == (False, True)
 
-    def test_with_no_search_worth_firing_the_pool_is_judged(self):
+    def test_with_no_search_left_to_fire_the_pool_is_judged(self):
         decision, _ = _decide(waiting=0.1, arm=None)
         assert decision is True
 

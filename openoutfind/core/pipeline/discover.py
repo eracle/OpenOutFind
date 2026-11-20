@@ -82,7 +82,7 @@ def _leads_of(rows: list[dict], by_url: dict) -> list:
 def discover(site_config, qualifier=None) -> bool:
     """Run one round of the walk. Returns whether one was fired.
 
-    ``False`` means no search on the frontier is worth firing, or a gate is shut. A
+    ``False`` means no search on the frontier brings anybody new, or a gate is shut. A
     provider *refusal* propagates (``walk._take_in``): a rejected key must never be read as
     a search that matches nobody. ``qualifier`` scores the store's people, which is what
     the frontier is valued on; without one, only judged people count.
@@ -100,7 +100,7 @@ def discover(site_config, qualifier=None) -> bool:
 
     logger.info(colored("▶ discover", "blue", attrs=["bold"]))
     if run_round(site_config, qualifier) is None:
-        logger.info(colored("■ no search left worth firing — none is expected to bring a "
-                            "new fit", "blue"))
+        logger.info(colored("■ no search left to fire — none would bring anybody new",
+                            "blue"))
         return False
     return True

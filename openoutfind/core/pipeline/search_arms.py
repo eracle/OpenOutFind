@@ -33,8 +33,9 @@ across 10,000 keywords near their prior one always drew high, and only 9 of 50 d
 stayed in the customer's market.
 
 ``judge_or_search`` weighs the arm worth the most at the mean against judging the pool,
-and the walk stops when no arm is expected to bring a new fit. In the cold phase nothing
-is yet known to stop on, so it fires while an arm brings somebody new.
+and the walk fires while an arm brings somebody new. A search is free and its probe is what
+teaches the belief, so a page expected to bring a fraction of a fit is still fired: the
+goal ends the run, not the walk.
 """
 from __future__ import annotations
 
@@ -58,8 +59,6 @@ logger = logging.getLogger(__name__)
 # An estimate below the people the store holds for a search is disproved, and how far is
 # unknown: the search is taken to hold a tenth more, so it stays worth a look.
 SEEN_MARGIN = 1.1
-# The fits a page must be expected to bring for the walk to go on.
-FITS_WORTH_A_SEARCH = 1.0
 # The composed searches valued exactly: room for the ones the frontier refuses (fired,
 # dead, drained) below the best.
 COMPOSED = 200
@@ -352,23 +351,19 @@ def top_at_mean(arms: list[Arm]) -> list[Arm]:
     return ranked[:TOP_K]
 
 
-def worth_firing(arms: list[Arm], qualifier) -> list[Arm]:
-    """The arms bringing somebody new, or none once no arm is expected to bring a fit. The
-    cold phase has nothing yet to stop on: only a frontier with nobody new ends it."""
-    bringing = [arm for arm in arms if arm.new > 0]
-    if qualifier is not None and qualifier.is_cold:
-        return bringing
-    if any(arm.expected_fits >= FITS_WORTH_A_SEARCH for arm in bringing):
-        return bringing
-    return []
+def bringing_somebody_new(arms: list[Arm]) -> list[Arm]:
+    """The arms whose page would bring somebody the store does not hold. No arm is cut for
+    a low expected fit count: in a thin market every page reads below one fit, and a
+    one-fit floor there ended a run after 16 pages with most of its goal still owed."""
+    return [arm for arm in arms if arm.new > 0]
 
 
 def next_round(qualifier, round_number: int, site_config) -> list[Arm]:
-    """The one search to fire next, or ``[]`` when none is worth firing. Keywords with no
-    guess yet are guessed first (``keyword_guess``)."""
+    """The one search to fire next, or ``[]`` when no arm brings anybody new. Keywords with
+    no guess yet are guessed first (``keyword_guess``)."""
     frontier = Frontier(qualifier)
     frontier.guess_keywords(site_config)
-    arms = worth_firing(frontier.arms(), qualifier)
+    arms = bringing_somebody_new(frontier.arms())
     log_last_page(frontier)
     if not arms:
         return []
@@ -379,8 +374,8 @@ def next_round(qualifier, round_number: int, site_config) -> list[Arm]:
 
 def best_expected(qualifier) -> Arm | None:
     """The arm worth the most at the mean belief, what ``judge_or_search`` weighs against
-    the pool — ``None`` when none is worth firing."""
-    arms = worth_firing(Frontier(qualifier).arms(), qualifier)
+    the pool — ``None`` when no arm brings anybody new."""
+    arms = bringing_somebody_new(Frontier(qualifier).arms())
     if not arms:
         return None
     return max(in_one_order(arms), key=lambda arm: arm.expected_fits / arm.cost)

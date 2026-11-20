@@ -74,7 +74,7 @@ def decide(qualifier, candidates) -> bool:
     search = cost_per_fit(arm.cost, arm.expected_fits) if arm else math.inf
     pays = judge <= search
 
-    beyond = f"{arm.rate:.2f} × ~{arm.new:.0f} new" if arm else "no search worth firing"
+    beyond = f"{arm.rate:.2f} × ~{arm.new:.0f} new" if arm else "no search left to fire"
     logger.info("  %s judge %s/fit (best waiting %.2f; %d of %d fit since the last new "
                 "leads) vs search %s/fit (%s) → %s",
                 colored("·", "cyan", attrs=["bold"]), _dollars(judge), waiting,

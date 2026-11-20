@@ -206,7 +206,13 @@ class TestTheNextSearch:
     def test_an_arm_with_nobody_new_is_never_fired_while_another_has_people(self):
         dry, live = arm_for("buyer", new=0.0, rate=0.9), arm_for("founder", new=50.0, rate=0.5)
 
-        assert search_arms.worth_firing([dry, live], None) == [live]
+        assert search_arms.bringing_somebody_new([dry, live]) == [live]
+
+    def test_an_arm_expected_to_bring_a_fraction_of_a_fit_is_still_fired(self):
+        thin = arm_for("founder", new=20.0, rate=0.01)
+
+        assert thin.expected_fits < 1
+        assert search_arms.bringing_somebody_new([thin]) == [thin]
 
     def test_the_same_round_picks_the_same_search_whatever_the_order(self):
         arms = [arm_for(f"title{i}") for i in range(30)]
@@ -372,12 +378,17 @@ class TestTheNextSearch:
         assert any(frontier.pick(arms, 1) is arm for arm in arms)
         assert [arm.count for arm in arms] == counts
 
-    def test_a_round_fires_one_search_only_while_one_is_expected_to_bring_a_fit(self):
+    def test_a_round_fires_one_search_while_an_arm_brings_somebody_new(self):
         fire(Terms.written(title="purchasing", tag="cannabis"),
              [make_lead(verdict=1) for _ in range(3)], found=5000)
 
         assert len(search_arms.next_round(None, 1, SiteConfig.load())) == 1
-        with patch.object(search_arms, "FITS_WORTH_A_SEARCH", 1e9):
+
+    def test_a_round_fires_nothing_when_no_arm_brings_anybody_new(self):
+        fire(Terms.written(title="purchasing", tag="cannabis"),
+             [make_lead(verdict=1) for _ in range(3)], found=5000)
+
+        with patch.object(search_arms, "bringing_somebody_new", return_value=[]):
             assert search_arms.next_round(None, 1, SiteConfig.load()) == []
             assert search_arms.best_expected(None) is None
 
@@ -391,11 +402,8 @@ class TestTheNextSearch:
 
         fire(Terms.written(title="purchasing", tag="cannabis"), [make_lead()], found=5000)
 
-        with (
-            patch.object(search_arms, "FITS_WORTH_A_SEARCH", 1e9),
-            patch("openoutfind.core.ml.embeddings.embed_texts",
-                  side_effect=lambda texts: np.zeros((len(texts), 384))),
-        ):
+        with patch("openoutfind.core.ml.embeddings.embed_texts",
+                   side_effect=lambda texts: np.zeros((len(texts), 384))):
             assert len(search_arms.next_round(Cold(), 1, SiteConfig.load())) == 1
 
     def test_the_arm_weighed_against_the_pool_is_the_best_at_the_mean(self):
