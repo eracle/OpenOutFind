@@ -1,0 +1,531 @@
+# tests/core/management/commands/test_find.py
+"""`find` — the command's own contract: what it prints, where, and the fact that exit 0
+means the goal was met and nothing else.
+
+The job underneath (`core/job.py`) and the readiness check before it have their own tests;
+here both are reached only through the command.
+"""
+import contextlib
+import csv
+import io
+import json
+import logging
+import webbrowser
+from unittest.mock import patch
+
+import pytest
+from django.core.management import call_command
+
+from openoutfind.core.errors import ErrorType, OpenOutFindError
+from openoutfind.core.management.commands.find import Command
+from openoutfind.enrichment import bettercontact
+from tests.factories import exportable_deal
+
+
+@pytest.fixture
+def booted(site_config):
+    """Skip the preamble. Migrating and the readiness check have their own tests;
+    neither is what the command contract asserts.
+
+    Patched where `find` looks them up rather than where they are defined — the command
+    imports both by name, so patching the defining module would rebind an attribute
+    nothing reads."""
+    with patch.object(Command, "_configure_logging"), \
+            patch("openoutfind.core.management.commands.find.ensure_database"), \
+            patch("openoutfind.core.management.commands.find.check_ready"):
+        yield
+
+
+def _produces(email):
+    """A `run_one_action` that lands one exportable lead per call."""
+    return patch("openoutfind.core.cycle.run_one_action",
+                 side_effect=lambda c, buy_addresses=True, max_new_lookups=None: bool(
+                     exportable_deal(email)))
+
+
+@pytest.mark.django_db
+class TestTheCommandContract:
+    """What `find` prints, and what its exit code means.
+
+    `call_command` raises whatever `handle` raises, so `OpenOutFindError` here is the
+    non-zero exit the base command turns it into — see `tests/core/management/test_base.py`.
+    """
+
+    def test_a_met_goal_prints_the_campaign_and_does_not_raise(self, site_config, booted):
+        exportable_deal("ada@acme.com")
+
+        rows = _run("0")
+
+        assert [row["email"] for row in rows] == ["ada@acme.com"]
+
+    def test_an_unreached_goal_still_prints_its_rows_then_exits_non_zero(self, site_config, booted):
+        """Seven leads are seven leads. The rows go to stdout either way, and the error
+        line carries the type an agent branches on."""
+        exportable_deal("ada@acme.com")
+        out = io.StringIO()
+
+        with patch("openoutfind.core.cycle.run_one_action", return_value=False):
+            with pytest.raises(OpenOutFindError) as exc:
+                call_command("find", "5", stdout=out)
+
+        assert exc.value.error_type == ErrorType.GOAL_UNREACHED
+        assert "0 of 5 leads" in str(exc.value)
+        assert len(list(csv.DictReader(io.StringIO(out.getvalue())))) == 1
+
+    def test_the_whole_campaign_prints_then_each_new_lead_as_it_lands(self, site_config, booted):
+        """What makes `> leads.csv` correct by construction: the newest file supersedes
+        every earlier one. And streaming: a caller piping into a live sender sees each
+        lead as it lands, after the opening bulk, not collected behind the whole job."""
+        exportable_deal("old@acme.com")
+
+        with _produces("new@acme.com"):
+            rows = _run("1")
+
+        assert [row["email"] for row in rows] == ["old@acme.com", "new@acme.com"]
+
+    def test_new_narrows_to_what_this_run_produced(self, site_config, booted):
+        """`--new` narrows what prints, not whether streaming happens."""
+        exportable_deal("old@acme.com")
+
+        with _produces("new@acme.com"):
+            rows = _run("1", "--new")
+
+        assert [row["email"] for row in rows] == ["new@acme.com"]
+
+    def test_json_puts_the_records_on_stdout_one_per_line(self, site_config, booted):
+        """JSON Lines, so a stream truncated mid-run has still delivered every complete
+        record before the break — and the full record, profile text included, which is
+        the field the CSV projection drops."""
+        exportable_deal("ada@acme.com")
+        out = io.StringIO()
+
+        call_command("find", "0", "--json", stdout=out)
+
+        lines = out.getvalue().splitlines()
+        assert [json.loads(line)["email"] for line in lines] == ["ada@acme.com"]
+        assert "profile_text" in json.loads(lines[0])
+
+    def test_json_puts_the_run_metadata_on_stderr_and_nothing_else(self, site_config, booted, capsys):
+        """Otherwise a `2>` capture is prose with an object somewhere in it, and every
+        caller writes the same fragile `tail -1`."""
+        exportable_deal("old@acme.com")
+
+        with _produces("new@acme.com"):
+            call_command("find", "1", "--json", stdout=io.StringIO())
+
+        document = json.loads(capsys.readouterr().err)  # a banner or a log line would raise
+        assert document["reached"] is True and document["stopped_because"] is None
+        assert document["goal"] == {"count": 1, "unit": "leads"}
+        assert document["rows"] == 2  # the opening bulk's one row, plus the one produced
+
+    @pytest.mark.parametrize("flags, quiet", [(["--json"], True),
+                                              (["--json", "--debug"], False)])
+    def test_json_is_silent_unless_a_log_level_was_asked_for(self, site_config, booted,
+                                                              flags, quiet):
+        """An explicit --debug asked for the narration, so it goes to stderr beside the run
+        object; the banner stays off either way under --json."""
+        with patch.object(Command, "_configure_logging") as configure:
+            call_command("find", "0", *flags, stdout=io.StringIO())
+
+        assert configure.call_args.kwargs == {"quiet": quiet, "banner": False}
+
+    def test_the_log_level_decides_the_handler_under_json(self, capsys):
+        """The other half: with quiet off, a log line reaches stderr."""
+        root = logging.getLogger()
+        handlers, level = root.handlers[:], root.level
+        try:
+            Command()._configure_logging("debug", 1, quiet=False, banner=False)
+            logging.getLogger("openoutfind.test").debug("belief: refit")
+        finally:
+            root.handlers[:], root.level = handlers, level
+
+        assert "belief: refit" in capsys.readouterr().err
+
+    def test_exclude_keeps_listed_profiles_out_of_the_print(self, site_config, booted, tmp_path):
+        kept = exportable_deal("bob@acme.com")
+        dropped = exportable_deal("ada@acme.com")
+        path = tmp_path / "exclude.txt"
+        # Written the way a person pastes it: host in capitals, a tracking query, no slash.
+        listed = dropped.lead.profile_url.replace("www.linkedin.com", "WWW.LinkedIn.com")
+        path.write_text(listed.rstrip("/") + "?trk=x\n\n")
+
+        rows = _run("0", "--exclude", str(path))
+
+        assert [row["linkedin_url"] for row in rows] == [kept.lead.profile_url]
+
+    def test_an_excluded_lead_does_not_count_toward_the_goal(self, site_config, booted, tmp_path):
+        """The goal counts through the export, so an excluded lead the run produced is
+        neither printed nor a lead toward the number typed."""
+        path = tmp_path / "exclude.txt"
+        path.write_text("https://www.linkedin.com/in/ada\n")
+
+        def produce_excluded(c, buy_addresses=False, max_new_lookups=None):
+            from openoutfind.crm.models import DealState
+            from tests.factories import DealFactory, LeadFactory
+            DealFactory(lead=LeadFactory(profile_url="https://www.linkedin.com/in/ada/"),
+                        state=DealState.QUALIFIED, reason="fits")
+            return False
+
+        out = io.StringIO()
+        with patch("openoutfind.core.cycle.run_one_action", side_effect=produce_excluded):
+            with pytest.raises(OpenOutFindError) as exc:
+                call_command("find", "1", "--exclude", str(path), stdout=out)
+
+        assert exc.value.error_type == ErrorType.GOAL_UNREACHED
+        assert out.getvalue() == ""
+
+    def test_an_unreadable_exclude_file_fails_before_any_work(self, site_config, booted, tmp_path):
+        with patch("openoutfind.core.cycle.run_one_action") as action:
+            with pytest.raises(OpenOutFindError) as exc:
+                call_command("find", "1", "--exclude", str(tmp_path / "missing.txt"),
+                             stdout=io.StringIO())
+
+        assert exc.value.error_type == ErrorType.BAD_CONFIG
+        assert "--exclude" in str(exc.value)
+        action.assert_not_called()
+
+    def test_labels_load_before_any_work_and_ride_the_run_object(self, site_config, booted,
+                                                                 tmp_path, capsys):
+        from openoutfind.crm.models import Lead
+
+        path = tmp_path / "ratings.json"
+        path.write_text(json.dumps([{
+            "linkedin_url": "https://www.linkedin.com/in/ada/", "value": "good",
+            "value_reason": "", "note": "", "profile_text": "ada cto at acme",
+            "source_fields": {}, "employees_min": None, "employees_max": None,
+        }]))
+
+        def sees_the_mark(c, buy_addresses=False, max_new_lookups=None):
+            assert Lead.objects.filter(marked=True).count() == 1
+            return False
+
+        out = io.StringIO()
+        with patch("openoutfind.core.cycle.run_one_action", side_effect=sees_the_mark):
+            call_command("find", "0", "--json", "--labels", str(path), stdout=out)
+
+        document = json.loads(capsys.readouterr().err)
+        assert document["labels"]["fits"] == 1
+        assert out.getvalue() == ""  # the customer already has them
+
+    def test_an_unreadable_labels_file_fails_before_any_work(self, site_config, booted, tmp_path):
+        path = tmp_path / "ratings.json"
+        path.write_text("not json")
+
+        with patch("openoutfind.core.cycle.run_one_action") as action:
+            with pytest.raises(OpenOutFindError) as exc:
+                call_command("find", "1", "--labels", str(path), stdout=io.StringIO())
+
+        assert exc.value.error_type == ErrorType.BAD_CONFIG
+        assert "--labels" in str(exc.value)
+        action.assert_not_called()
+
+
+    def test_batch_restores_the_old_atomic_shape(self, site_config, booted):
+        """`--batch` is the escape hatch: still the whole site_config, still one write, just
+        held until the job ends instead of streamed as it goes."""
+        exportable_deal("old@acme.com")
+        out = io.StringIO()
+
+        with _produces("new@acme.com"):
+            call_command("find", "1", "--batch", stdout=out)
+
+        rows = list(csv.DictReader(io.StringIO(out.getvalue())))
+        assert {row["email"] for row in rows} == {"old@acme.com", "new@acme.com"}
+
+    def test_batch_never_writes_before_the_job_ends(self, site_config, booted):
+        """The property `--batch` exists for: a consumer that cannot take a partial
+        write gets nothing until `_report` runs, once, after the job."""
+        exportable_deal("old@acme.com")
+
+        class _NoWriteBeforeReport(io.StringIO):
+            def write(self, value):
+                assert False, "wrote to stdout before the job ended"
+
+        out = _NoWriteBeforeReport()
+        real_report = Command._report
+
+        def patched_report(self, result, options, writer):
+            _NoWriteBeforeReport.write = io.StringIO.write  # writing is fine from here
+            return real_report(self, result, options, writer)
+
+        with patch("openoutfind.core.cycle.run_one_action", return_value=False), \
+                patch.object(Command, "_report", patched_report):
+            with pytest.raises(OpenOutFindError):
+                call_command("find", "5", "--batch", stdout=out)
+
+    def test_agent_qualify_stops_with_the_candidates_payload(self, site_config, booted):
+        """The candidate a `QualifyPending` raised deep in the cycle rides all the way
+        out to the command's own error — same shape `goal_unreached` gets."""
+        from openoutfind.core.pipeline.qualify import QualifyPending
+
+        pending = QualifyPending(
+            "Ada Lovelace needs a verdict",
+            payload={"profile_text": "engineer at acme", "company": "Acme"})
+
+        with patch("openoutfind.core.cycle.run_one_action", side_effect=pending):
+            with pytest.raises(OpenOutFindError) as exc:
+                call_command("find", "1", "--agent-qualify", stdout=io.StringIO())
+
+        assert exc.value.error_type == ErrorType.QUALIFY_PENDING
+        assert exc.value.payload["company"] == "Acme"
+
+    def test_plain_mode_shows_the_profile_a_verdict_is_asked_on(self, site_config, booted, caplog):
+        """The error line carries only the name; the profile has to reach a reader who
+        did not pass --json, or they are asked to judge someone they cannot see."""
+        from openoutfind.core.pipeline.qualify import QualifyPending
+
+        pending = QualifyPending("Ada Lovelace needs a verdict", payload={
+            "profile_url": "https://www.linkedin.com/in/ada",
+            "profile_text": "founder of a small bakery chain"})
+
+        with patch("openoutfind.core.cycle.run_one_action", side_effect=pending), \
+                caplog.at_level(logging.INFO):
+            with pytest.raises(OpenOutFindError):
+                call_command("find", "1", "--agent-qualify", stdout=io.StringIO())
+
+        assert "https://www.linkedin.com/in/ada" in caplog.text
+        assert "founder of a small bakery chain" in caplog.text
+
+    def test_plain_mode_shows_the_schema_a_population_answer_is_written_in(
+            self, site_config, booted, caplog):
+        from openoutfind.core.pipeline.qualify import PopulationPending
+
+        pending = PopulationPending("this store has no searches yet",
+                                    payload={"schema": {"title": "PopulationAnswer"}})
+
+        with patch("openoutfind.core.cycle.run_one_action", side_effect=pending), \
+                caplog.at_level(logging.INFO):
+            with pytest.raises(OpenOutFindError) as exc:
+                call_command("find", "1", "--agent-qualify", stdout=io.StringIO())
+
+        assert exc.value.error_type == ErrorType.POPULATION_PENDING
+        assert '"title": "PopulationAnswer"' in caplog.text
+
+    def test_brief_stores_the_file_as_the_store_brief(self, site_config, booted, tmp_path):
+        from openoutfind.core.pipeline.brief import stored
+
+        path = tmp_path / "brief.md"
+        path.write_text("A fit is: bakers.\n")
+        call_command("find", "0", "--brief", str(path), stdout=io.StringIO())
+
+        assert stored().rules == "A fit is: bakers."
+
+    def test_an_unreadable_or_empty_brief_is_refused_before_any_work(self, site_config, booted,
+                                                                     tmp_path):
+        empty = tmp_path / "empty.md"
+        empty.write_text("  \n")
+        for path in (tmp_path / "missing.md", empty):
+            with patch("openoutfind.core.cycle.run_one_action") as action:
+                with pytest.raises(OpenOutFindError) as exc:
+                    call_command("find", "1", "--brief", str(path), stdout=io.StringIO())
+
+            assert exc.value.error_type == ErrorType.BAD_CONFIG
+            action.assert_not_called()
+
+    @pytest.mark.parametrize("args", [
+        ["-1"],
+        ["1", "--population", "{}"],
+        ["1", "--agent-qualify", "--population", '{"searches": []}'],
+        ["1", "--keyword-guesses", "{}"],
+        ["1", "--agent-qualify", "--keyword-guesses", '{"fields": [{"field": "title"}]}'],
+        ["1", "--verdict", "fit", "--reason", "ok"],
+        ["1", "--agent-qualify", "--verdict", "fit"],
+    ], ids=["negative-count", "population-without-agent", "population-off-schema",
+            "guesses-without-agent", "guesses-off-schema", "verdict-without-agent",
+            "verdict-without-reason"])
+    def test_a_bad_flag_is_refused_before_any_work(self, site_config, booted, args):
+        with patch("openoutfind.core.cycle.run_one_action") as action:
+            with pytest.raises(OpenOutFindError) as exc:
+                call_command("find", *args, stdout=io.StringIO())
+
+        assert exc.value.error_type == ErrorType.BAD_CONFIG
+        action.assert_not_called()
+
+    def test_plain_mode_shows_the_keywords_to_guess(self, site_config, booted, caplog):
+        from openoutfind.core.pipeline.qualify import KeywordGuessPending
+
+        pending = KeywordGuessPending("2 keyword(s) have no guess yet", payload={
+            "fields": {"tag": {"keywords": ["tag|live resin", "tag|rosin"]}},
+            "schema": {"title": "KeywordGuesses"}})
+
+        with patch("openoutfind.core.cycle.run_one_action", side_effect=pending), \
+                caplog.at_level(logging.INFO):
+            with pytest.raises(OpenOutFindError) as exc:
+                call_command("find", "1", "--agent-qualify", stdout=io.StringIO())
+
+        assert exc.value.error_type == ErrorType.KEYWORD_GUESS_PENDING
+        assert "tag|live resin, tag|rosin" in caplog.text
+        assert '"title": "KeywordGuesses"' in caplog.text
+
+    def test_other_stops_show_no_candidate(self, site_config, booted, caplog):
+        with patch("openoutfind.core.cycle.run_one_action", return_value=False), \
+                caplog.at_level(logging.INFO):
+            with pytest.raises(OpenOutFindError):
+                call_command("find", "1", stdout=io.StringIO())
+
+        assert "Candidate:" not in caplog.text
+
+    def test_a_bare_agent_qualify_run_carries_no_verdict(self, site_config, booted):
+        from openoutfind.core import agent_qualify
+
+        with patch("openoutfind.core.cycle.run_one_action", return_value=False):
+            with pytest.raises(OpenOutFindError):
+                call_command("find", "1", "--agent-qualify", stdout=io.StringIO())
+
+        assert agent_qualify.take_verdict() is None
+
+    def test_buying_is_off_by_default(self, site_config, booted):
+        """A bare `find` cannot spend, however many deals are queued past the gate.
+
+        This is the inversion of 2026-08-21: buying used to be on unless `--no-emails`
+        turned it off, so a run counting *leads* quietly bought addresses. A flag you
+        forget should cost a feature, never money.
+        """
+        exportable_deal("ada@acme.com")
+
+        with patch("openoutfind.core.cycle.run_one_action",
+                   return_value=False) as action:
+            with pytest.raises(OpenOutFindError):
+                call_command("find", "1", stdout=io.StringIO())
+
+        assert action.call_args.kwargs["buy_addresses"] is False
+
+    def test_emails_flag_reaches_the_cycle(self, site_config, booted):
+        """The flag is only worth having if it arrives where the spending happens."""
+        with patch("openoutfind.core.cycle.run_one_action",
+                   return_value=False) as action:
+            with pytest.raises(OpenOutFindError):
+                call_command("find", "1", "--emails", stdout=io.StringIO())
+
+        assert action.call_args.kwargs["buy_addresses"] is True
+
+    def test_an_emails_goal_implies_the_flag(self, site_config, booted):
+        """The noun says what to count and the flag says what may be paid for — but a
+        goal counted in addresses cannot be met without buying them."""
+        with patch("openoutfind.core.cycle.run_one_action",
+                   return_value=False) as action:
+            with pytest.raises(OpenOutFindError):
+                call_command("find", "5", "emails", stdout=io.StringIO())
+
+        assert action.call_args.kwargs["buy_addresses"] is True
+
+    def test_open_without_a_browser_fails_before_any_work(self, site_config, booted):
+        """A flag that silently does nothing is the bug you find at 2am."""
+        with patch("webbrowser.get", side_effect=webbrowser.Error), \
+                patch("openoutfind.core.cycle.run_one_action") as action:
+            with pytest.raises(OpenOutFindError) as exc:
+                call_command("find", "1", "--open", stdout=io.StringIO())
+
+        assert exc.value.error_type == ErrorType.BAD_CONFIG
+        action.assert_not_called()
+
+    def test_minute_zero_states_the_goal_and_whether_it_can_spend(self, site_config, booted, caplog):
+        """Spending is opt-in at every layer, which is a good default and an invisible
+        one. An operator who expected addresses should learn it in the first line, not
+        from an empty column at the end."""
+        with caplog.at_level(logging.INFO):
+            call_command("find", "0", stdout=io.StringIO())
+
+        assert "finding only, no addresses bought" in caplog.text
+
+    def test_asking_to_buy_says_so_before_any_work(self, site_config, booted, caplog):
+        with patch("openoutfind.core.cycle.run_one_action", return_value=False), \
+                caplog.at_level(logging.INFO):
+            with pytest.raises(OpenOutFindError):
+                call_command("find", "1", "--emails", stdout=io.StringIO())
+
+        assert "buying addresses, one credit each" in caplog.text
+
+    def test_the_icp_echo_names_who_it_is_looking_for(self, site_config, booted, caplog):
+        """The earliest possible proof the product description was understood — and the
+        earliest chance to correct it, which is the loop the README sells."""
+        from openoutfind.crm.models import Lead
+
+        Lead.objects.create(
+            synthetic=True,
+            profile_text="vp of engineering saas acme senior california united states")
+
+        with caplog.at_level(logging.INFO):
+            call_command("find", "0", stdout=io.StringIO())
+
+        assert "Looking for people like:" in caplog.text
+        assert "vp of engineering saas acme" in caplog.text
+
+    def test_an_unanchored_campaign_echoes_nothing(self, site_config, booted, caplog):
+        """A first run has no anchors yet — they are written during the job, and print
+        themselves there. Silence beats a heading with nothing under it."""
+        with caplog.at_level(logging.INFO):
+            call_command("find", "0", stdout=io.StringIO())
+
+        assert "Looking for people like:" not in caplog.text
+
+    def test_the_run_ends_with_the_ask_and_the_csv_stays_a_csv(self, site_config, booted, caplog):
+        """A run that leaves ranked leads behind and an empty wallet has to say so.
+
+        The sentence is `status`'s, rendered here — the run derives nothing. It goes to
+        stderr with everything else that is not a row: a stray line in a CSV is not a
+        CSV, and this one carries a URL.
+        """
+        exportable_deal("ada@acme.com")
+        _ranked(site_config)
+        out = io.StringIO()
+
+        with _wallet(balance=0), caplog.at_level(logging.INFO):
+            call_command("find", "0", stdout=out)
+
+        assert "0 credits left" in caplog.text
+        assert bettercontact.SIGNUP_URL in caplog.text
+        # Both rows export — the ranked one with a blank address, which is the whole
+        # reason it is still waiting.
+        rows = list(csv.DictReader(io.StringIO(out.getvalue())))
+        assert sorted(row["email"] for row in rows) == ["", "ada@acme.com"]
+
+    def test_json_carries_the_next_action_for_the_agent_to_relay(self, site_config, booted,
+                                                                 caplog, capsys):
+        """An agent reads the object, not the log, so the ask has to be in it."""
+        _ranked(site_config)
+
+        with _wallet(balance=0), caplog.at_level(logging.INFO):
+            call_command("find", "0", "--json", stdout=io.StringIO())
+
+        document = json.loads(capsys.readouterr().err)
+        assert document["next_action"]["type"] == "add_credits"
+        assert document["next_action"]["leads"] == 1
+        assert "Next:" not in caplog.text  # the object is the whole answer
+
+    def test_debug_is_the_shorthand_for_log_level_debug(self, site_config, booted):
+        """Both flags write the same dest, so they cannot disagree."""
+        with patch("openoutfind.core.cycle.run_one_action", return_value=False), \
+                patch.object(Command, "_configure_logging") as configure:
+            call_command("find", "0", "--debug", stdout=io.StringIO())
+
+        assert configure.call_args.args[0] == "debug"
+
+
+# ── helpers ──────────────────────────────────────────────────────
+
+
+def _ranked(site_config):
+    """One lead that cannot advance without a credit."""
+    from openoutfind.crm.models import DealState
+    from tests.factories import DealFactory, LeadFactory
+
+    return DealFactory(lead=LeadFactory(email=None),
+                       state=DealState.READY_TO_FIND_EMAIL, reason="fits the ICP")
+
+
+@contextlib.contextmanager
+def _wallet(balance):
+    """A configured provider with a known balance, and the configuration out of the way —
+    the two inputs the next action is derived from."""
+    with patch("openoutfind.core.readiness.missing_variables", return_value={}), \
+            patch("openoutfind.enrichment.bettercontact.is_configured", return_value=True), \
+            patch("openoutfind.enrichment.bettercontact.credit_balance", return_value=balance):
+        yield
+
+
+def _run(*args):
+    """Run `find` and parse the CSV it printed."""
+    out = io.StringIO()
+    call_command("find", *args, stdout=out)
+    return list(csv.DictReader(io.StringIO(out.getvalue())))

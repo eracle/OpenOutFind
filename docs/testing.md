@@ -1,59 +1,49 @@
 # Testing
 
-The suite is pytest, mirroring the package structure under `tests/`. Mock at the **boundaries** — the BetterContact client, the hub API and the LLM — never inside business logic.
+The suite is pytest, mirroring the package structure under `tests/`: the tests of `openoutfind/core/pipeline/walk.py` are `tests/core/pipeline/test_walk.py`. Mock at the **boundaries** — the BetterContact client, the hub API and the LLM — never inside business logic.
 
 ## Running
 
 ```bash
 make test                 # full suite (native — tests do not run in Docker)
 
-.venv/bin/pytest tests/test_qualify.py     # a single file
-.venv/bin/pytest -k test_name              # a single test by name
+.venv/bin/pytest tests/core/pipeline/test_qualify.py   # a single file
+.venv/bin/pytest -k test_name                          # a single test by name
 ```
 
 ## Layout
 
 ```
 tests/
-├── conftest.py                 # shared fixtures: operator (Django User), site_config, stubbed
-│                               #   embeddings
-├── factories.py                # factory-boy factories (LeadFactory → profile_url, etc.)
-├── contacts/test_service.py    # the hub client (resolve / contribute), best-effort degradation
-├── db/
-│   └── test_deals.py           # Deal state ops
-├── ml/
-│   ├── test_calibration.py     # the calibrate arm: draws, costs, the derived bar, where it is read
-│   ├── test_embeddings.py      # FastEmbed embedding
-│   └── test_qualifier.py       # GP + BALD selection, LLM qualification
-├── test_bettercontact.py       # finder submit/poll + the discovery transport
-├── test_lookup.py              # buy_address → check_lookup, the two-leg paid handshake
-├── test_cycle.py               # the hierarchy: which row fires, and the one gate that declines
-│                               #   — incl. TestTheFinderRunsWithoutASender, the pivot in tests
-├── test_export.py              # the record schema, both serialisations, the two exclusions
-├── test_business_time.py       # working-day arithmetic
-├── test_discovery.py           # Lead Finder search + embed_row
-├── test_analyzers.py           # the provider's analyzers: Unicode words, titles, tags
-├── test_terms.py               # a search's terms: matching, legality, dead conviction
-├── test_compose.py             # the searches worth the most on a draw, checked against every combination
-├── store_builders.py           # people, companies, verdicts and fired searches for a walk's store
-├── test_store_snapshot.py      # the people index and the fit-rate map
-├── test_belief.py              # the sizes and fit rate per keyword, at the mean and on a draw
-├── test_search_arms.py         # the arms, their rate, new people and value, the next search
-├── test_judge_or_search.py     # dollars per fit: the best lead waiting against the best arm
-├── test_walk.py                # rounds end to end against a stubbed Lead Finder
-├── test_anchors.py             # synthetic ICP positives and their one-per-acceptance retirement
-├── test_ready_pool.py          # GP rank gate
-├── test_qualify.py             # qualification flow
-└── test_onboarding{,_wizard}.py, test_llm.py, test_geo.py, test_db_option.py,
-    test_version.py
+├── conftest.py            # autouse guards (no hub write, no model ping, no ONNX model, no brief
+│                          #   or keyword guess written by a model, no fit or run mode left over)
+│                          #   and the operator / configure / site_config fixtures
+├── factories.py           # factory-boy factories, and exportable_deal()
+├── store_builders.py      # people, companies, verdicts and fired searches for a walk's store
+├── fixtures/              # batch 6's searches, as the belief reads them
+├── test_main.py           # the entry point: --db, and the overview a bare call prints
+├── test_defaults.py       # the state dir and what a host must splat
+├── test_discovery.py      # Lead Finder search, rows into leads and companies
+├── contacts/              # the hub client: resolve, contribute, share, register, balance
+├── crm/                   # Lead: the stored vector and the labels the GP trains on
+├── enrichment/            # BetterContact transport, the finder seam, the paid lookup
+└── core/
+    ├── test_*.py          # cycle, job, export, status, readiness, exclude, agent_qualify,
+    │                      #   company_cap, meter, llm, logging, geo, version
+    ├── db/                # deal state transitions
+    ├── ml/                # the qualifier, the embedding wrapper, the calibrate arm
+    ├── pipeline/          # the walk and everything it reads: terms, analyzers, compose,
+    │                      #   belief, search_arms, store_snapshot, keyword_guess, probe,
+    │                      #   judge_or_search, icp (anchors), brief, labels, qualify,
+    │                      #   ready_pool, top_up
+    └── management/        # the error contract (test_base) and the verbs (commands/)
 ```
-
-*(The `tests/emails/` and `tests/agents/` trees, `test_sending_window.py` and
-`test_mail_log_backfill.py` moved to OpenOutSend with the code they covered.)*
 
 ## Conventions
 
 - **Mock at the boundary.** Patch the BetterContact HTTP client, the hub client and the pydantic-ai model — not the pipeline functions that call them.
+- **A test of a function `conftest.py` stubs** (`verify_llm_credentials`, `embed_text(s)`) imports it by name at module level, which binds the real one before the stub is applied. There are no opt-out markers.
+- **The database is opt-in**: a test that touches it takes `db`, `site_config` or `@pytest.mark.django_db`.
 - **CRM objects** come from `factories.py` (factory-boy) or direct model creation.
 - **No browser, no network.** There is nothing to launch and no live API to hit; the tool is browserless and every external call is stubbed.
 

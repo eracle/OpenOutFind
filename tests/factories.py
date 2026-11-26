@@ -38,3 +38,11 @@ class DealFactory(factory.django.DjangoModelFactory):
         model = "outfind_crm.Deal"
 
     lead = factory.SubFactory(LeadFactory)
+
+
+def exportable_deal(email=None):
+    """One lead the export would write: judged, accepted, and (if given) with an address."""
+    from openoutfind.crm.models import DealState
+
+    return DealFactory(lead=LeadFactory(email=email), state=DealState.RESOLVED,
+                       reason="fits the ICP")

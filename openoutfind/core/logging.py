@@ -132,7 +132,7 @@ def hyperlink(url: str, text: str | None = None) -> str:
 #
 # **Every provider in ``llm._PROVIDER_BUILDERS`` needs its SDK here**, not just the one
 # currently configured: the list is invisible until someone switches models and then finds
-# their debug run unreadable. ``tests/test_llm.py`` asserts the two stay in step, because
+# their debug run unreadable. ``tests/core/test_llm.py`` asserts the two stay in step, because
 # this is exactly the kind of list that rots silently.
 SILENCED_LOGGERS = (
     # LLM SDKs — one entry per supported provider

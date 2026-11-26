@@ -1,0 +1,213 @@
+# tests/core/pipeline/test_brief.py
+"""The brief — the rules every prompt is written from, stored once per store."""
+from __future__ import annotations
+
+from unittest.mock import patch
+
+import numpy as np
+import pytest
+
+from openoutfind.core import agent_qualify
+from openoutfind.core.pipeline import brief as brief_module
+
+
+@pytest.fixture
+def described(configure, operator):
+    return configure(product_docs="We bake bread ovens.", campaign_target="Bakeries in Italy.",
+                     ai_model="anthropic:claude-sonnet-5-5")
+
+
+@pytest.mark.django_db
+class TestAdopting:
+    def test_a_given_brief_replaces_the_one_in_force(self):
+        from openoutfind.core.models import Brief
+
+        brief_module.adopt("A fit is: bakers.")
+        brief_module.adopt("  A fit is: bakers and pastry chefs.\n")
+
+        assert Brief.objects.count() == 1
+        assert brief_module.stored().rules == "A fit is: bakers and pastry chefs."
+        assert brief_module.stored().written_by == brief_module.GIVEN
+
+    def test_the_same_brief_again_leaves_the_row_alone(self):
+        brief_module.adopt("A fit is: bakers.")
+        first = brief_module.stored().pk
+
+        brief_module.adopt("A fit is: bakers.")
+
+        assert brief_module.stored().pk == first
+
+
+@pytest.mark.django_db
+class TestEnsuringRules:
+    def test_a_stored_brief_is_read_without_asking_the_model(self, described):
+        brief_module.adopt("A fit is: bakers.")
+
+        with patch.object(brief_module, "_write_with_llm") as write:
+            assert brief_module.ensure_rules(described) == "A fit is: bakers."
+
+        write.assert_not_called()
+
+    def test_the_model_writes_one_once_and_it_is_kept(self, described):
+        with patch.object(brief_module, "_write_with_llm",
+                          return_value=" Not a fit: florists. ") as write:
+            first = brief_module.ensure_rules(described)
+            second = brief_module.ensure_rules(described)
+
+        assert first == second == "Not a fit: florists."
+        write.assert_called_once()
+        assert brief_module.stored().written_by == "anthropic:claude-sonnet-5-5"
+
+    def test_a_failed_write_stores_nothing_and_propagates(self, described):
+        with patch.object(brief_module, "_write_with_llm", side_effect=RuntimeError("outage")):
+            with pytest.raises(RuntimeError):
+                brief_module.ensure_rules(described)
+
+        assert brief_module.stored() is None
+
+    def test_no_icp_text_and_agent_mode_write_nothing(self, described):
+        from dataclasses import replace
+
+        with patch.object(brief_module, "_write_with_llm") as write:
+            agent_qualify.enable(None)
+            assert brief_module.ensure_rules(described) == ""
+            agent_qualify._active.set(False)
+            blank = replace(described, product_docs="", campaign_target="")
+            assert brief_module.ensure_rules(blank) == ""
+
+        write.assert_not_called()
+
+
+class TestPrompts:
+    def _render(self, name, **values):
+        import jinja2
+
+        from openoutfind.core.conf import PROMPTS_DIR
+
+        env = jinja2.Environment(loader=jinja2.FileSystemLoader(str(PROMPTS_DIR)))
+        values.setdefault("person", {"profile_text": "baker"})
+        return env.get_template(name).render(product_docs="ovens", campaign_target="bakeries",
+                                             seniorities=[], count=3, existing=[], size=15,
+                                             **values)
+
+    @pytest.mark.parametrize("name", ["qualify_lead.j2", "initial_population.j2",
+                                      "anchor_profiles.j2"])
+    def test_every_prompt_carries_the_rules(self, name):
+        assert "Not a fit: florists." in self._render(name, rules="Not a fit: florists.")
+
+    def test_without_rules_the_verdict_prompt_has_no_rules_section(self):
+        assert "The rules decide" not in self._render("qualify_lead.j2", rules="")
+
+    def test_the_verdict_prompt_labels_the_person(self):
+        prompt = self._render("qualify_lead.j2", rules="", person={
+            "title": "Vice president finance", "company": "Nug", "location": "California",
+            "company_tags": "carts, flower vapes",
+            "profile_text": "manufacturing vice president finance nug president/vice president",
+        })
+
+        assert "- **Title:** Vice president finance" in prompt
+        assert "- **Company:** Nug" in prompt
+        assert "- **Company tags:** carts, flower vapes" in prompt
+        assert "never part of a job title" in prompt
+
+    def test_the_verdict_prompt_shows_the_company_size(self):
+        prompt = self._render("qualify_lead.j2", rules="", person={
+            "company": "Nug", "company_size": "51–200 employees (LinkedIn)",
+            "profile_text": "baker"})
+
+        assert "- **Company size:** 51–200 employees (LinkedIn)" in prompt
+
+    def test_the_verdict_prompt_leaves_out_fields_the_lead_lacks(self):
+        prompt = self._render("qualify_lead.j2", rules="", person={
+            "title": "", "company": "", "location": "", "company_tags": "",
+            "profile_text": "baker"})
+
+        assert "**Title:**" not in prompt
+        assert "**Company tags:**" not in prompt
+        assert "- **Profile text:** baker" in prompt
+
+
+@pytest.mark.django_db
+class TestTheVerdictReadsTheBrief:
+    def test_the_qualifier_is_handed_the_stored_rules(self, described):
+        from openoutfind.core.ml.qualifier import BayesianQualifier
+        from openoutfind.core.pipeline.qualify import run_qualification
+        from openoutfind.crm.models import Lead
+
+        Lead.objects.create(profile_url="https://www.linkedin.com/in/alice/",
+                            profile_text="baker at forno",
+                            embedding=np.ones(384, dtype=np.float32).tobytes())
+        brief_module.adopt("A fit is: bakers.")
+
+        with patch("openoutfind.core.ml.qualifier.qualify_with_llm",
+                   return_value=(1, "Bakes for Forno.")) as qualify, \
+                patch("openoutfind.core.db.leads.promote_lead_to_deal"):
+            run_qualification(described, BayesianQualifier(seed=42))
+
+        assert qualify.call_args.kwargs["rules"] == "A fit is: bakers."
+
+    def test_an_agent_is_handed_the_rules_with_the_candidate(self, described):
+        from openoutfind.core.pipeline.qualify import _candidate_payload
+        from openoutfind.crm.models import Lead
+
+        lead = Lead.objects.create(profile_url="https://www.linkedin.com/in/bob/",
+                                   profile_text="baker")
+        assert _candidate_payload(lead)["rules"] == ""
+
+        brief_module.adopt("A fit is: bakers.")
+        assert _candidate_payload(lead)["rules"] == "A fit is: bakers."
+
+
+@pytest.mark.django_db
+class TestVerdictFields:
+    def test_the_stored_fields_are_handed_over_by_name(self):
+        from openoutfind.core.pipeline.qualify import _candidate_payload, verdict_fields
+        from openoutfind.crm.models import Company, Lead
+
+        lead = Lead.objects.create(
+            profile_url="https://www.linkedin.com/in/viktoria/",
+            profile_text="manufacturing vice president finance nug",
+            job_title="Vice president finance",
+            company=Company.from_row("Nug", None, employees_min=51, employees_max=200),
+            source_fields={"contact_location_state": "California",
+                           "contact_location_country": "United states",
+                           "company_keywords": "carts, flower vapes"})
+
+        assert verdict_fields(lead) == {
+            "title": "Vice president finance", "company": "Nug",
+            "company_size": "51–200 employees (LinkedIn)",
+            "location": "California, United states", "company_tags": "carts, flower vapes",
+            "profile_text": "manufacturing vice president finance nug",
+        }
+        payload = _candidate_payload(lead)
+        assert payload["company_tags"] == "carts, flower vapes"
+        assert payload["company_size"] == "51–200 employees (LinkedIn)"
+
+    def test_a_lead_with_nothing_stored_apart_still_has_its_profile_text(self):
+        from openoutfind.core.pipeline.qualify import verdict_fields
+        from openoutfind.crm.models import Lead
+
+        lead = Lead.objects.create(profile_url="https://www.linkedin.com/in/bob/",
+                                   profile_text="baker")
+
+        assert verdict_fields(lead) == {"title": "", "company": "",
+                                        "company_size": "not reported", "location": "",
+                                        "company_tags": "", "profile_text": "baker"}
+
+    def test_the_model_is_handed_the_labelled_person(self, described):
+        from openoutfind.core.ml.qualifier import BayesianQualifier
+        from openoutfind.core.pipeline.qualify import run_qualification
+        from openoutfind.crm.models import Lead
+
+        Lead.objects.create(profile_url="https://www.linkedin.com/in/alice/",
+                            profile_text="baker at forno", job_title="Head baker",
+                            embedding=np.ones(384, dtype=np.float32).tobytes())
+
+        with patch("openoutfind.core.ml.qualifier.qualify_with_llm",
+                   return_value=(1, "Bakes for Forno.")) as qualify, \
+                patch("openoutfind.core.db.leads.promote_lead_to_deal"):
+            run_qualification(described, BayesianQualifier(seed=42))
+
+        person = qualify.call_args.args[0]
+        assert person["title"] == "Head baker"
+        assert person["profile_text"] == "baker at forno"

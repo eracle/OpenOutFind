@@ -1,0 +1,222 @@
+# tests/core/pipeline/test_qualify.py
+"""``run_qualification`` — one candidate picked, judged by the LLM, and its verdict written
+as a deal: ``QUALIFIED``, or ``FAILED`` + ``wrong_fit``, with the reason either way."""
+from __future__ import annotations
+
+from unittest.mock import patch
+
+import numpy as np
+import pytest
+
+from openoutfind.core.ml.qualifier import BayesianQualifier
+from openoutfind.core.pipeline.qualify import run_qualification
+from openoutfind.crm.models import Deal, DealState, Outcome
+
+
+def _make_lead(profile_url="https://www.linkedin.com/in/alice/", profile_text="engineer at acme",
+               embedding=None, creation_date=None):
+    from openoutfind.crm.models import Lead
+
+    if embedding is None:
+        embedding = np.ones(384, dtype=np.float32)
+    fields = {"creation_date": creation_date} if creation_date else {}
+    return Lead.objects.create(
+        profile_url=profile_url,
+        profile_text=profile_text,
+        embedding=np.asarray(embedding, dtype=np.float32).tobytes(),
+        **fields,
+    )
+
+
+def _axis(index: int, scale: float = 1.0) -> np.ndarray:
+    """A 384-dim vector on a single axis — orthogonal, so distances are exact."""
+    vec = np.zeros(384, dtype=np.float32)
+    vec[index] = scale
+    return vec
+
+
+@pytest.mark.django_db
+class TestRunQualification:
+    @pytest.mark.parametrize("label,state,outcome", [
+        (1, DealState.QUALIFIED, ""),
+        (0, DealState.FAILED, Outcome.WRONG_FIT),
+    ])
+    def test_the_verdict_becomes_the_deal_with_its_reason(self, site_config, label, state,
+                                                          outcome):
+        _make_lead()
+
+        with patch("openoutfind.core.ml.qualifier.qualify_with_llm",
+                   return_value=(label, "the reason")) as llm:
+            result = run_qualification(site_config, BayesianQualifier(seed=42))
+
+        llm.assert_called_once()
+        assert result == "https://www.linkedin.com/in/alice/"
+        deal = Deal.objects.get()
+        assert (deal.state, deal.outcome, deal.reason) == (state, outcome, "the reason")
+
+    def test_skips_when_profile_text_empty(self, site_config):
+        _make_lead(profile_text="")
+
+        with patch("openoutfind.core.ml.qualifier.qualify_with_llm") as llm:
+            result = run_qualification(site_config, BayesianQualifier(seed=42))
+
+        assert result is None
+        llm.assert_not_called()
+        assert not Deal.objects.exists()
+
+    def test_returns_none_when_no_candidates(self, site_config):
+        qualifier = BayesianQualifier(seed=42)
+
+        with patch("openoutfind.core.ml.qualifier.qualify_with_llm") as mock_llm:
+            assert run_qualification(site_config, qualifier) is None
+
+        mock_llm.assert_not_called()
+
+
+@pytest.mark.django_db
+class TestBothVerdictsAreVisible:
+    """Watching it turn people down is what makes the acceptances credible.
+
+    A log of nothing but hits reads like a row dump — and the reason the LLM wrote is the
+    product either way, so it is printed either way.
+    """
+
+    def _qualify(self, site_config, label, reason, caplog):
+        _make_lead()
+        with (
+            patch("openoutfind.core.ml.qualifier.qualify_with_llm",
+                  return_value=(label, reason)),
+            patch("openoutfind.core.db.leads.promote_lead_to_deal"),
+            patch("openoutfind.core.db.deals.create_disqualified_deal"),
+            caplog.at_level("INFO"),
+        ):
+            run_qualification(site_config, BayesianQualifier(seed=42))
+        return caplog.text
+
+    def test_a_rejection_carries_its_reason(self, site_config, caplog):
+        text = self._qualify(site_config, 0, "sells to enterprise, not our buyer", caplog)
+
+        assert "sells to enterprise, not our buyer" in text
+        assert "✗" in text
+
+    def test_an_acceptance_is_distinguishable_at_a_glance(self, site_config, caplog):
+        text = self._qualify(site_config, 1, "runs a six-person team on CI", caplog)
+
+        assert "runs a six-person team on CI" in text
+        assert "✓" in text and "✗" not in text
+
+    @pytest.mark.parametrize("label, verdict, colour", [
+        (1, "QUALIFIED", "green"),
+        (0, "DISQUALIFIED", "red"),
+    ])
+    def test_the_verdict_is_a_word_in_colour_not_only_a_glyph(
+            self, site_config, caplog, label, verdict, colour):
+        """A ✓/✗ column reads as a diff; the word is what an operator scans a run for.
+
+        Green for a hit and red for a miss. The colour is asserted at the call rather
+        than in the output because ``termcolor`` emits nothing under a captured stdout —
+        a test reading escape codes back out of caplog would pass on any colour at all.
+        """
+        with patch("openoutfind.core.pipeline.qualify.colored",
+                   side_effect=lambda text, color, **kw: text) as tint:
+            assert verdict in self._qualify(site_config, label, "because", caplog)
+
+        assert (verdict.ljust(len("DISQUALIFIED")), colour) in [
+            (call.args[0], call.args[1]) for call in tint.call_args_list]
+
+    @pytest.mark.parametrize("label", [1, 0])
+    def test_a_verdict_is_announced_once(self, site_config, caplog, label):
+        """One judgement, one line. The persistence helpers used to announce it too —
+        a URL and a state name saying what the ✓/✗ line beside it had just said, with
+        the LLM's sentence printed twice on the rejection path."""
+        _make_lead()
+        reason = "sells to enterprise, not our buyer"
+        with (
+            patch("openoutfind.core.ml.qualifier.qualify_with_llm",
+                  return_value=(label, reason)),
+            caplog.at_level("DEBUG"),
+        ):
+            run_qualification(site_config, BayesianQualifier(seed=42))
+
+        assert caplog.text.count(reason) == 1
+
+    def test_the_acquisition_strategy_is_addressed_to_the_operator(self, site_config, caplog):
+        """Whether the GP is exploring or exploiting, and why, is a question an
+        operator watching the run genuinely asks — so it prints at INFO, not DEBUG."""
+        _make_lead("https://www.linkedin.com/in/first/", "first", _axis(0))
+        _make_lead("https://www.linkedin.com/in/second/", "second", _axis(1))
+        qualifier = BayesianQualifier(seed=42)
+        qualifier.update(_axis(0), 1)
+        qualifier.update(_axis(1), 0)
+
+        with (
+            patch("openoutfind.core.ml.qualifier.qualify_with_llm",
+                  return_value=(0, "Bad fit")),
+            patch("openoutfind.core.db.deals.create_disqualified_deal"),
+            caplog.at_level("INFO"),
+        ):
+            run_qualification(site_config, qualifier)
+
+        assert "exploit" in caplog.text or "explore" in caplog.text
+        assert "rejected vs" in caplog.text and "accepted" in caplog.text
+
+
+@pytest.mark.django_db
+class TestUnanchoredSelection:
+    """The degraded path: anchoring failed, so the label set is still single-class and
+    no posterior exists to rank with. Oldest first — nothing here can rank."""
+
+    def test_falls_back_to_oldest(self, site_config):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        now = timezone.now()
+        _make_lead("https://www.linkedin.com/in/first/", "first", _axis(0),
+                   creation_date=now - timedelta(hours=1))
+        _make_lead("https://www.linkedin.com/in/second/", "second", _axis(1),
+                   creation_date=now)
+
+        qualifier = BayesianQualifier(seed=42)
+
+        with (
+            patch("openoutfind.core.ml.qualifier.qualify_with_llm",
+                  return_value=(0, "Bad fit")),
+            patch("openoutfind.core.db.deals.create_disqualified_deal"),
+        ):
+            result = run_qualification(site_config, qualifier)
+
+        assert result == "https://www.linkedin.com/in/first/"
+
+    def test_the_degraded_path_says_so(self, site_config, caplog):
+        _make_lead("https://www.linkedin.com/in/first/", "first", _axis(0))
+        _make_lead("https://www.linkedin.com/in/second/", "second", _axis(1))
+
+        qualifier = BayesianQualifier(seed=42)
+
+        with (
+            patch("openoutfind.core.ml.qualifier.qualify_with_llm",
+                  return_value=(0, "Bad fit")),
+            patch("openoutfind.core.db.deals.create_disqualified_deal"),
+            caplog.at_level("INFO"),
+        ):
+            run_qualification(site_config, qualifier)
+
+        assert "no posterior yet" in caplog.text
+
+
+@pytest.mark.django_db
+class TestSingleCandidateSelection:
+    def test_one_candidate_says_there_was_nothing_to_rank(self, site_config, caplog):
+        _make_lead("https://www.linkedin.com/in/only/", "only", _axis(0))
+        qualifier = BayesianQualifier(seed=42)
+
+        with (
+            patch("openoutfind.core.ml.qualifier.qualify_with_llm",
+                  return_value=(0, "Bad fit")),
+            patch("openoutfind.core.db.deals.create_disqualified_deal"),
+            caplog.at_level("INFO"),
+        ):
+            run_qualification(site_config, qualifier)
+
+        assert "only one candidate waiting" in caplog.text

@@ -1,0 +1,319 @@
+# tests/core/test_export.py
+"""The lead export — the finder's public output.
+
+Three things are worth pinning down. The **column names are other people's**: Instantly
+and Smartlead require ``email``/``first_name``/``last_name`` and recognise ``company``/
+``title``/``website``/``linkedin_url``, so a file this writes imports without mapping,
+and a rename here silently breaks that. A **Deal is not an endorsement** — both
+rejections (`FAILED`, and `Lead.disqualified`) have to be filtered, and missing one
+shipped rejected leads to production. And it is a **pure database read**: no GP fit, no
+LLM call, nothing mutated.
+"""
+import csv
+import io
+import json
+from unittest.mock import patch
+
+import pytest
+
+from openoutfind.core import export
+from openoutfind.crm.models import Company, DealState
+from tests.factories import DealFactory, LeadFactory
+
+
+def _lead(**kwargs):
+    defaults = {
+        "full_name": "Ada Lovelace",
+        "first_name": "Ada",
+        "last_name": "Lovelace",
+        "job_title": "CTO",
+        "email": "ada@acme.com",
+        "company": Company.objects.get_or_create(
+            key="acme.com", defaults={"name": "Acme", "domain": "acme.com"})[0],
+    }
+    return LeadFactory(embedded=True, **{**defaults, **kwargs})
+
+
+def _deal(site_config, reason="fits the ICP", **lead_kwargs):
+    return DealFactory(lead=_lead(**lead_kwargs),
+                       state=DealState.RESOLVED, reason=reason)
+
+
+# ── the record ────────────────────────────────────────────────────
+
+
+@pytest.mark.django_db
+class TestLeadRecord:
+    def test_maps_our_columns_onto_the_importers_names(self, site_config):
+        deal = _deal(site_config)
+
+        record = export.lead_record(deal)
+
+        assert record["email"] == "ada@acme.com"
+        assert (record["first_name"], record["last_name"]) == ("Ada", "Lovelace")
+        assert record["company"] == "Acme"      # Company.name, not "company_name"
+        assert record["title"] == "CTO"         # Lead.job_title, not "job_title"
+        assert record["website"] == "acme.com"  # Company.domain, not "domain"
+        assert record["linkedin_url"] == deal.lead.profile_url
+        assert record["reason"] == "fits the ICP"
+        assert record["lead_id"] == deal.lead.pk
+
+    def test_a_lead_with_no_company_exports_nulls_not_blanks(self, site_config):
+        record = export.lead_record(_deal(site_config, company=None))
+
+        assert record["company"] is None and record["website"] is None
+
+    def test_a_placeholder_employer_exports_as_no_company(self, site_config):
+        """Stores written before discovery dropped them still hold "Stealth startup" rows
+        carrying a domain the provider fuzzy-matched — somebody else's website."""
+        stealth = Company.objects.create(
+            key="harmonic.ai", name="Stealth startup", domain="harmonic.ai")
+
+        record = export.lead_record(_deal(site_config, company=stealth))
+
+        assert record["company"] is None and record["website"] is None
+
+    def test_an_unenriched_lead_exports_null_name_parts(self, site_config):
+        """A hub-cache hit resolves an address and no identity. Nothing is invented."""
+        deal = _deal(site_config, first_name=None, last_name=None)
+
+        record = export.lead_record(deal)
+
+        assert record["first_name"] is None and record["last_name"] is None
+
+    def test_an_unenriched_lead_still_carries_the_name_discovery_reported(self, site_config):
+        """A leads-only run buys no lookup, so the name parts stay null — the row must
+        still say who the person is."""
+        deal = _deal(site_config, first_name=None, last_name=None)
+
+        assert export.lead_record(deal)["full_name"] == "Ada Lovelace"
+
+    def test_the_record_carries_exactly_the_contract_fields(self, site_config):
+        assert set(export.lead_record(_deal(site_config))) == set(export.JSON_FIELDS)
+
+    def test_the_record_carries_the_text_the_qualifier_judged_on(self, site_config):
+        """The facts a sender writes a message from cross as raw text, not as an
+        extraction: summarising for a message is the receiver's job."""
+        deal = _deal(site_config, profile_text="cto at acme, devtools, 40 staff")
+
+        assert export.lead_record(deal)["profile_text"] == "cto at acme, devtools, 40 staff"
+
+    def test_a_lead_with_no_profile_text_carries_an_empty_string(self, site_config):
+        """Empty, never absent — a receiver keying on the field should not have to tell
+        *no text* from *no such key*."""
+        record = export.lead_record(_deal(site_config, profile_text=""))
+
+        assert record["profile_text"] == ""
+
+    def test_the_record_carries_the_fields_the_walk_learns_from(self, site_config):
+        """Kept apart under their Lead Finder names, so a store taking the lead back in
+        files each word under the field it is searchable in."""
+        fields = {"contact_job_title": "CTO", "company_keywords": "devtools, saas"}
+        deal = _deal(site_config, source_fields=fields)
+
+        assert export.lead_record(deal)["source_fields"] == fields
+
+    def test_a_lead_with_no_source_fields_carries_an_empty_object(self, site_config):
+        record = export.lead_record(_deal(site_config, source_fields={}))
+
+        assert record["source_fields"] == {}
+
+    def test_the_record_carries_the_employers_size_band(self, site_config):
+        company = Company.objects.create(
+            key="beta.com", name="Beta", domain="beta.com",
+            employees_min=51, employees_max=200)
+
+        record = export.lead_record(_deal(site_config, company=company))
+
+        assert (record["employees_min"], record["employees_max"]) == (51, 200)
+
+    def test_a_lead_with_no_company_carries_no_size_band(self, site_config):
+        record = export.lead_record(_deal(site_config, company=None))
+
+        assert record["employees_min"] is None and record["employees_max"] is None
+
+    def test_every_row_carries_when_it_was_qualified(self, site_config):
+        """Provenance the file keeps: a caller tells which rows its own call produced by
+        comparing against the time it started, and a sequencer imports only what is newer
+        than its last import. A `new` flag would go stale the second time the file is
+        read; a timestamp is true forever."""
+        deal = _deal(site_config)
+
+        stamped = export.lead_record(deal)["qualified_at"]
+
+        assert stamped == deal.creation_date.isoformat(timespec="seconds")
+        assert stamped > "2020"  # sortable as a string, which is the point of ISO 8601
+
+
+# ── selection ─────────────────────────────────────────────────────
+
+
+@pytest.mark.django_db
+class TestLeadRecords:
+    def test_a_lead_the_qualifier_rejected_is_never_exported(self, site_config):
+        """The bug the live install exposed: a Deal is not an endorsement.
+
+        An LLM rejection is `FAILED` + `wrong_fit`, site_config-scoped — it does **not**
+        set `Lead.disqualified`, which is the permanent account-level exclusion. Filtering
+        on `disqualified` alone exported 1,944 rows from a site_config where most deals were
+        rejections, with `reason` reading "does not align well with the target market".
+        """
+        _deal(site_config)
+        DealFactory(lead=_lead(), state=DealState.FAILED,
+                    outcome="wrong_fit", reason="does not align with the target market")
+
+        records = list(export.lead_records())
+
+        assert len(records) == 1
+        assert "does not align" not in records[0]["reason"]
+
+    def test_an_opted_out_lead_is_never_exported(self, site_config):
+        _deal(site_config)
+        _deal(site_config, disqualified=True)
+
+        assert len(list(export.lead_records())) == 1
+
+    def test_the_export_never_touches_the_qualifier(self, site_config):
+        """A read-only export must not fit a GP, and must not spend an LLM call.
+
+        Scoring used to mean ``qualifier_for``, which is an O(n^3) fit over every label
+        (minutes on a real site_config) and which calls ``ensure_anchors`` — so a cold
+        site_config would have generated anchors, mutating site_config state from an export.
+        """
+        _deal(site_config)
+
+        with patch("openoutfind.core.ml.qualifier.qualifier_for") as qualifier_for:
+            assert len(list(export.lead_records())) == 1
+
+        qualifier_for.assert_not_called()
+
+    def test_an_unembedded_lead_is_still_exported(self, site_config):
+        DealFactory(lead=LeadFactory(email="a@b.com"),
+                    state=DealState.RESOLVED)
+
+        assert len(list(export.lead_records())) == 1
+
+
+# ── serialisation ─────────────────────────────────────────────────
+
+
+@pytest.mark.django_db
+class TestWriters:
+    def test_csv_headers_are_the_contract_in_order_and_a_projection(self, site_config):
+        """The CSV is a projection of the record: a paragraph of profile text, or the
+        fields kept for a store taking leads back in, are no importer's columns — and
+        leaving them out is what lets the file import with no column mapping."""
+        _deal(site_config, profile_text="cto at acme", source_fields={"contact_job_title": "CTO"})
+        stream = io.StringIO()
+
+        export.write_csv(export.lead_records(), stream)
+
+        stream.seek(0)
+        assert next(csv.reader(stream)) == list(export.RECORD_FIELDS)
+        assert not {"profile_text", "source_fields", "employees_min", "employees_max"} & set(
+            export.RECORD_FIELDS)
+        assert "cto at acme" not in stream.getvalue()
+
+    def test_csv_writes_a_missing_field_as_an_empty_cell(self, site_config):
+        _deal(site_config, first_name=None)
+        stream = io.StringIO()
+
+        export.write_csv(export.lead_records(), stream)
+
+        stream.seek(0)
+        assert next(csv.DictReader(stream))["first_name"] == ""
+
+    def test_the_row_count_is_reported(self, site_config):
+        _deal(site_config)
+        _deal(site_config, email="second@acme.com")
+
+        assert export.write_csv(export.lead_records(), io.StringIO()) == 2
+
+    def test_json_lines_writes_the_whole_record_one_object_per_line(self, site_config):
+        """A truncated stream stays usable — every complete record before the break has
+        already been delivered."""
+        _deal(site_config, profile_text="cto at acme")
+        _deal(site_config, email="second@acme.com", profile_text="head of eng at beta")
+        stream = io.StringIO()
+
+        count = export.write_json_lines(export.lead_records(), stream)
+
+        lines = stream.getvalue().splitlines()
+        assert count == 2 and len(lines) == 2
+        assert [json.loads(line)["profile_text"] for line in lines] == [
+            "cto at acme", "head of eng at beta"]
+        assert set(json.loads(lines[0])) == set(export.JSON_FIELDS)
+
+
+class TestIncrementalWriter:
+    """The writer `find` uses for its default, progressive output: same two shapes as
+    the batch writers above, but fed one record at a time and flushed after each."""
+
+    def test_csv_writes_the_header_once_on_the_first_record(self, site_config):
+        stream = io.StringIO()
+        writer = export.IncrementalWriter(stream, as_json=False)
+
+        writer.write(export.lead_record(_deal(site_config)))
+        writer.write(export.lead_record(_deal(site_config, email="second@acme.com")))
+
+        rows = stream.getvalue().splitlines()
+        assert rows[0] == ",".join(export.RECORD_FIELDS)
+        assert len(rows) == 3  # header + two records, and no repeated header
+
+    def test_json_writes_one_object_per_call_with_no_header(self, site_config):
+        stream = io.StringIO()
+        writer = export.IncrementalWriter(stream, as_json=True)
+
+        writer.write(export.lead_record(_deal(site_config)))
+
+        lines = stream.getvalue().splitlines()
+        assert len(lines) == 1
+        assert json.loads(lines[0])["email"] == "ada@acme.com"
+
+    def test_the_count_is_the_number_of_records_written(self, site_config):
+        writer = export.IncrementalWriter(io.StringIO(), as_json=True)
+
+        writer.write({"email": "a@acme.com"})
+        writer.write({"email": "b@acme.com"})
+
+        assert writer.count == 2
+
+    def test_each_write_flushes_the_stream(self, site_config):
+        """The property streaming exists for: a reader on the other end of a pipe sees
+        a record as soon as it is written, not batched behind the stream's own buffer."""
+        flushes = []
+
+        class _CountsFlushes(io.StringIO):
+            def flush(self):
+                flushes.append(True)
+                super().flush()
+
+        writer = export.IncrementalWriter(_CountsFlushes(), as_json=True)
+
+        writer.write({"email": "a@acme.com"})
+        writer.write({"email": "b@acme.com"})
+
+        assert len(flushes) == 2
+
+
+# ── counting ──────────────────────────────────────────────────────
+
+
+@pytest.mark.django_db
+class TestExportCounts:
+    """One definition of *exportable*, so `status` and a `find` goal cannot disagree
+    about what "ten leads" means."""
+
+    def test_it_counts_the_rows_the_export_would_write(self, site_config):
+        _deal(site_config)
+        DealFactory(lead=_lead(email="x@y.com"), state=DealState.FAILED,
+                    outcome="wrong_fit", reason="no fit")
+
+        assert export.export_counts() == (1, 1)
+
+    def test_a_row_without_an_address_still_counts_as_exportable(self, site_config):
+        """Exportable is not mailable: an address is an enrichment, never a
+        precondition."""
+        _deal(site_config, email=None)
+
+        assert export.export_counts() == (1, 0)

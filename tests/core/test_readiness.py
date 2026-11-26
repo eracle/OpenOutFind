@@ -1,0 +1,137 @@
+# tests/core/test_readiness.py
+"""`check_ready` — everything a run has to have been given, checked before it spends.
+
+This is the gate every verb passes through, and `find` and `check` both patch it out to
+test what comes after, so nothing else in the suite exercises its body. These call it for
+real: an install that is missing something must learn all of it from one error, and an
+install that has everything must not be asked a question, because there is nobody there.
+"""
+from unittest.mock import patch
+
+import pytest
+
+from openoutfind.core import readiness
+from openoutfind.core.errors import ErrorType, OpenOutFindError
+
+READY = {
+    "product_docs": "a self-hosted CI dashboard",
+    "campaign_target": "engineering leaders at growth-stage SaaS",
+    "ai_model": "anthropic:claude-sonnet-4-5",
+    "llm_api_key": "sk-test",
+    "bettercontact_api_key": "bc-test",
+    "operator_country_code": "us",
+}
+
+
+@pytest.fixture
+def ready(configure, monkeypatch):
+    """Everything a run needs, as the environment it would arrive in."""
+    monkeypatch.setenv(readiness.OPERATOR_EMAIL, "me@example.com")
+    return configure(**READY)
+
+
+@pytest.mark.django_db
+class TestAGivenRunIsReady:
+    def test_nothing_is_missing_and_nothing_is_asked(self, ready):
+        assert readiness.missing_variables() == {}
+        assert readiness.check_ready() is None
+
+    def test_the_operator_becomes_a_row_written_once(self, ready, monkeypatch):
+        from django.contrib.auth.models import User
+
+        readiness.check_ready()
+        user = User.objects.get()
+        assert user.email == "me@example.com"
+
+        # Identity is a record, not an answer: renaming the variable must not rename the
+        # person a campaign belongs to.
+        monkeypatch.setenv(readiness.OPERATOR_EMAIL, "someone.else@example.com")
+        readiness.check_ready()
+
+        assert User.objects.get().email == "me@example.com"
+
+    def test_the_email_is_optional(self, ready, monkeypatch):
+        """No email is an operator named `operator` with no hub identity — not a stop."""
+        from django.contrib.auth.models import User
+
+        monkeypatch.delenv(readiness.OPERATOR_EMAIL)
+        assert readiness.missing_variables() == {}
+
+        with patch("openoutfind.contacts.service.register_operator") as register:
+            readiness.check_ready()
+
+        assert User.objects.get().username == "operator"
+        register.assert_not_called()
+
+    def test_an_email_given_later_fills_the_blank_once(self, ready, monkeypatch):
+        from django.contrib.auth.models import User
+
+        monkeypatch.delenv(readiness.OPERATOR_EMAIL)
+        readiness.check_ready()
+        monkeypatch.setenv(readiness.OPERATOR_EMAIL, "me@example.com")
+
+        with patch("openoutfind.contacts.service.register_operator") as register:
+            readiness.check_ready()
+
+        assert User.objects.get().email == "me@example.com"
+        register.assert_called_once()
+
+    def test_the_model_is_pinged_every_run(self, ready):
+        """Nothing is stored, so nothing is trusted from last time: a key rotated out
+        from under a timer fails here rather than mid-pass with a lead in hand."""
+        with patch("openoutfind.core.llm.verify_llm_credentials",
+                   return_value=None) as verify:
+            readiness.check_ready()
+            readiness.check_ready()
+
+        assert verify.call_count == 2
+
+    def test_a_refused_key_is_a_typed_error_naming_the_model(self, ready):
+        with patch("openoutfind.core.llm.verify_llm_credentials",
+                   return_value="401 invalid x-api-key"):
+            with pytest.raises(OpenOutFindError) as raised:
+                readiness.check_ready()
+
+        assert raised.value.error_type == ErrorType.BAD_CONFIG
+        assert "anthropic:claude-sonnet-4-5" in str(raised.value)
+
+
+@pytest.mark.django_db
+class TestItNamesEverythingMissingAtOnce:
+    def test_a_bare_environment_names_every_group(self, site_config):
+        missing = readiness.missing_variables()
+
+        assert set(missing) == {"campaign", "llm", "bettercontact"}
+        with pytest.raises(OpenOutFindError) as raised:
+            readiness.check_ready()
+
+        assert raised.value.error_type == ErrorType.ONBOARDING_INCOMPLETE
+        for variable in ("OPENOUTFIND_PRODUCT_DOCS", "OPENOUTFIND_LLM_API_KEY",
+                         "OPENOUTFIND_BETTERCONTACT_API_KEY"):
+            assert variable in str(raised.value)
+
+    def test_the_operator_country_is_optional(self, ready, monkeypatch):
+        monkeypatch.delenv("OPENOUTFIND_OPERATOR_COUNTRY", raising=False)
+
+        assert readiness.missing_variables() == {}
+
+    def test_one_missing_value_leaves_the_rest_satisfied(self, ready, monkeypatch):
+        monkeypatch.delenv("OPENOUTFIND_BETTERCONTACT_API_KEY")
+
+        assert readiness.missing_variables() == {
+            "bettercontact": ["OPENOUTFIND_BETTERCONTACT_API_KEY"]}
+
+    def test_agent_qualify_never_needs_an_llm_key(self, ready, monkeypatch):
+        """The point of --agent-qualify is a calling agent answering instead of a second,
+        separately-keyed model — an install running only that way is not asked for a key
+        it will never spend, nor is one pinged."""
+        from openoutfind.core import agent_qualify
+
+        monkeypatch.delenv("OPENOUTFIND_AI_MODEL")
+        monkeypatch.delenv("OPENOUTFIND_LLM_API_KEY")
+        agent_qualify.enable(None)
+
+        with patch("openoutfind.core.llm.verify_llm_credentials") as ping:
+            readiness.check_ready()
+
+        ping.assert_not_called()
