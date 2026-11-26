@@ -5,15 +5,14 @@ The domain-agnostic engine (the GP pipeline, P(f>0.5), BALD, the balance-driven
 acquisition axis) lives in ``openoutlearn.GPBaldQualifier`` — extracted once this
 module and OpenOutNews's qualifier had converged on identical code under two
 different domain labels. ``BayesianQualifier`` adds what's genuinely lead-gen
-specific: cold-start anchors, majority-class balancing in the early window between
-the cold phase and a handful of real fits, and the Django-backed ranking/explain helpers.
+specific: cold-start anchors and majority-class balancing in the early window between
+the cold phase and a handful of real fits.
 """
 from __future__ import annotations
 
 import hashlib
 import logging
 import time
-from typing import Protocol, runtime_checkable
 
 import jinja2
 import numpy as np
@@ -24,40 +23,6 @@ from openoutlearn.qualifier import GPBaldQualifier, binary_entropy, gpr_predict,
 from openoutfind.core.conf import CAMPAIGN_CONFIG, PROMPTS_DIR
 
 logger = logging.getLogger(__name__)
-
-# Kept as module-level aliases: tests and other modules import these by the old
-# private names.
-_binary_entropy = binary_entropy
-_prob_above_half = prob_above_half
-_gpr_predict = gpr_predict
-
-
-# ---------------------------------------------------------------------------
-# Qualifier protocol
-# ---------------------------------------------------------------------------
-
-@runtime_checkable
-class Qualifier(Protocol):
-    """Common interface for all qualifier implementations.
-
-    ``rank_profiles`` returns profiles sorted by score (descending).
-    Returns ``[]`` on cold start or when ranking is impossible.
-
-    ``explain`` returns a human-readable scoring summary for a single profile.
-
-    ``predict_probs`` returns P(f > 0.5) per embedding, or ``None`` when the model
-    cannot score yet. It belongs here rather than on one implementation because the
-    cycle's promote gate (``ready_pool.promote_to_ready``) runs for **every**
-    campaign — leaving it off the protocol once let a campaign reach the gate with a
-    qualifier that had no such method, and `AttributeError` every other cycle.
-
-    There is only one implementation today (``BayesianQualifier``); the protocol is
-    kept because the gate should keep depending on the interface rather than on it.
-    """
-
-    def rank_profiles(self, profiles: list) -> list: ...
-    def explain(self, profile: dict) -> str: ...
-    def predict_probs(self, embeddings: np.ndarray) -> np.ndarray | None: ...
 
 
 def format_prediction(prob: float, entropy: float, std: float, n_obs: int) -> str:
@@ -109,62 +74,13 @@ def qualify_with_llm(person: dict, product_docs: str, campaign_target: str,
 
 
 # ---------------------------------------------------------------------------
-# Shared helpers  (Django-coupled — not part of the extracted engine)
-# ---------------------------------------------------------------------------
-
-def _load_profile_embeddings(profiles: list, *, skip_missing: bool = False):
-    """Load cached embeddings for a list of profile dicts.
-
-    Returns list of (profile, embedding) pairs. Reads the cached
-    ``Lead.embedding_array`` only — no scrape, so an unembedded lead is missing.
-    """
-    from openoutfind.crm.models import Lead
-
-    result = []
-    for p in profiles:
-        lead = Lead.objects.filter(pk=p.get("lead_id")).first()
-        emb = lead.embedding_array if lead else None
-        if emb is None:
-            if skip_missing:
-                continue
-            pid = p.get("profile_url", "?")
-            raise RuntimeError(f"No embedding found for profile {pid}")
-        result.append((p, emb))
-    return result
-
-
-def _rank_by_score(profiles: list, pipeline, *, skip_missing: bool = False) -> list:
-    """Rank profiles by raw pipeline.predict() score (descending).
-
-    Works with any sklearn-compatible pipeline — no GPR-specific logic.
-    """
-    scored = _load_profile_embeddings(profiles, skip_missing=skip_missing)
-    if not scored:
-        return []
-
-    X = np.array([emb for _, emb in scored], dtype=np.float64)
-    scores = pipeline.predict(X)
-
-    ranked = sorted(zip(scores, [p for p, _ in scored]), key=lambda t: t[0], reverse=True)
-    return [p for _, p in ranked]
-
-
-def _explain_score(pipeline, embedding: np.ndarray) -> float:
-    """Return the raw prediction score for a single embedding."""
-    X = np.asarray(embedding, dtype=np.float64)
-    if X.ndim == 1:
-        X = X.reshape(1, -1)
-    return float(pipeline.predict(X)[0])
-
-
-# ---------------------------------------------------------------------------
 # BayesianQualifier  (GP Regression backend)
 # ---------------------------------------------------------------------------
 
 class BayesianQualifier(GPBaldQualifier):
     """The shared GP+BALD engine (``openoutlearn.GPBaldQualifier``), plus what's
-    genuinely lead-gen specific: cold-start anchors, majority-class balancing in
-    the early window (``balances``), and Django-backed ranking/explain.
+    genuinely lead-gen specific: cold-start anchors and majority-class balancing in
+    the early window (``balances``).
 
     Training data is accumulated incrementally; the GPR is lazily
     re-fitted on ALL accumulated data (real observations + anchors)
@@ -384,7 +300,7 @@ class BayesianQualifier(GPBaldQualifier):
         return X[keep], y[keep]
 
     # ------------------------------------------------------------------
-    # Prediction  (needs posterior std — uses _gpr_predict)
+    # Prediction  (needs posterior std)
     # ------------------------------------------------------------------
 
     def predict(self, embedding: np.ndarray) -> tuple[float, float, float] | None:
@@ -396,26 +312,14 @@ class BayesianQualifier(GPBaldQualifier):
         """
         if not self._fit_if_needed():
             return None
-        mean, std = _gpr_predict(self._pipeline, embedding)
-        p = float(_prob_above_half(mean, std)[0])
-        entropy = float(_binary_entropy(p))
+        mean, std = gpr_predict(self._pipeline, embedding)
+        p = float(prob_above_half(mean, std)[0])
+        entropy = float(binary_entropy(p))
         return p, entropy, float(std[0])
 
     # ``compute_bald`` and ``predict_probs`` are inherited from ``GPBaldQualifier``
     # unchanged — both dispatch through ``self._fit_if_needed()``, which resolves to
     # this class's override below, so anchors and balancing apply automatically.
-
-    def posterior_std(self, embeddings: np.ndarray) -> np.ndarray | None:
-        """GP posterior std at each embedding — the uncertainty BALD rewards.
-
-        The explore prefilter ranks candidate queries by summed per-clause variance
-        (posterior_std²) as a cheap BALD proxy, so only the top slice is exact-embedded.
-        Returns None when the model cannot be fitted yet.
-        """
-        if not self._fit_if_needed():
-            return None
-        _, std = _gpr_predict(self._pipeline, embeddings)
-        return std
 
     def confidence(self, embeddings: np.ndarray) -> np.ndarray | None:
         """How much of the GP's prior variance the verdicts have removed at each embedding:
@@ -477,37 +381,6 @@ class BayesianQualifier(GPBaldQualifier):
     # ``acquisition_scores`` is inherited unchanged — it dispatches on
     # ``self.acquisition_mode()``, which resolves to this class's cold-phase-aware
     # override.
-
-    # ------------------------------------------------------------------
-    # Ranking & explain  (raw GP mean — no _prob_above_half)
-    # ------------------------------------------------------------------
-
-    def rank_profiles(self, profiles: list) -> list:
-        """Rank QUALIFIED profiles by raw GP mean (descending).
-
-        Returns ``[]`` on cold start (model not fitted yet).
-        """
-        if not profiles:
-            return []
-        if not self._fit_if_needed():
-            logger.debug("rank_profiles: GPR not fitted (%d obs) — returning empty", self.n_obs)
-            return []
-        return _rank_by_score(profiles, self._pipeline)
-
-    def explain(self, profile: dict) -> str:
-        """Human-readable compact scoring explanation."""
-        from openoutfind.crm.models import Lead
-
-        lead = Lead.objects.filter(pk=profile.get("lead_id")).first()
-        emb = lead.embedding_array if lead else None
-        if emb is None:
-            return "No embedding found for profile"
-        if not self._fit_if_needed():
-            return f"Model not fitted yet ({self.n_obs} observations, need both classes)"
-        mean, std = _gpr_predict(self._pipeline, emb)
-        gp_mean = float(mean[0])
-        p_above = float(_prob_above_half(mean, std)[0])
-        return f"mean={gp_mean:.3f}, P(f>0.5)={p_above:.3f}, obs={self.n_obs}"
 
     # ``warm_start`` is inherited from ``GPBaldQualifier`` unchanged: it replaces the
     # *real* observations only — anchors are set separately and after, so the build

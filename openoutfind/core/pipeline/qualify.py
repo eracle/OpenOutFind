@@ -342,12 +342,7 @@ def _save_qualification_result(qualifier: BayesianQualifier, lead, embedding: np
     # acceptances credible; a log of nothing but hits reads like a row dump, and the
     # reason it writes is the product either way.
     if label == 1:
-        try:
-            promote_lead_to_deal(profile_url, reason=reason)
-        except ValueError as e:
-            logger.warning("Cannot promote %s: %s — disqualifying", profile_url, e)
-            create_disqualified_deal(profile_url, reason=str(e))
-            return
+        promote_lead_to_deal(profile_url, reason=reason)
         logger.info("%s", _verdict_line("✓", "green", "QUALIFIED", _who(lead), reason))
     else:
         create_disqualified_deal(profile_url, reason=reason)

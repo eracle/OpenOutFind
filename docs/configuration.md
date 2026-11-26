@@ -96,10 +96,3 @@ rows found so far and exits non-zero.
 
 *(Gone with the sending leg: `SEND_WINDOW_*`, `MIN_SEND_INTERVAL_SECONDS`, `SEND_INTERVAL_JITTER_*`,
 `WARM_*`, `COLLECT_TODAY_HORIZON_S`, `MAIL_PASS_INTERVAL_S`.)*
-
-## Working-day arithmetic
-
-`core/business_time.py` only *measures*: whole Mon–Fri days between two dates
-(`business_days_between`). It existed to tell the outreach agent how old a thread was; with no agent,
-nothing in the pipeline calls it. Public holidays are not modelled — that data is per-country and
-per-year.

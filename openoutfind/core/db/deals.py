@@ -105,10 +105,6 @@ def get_qualified_profiles() -> list:
     return _deals_at_state(DealState.QUALIFIED)
 
 
-def get_ready_to_find_email_profiles() -> list:
-    return _deals_at_state(DealState.READY_TO_FIND_EMAIL)
-
-
 # ── Deal creation ──
 
 

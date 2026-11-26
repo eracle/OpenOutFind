@@ -27,17 +27,16 @@ from termcolor import colored
 
 from openoutfind.core.db.deals import (
     get_qualified_profiles,
-    get_ready_to_find_email_profiles,
     set_profile_state,
 )
 from openoutfind.core.ml import calibration
-from openoutfind.core.ml.qualifier import Qualifier
+from openoutfind.core.ml.qualifier import BayesianQualifier
 from openoutfind.crm.models import DealState
 
 logger = logging.getLogger(__name__)
 
 
-def promote_to_ready(qualifier: Qualifier) -> int:
+def promote_to_ready(qualifier: BayesianQualifier) -> int:
     """Promote QUALIFIED profiles at or above the GP confidence gate to
     READY_TO_FIND_EMAIL.
 
@@ -91,13 +90,3 @@ def promote_to_ready(qualifier: Qualifier) -> int:
             promoted += 1
 
     return promoted
-
-
-def find_ready_candidate(qualifier: Qualifier) -> dict | None:
-    """Return the top-ranked READY_TO_FIND_EMAIL profile, or None."""
-    profiles = get_ready_to_find_email_profiles()
-    if not profiles:
-        return None
-
-    ranked = qualifier.rank_profiles(profiles)
-    return ranked[0] if ranked else None
