@@ -59,6 +59,13 @@ def decide(qualifier, candidates) -> bool:
     from openoutfind.core.models import Page
     from openoutfind.core.pipeline import search_arms, store_snapshot
 
+    from openoutfind.core.discovery_source import current
+
+    if current() is not None:
+        # The selected paid source is one bounded page, not a free frontier arm.
+        # Exhaust useful local qualification work before asking it for anything.
+        return True
+
     waiting = best_waiting(qualifier, candidates, store_snapshot.fit_rate_map())
     if not Page.objects.exists():
         return True

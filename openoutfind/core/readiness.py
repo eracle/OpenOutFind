@@ -80,14 +80,19 @@ def missing_variables() -> dict[str, list[str]]:
     The groups are the questions a person is asked, kept because that is how the failure
     reads to somebody who has to go and find the values. An empty dict is a ready run.
     """
+    from openoutfind.core.discovery_source import current
+
     config = SiteConfig.load()
+    source = current()
+    discovery_group = "companyenrich" if source is not None else "bettercontact"
+    discovery_fields = (source.required_field,) if source is not None else REQUIRED_DISCOVERY_FIELDS
     groups = {
         "campaign": missing(config, REQUIRED_ICP_FIELDS),
         # `--agent-qualify` never calls AI_MODEL for a verdict — the whole point is a
         # calling agent answering instead of a second, separately-keyed model — so an
         # install running only that way is not asked for a key it will never spend.
         "llm": [] if _agent_qualify_active() else missing(config, REQUIRED_LLM_FIELDS),
-        "bettercontact": missing(config, REQUIRED_DISCOVERY_FIELDS),
+        discovery_group: missing(config, discovery_fields),
     }
     return {group: names for group, names in groups.items() if names}
 

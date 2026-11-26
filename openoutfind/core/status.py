@@ -56,10 +56,13 @@ def _config_state() -> dict:
     """Which groups this run was given, and the variables that would give it the rest."""
     from openoutfind.core.readiness import GROUPS, missing_variables
 
+    from openoutfind.core.discovery_source import current
+
     missing = missing_variables()
+    groups = ("campaign", "llm", "companyenrich") if current() else GROUPS
     return {
         "complete": not missing,
-        "done": [group for group in GROUPS if group not in missing],
+        "done": [group for group in groups if group not in missing],
         "missing": missing,
     }
 
@@ -206,7 +209,9 @@ def _blocked(config: dict, credits: dict, totals: dict) -> list[dict]:
     if credits["error"] == ErrorType.NO_CREDENTIAL:
         blocked.append({
             "type": ErrorType.NO_CREDENTIAL,
-            "message": "no BetterContact key — discovery and email finding are both off",
+            "message": ("no BetterContact key — email finding is off"
+                        if "companyenrich" in config.get("done", []) else
+                        "no BetterContact key — discovery and email finding are both off"),
         })
     elif credits["error"] == ErrorType.PROVIDER_AUTH:
         blocked.append({

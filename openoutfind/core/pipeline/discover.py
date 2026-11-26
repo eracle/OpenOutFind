@@ -90,6 +90,12 @@ def discover(site_config, qualifier=None) -> bool:
     Two gates: no finder key means the index can't be reached, and no product or target
     means there is nothing to write the initial population from.
     """
+    from openoutfind.core.discovery_source import current
+
+    source = current()
+    if source is not None:
+        return source.discover(site_config)
+
     from openoutfind.core.pipeline.walk import run_round
     from openoutfind.enrichment import bettercontact
 

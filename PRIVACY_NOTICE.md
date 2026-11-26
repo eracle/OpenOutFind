@@ -43,6 +43,8 @@ Data reaches the store from OpenOutreach operators, at two moments:
 - **Email records** arrive **after an operator's paid email-finder lookup returns a verified work email.**
 - **Profile records** arrive **whenever an operator's prospect search returns a page of results.** The source of those results is the operator's own account with the B2B data provider **BetterContact** (its Lead Finder search), which compiles publicly available professional information.
 
+CompanyEnrich discovery is excluded from this shared store by the client, including later contributions for identities marked as originating from that source.
+
 The maintainer does **not** scrape any website, buy data, or run searches of its own to populate the store; it is filled only by operators' own searches and lookups, subject to the geographic exclusion above.
 
 ## How data is used and disclosed

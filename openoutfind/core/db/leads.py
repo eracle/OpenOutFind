@@ -32,7 +32,8 @@ def promote_lead_to_deal(profile_url: str, reason: str = ""):
     return deal
 
 
-def store_rows(rows: list[dict], country_code: str = "") -> tuple[list, int]:
+def store_rows(rows: list[dict], country_code: str = "", *,
+               discovery_source: str = "bettercontact") -> tuple[list, int]:
     """Persist Lead Finder rows as embedded Leads; return every row's Lead and how many
     were new.
 
@@ -58,6 +59,12 @@ def store_rows(rows: list[dict], country_code: str = "") -> tuple[list, int]:
     by_url = {row["contact_linkedin_profile_url"]: row for row in rows
               if row.get("contact_linkedin_profile_url")}
     known = {lead.profile_url: lead for lead in Lead.objects.filter(profile_url__in=by_url)}
+    if discovery_source == "companyenrich":
+        # Restrict combined provenance too; never undo this on a later free-source hit.
+        Lead.objects.filter(pk__in=[lead.pk for lead in known.values()]).update(
+            discovery_source="companyenrich")
+        for lead in known.values():
+            lead.discovery_source = "companyenrich"
     fresh = [url for url in by_url if url not in known]
 
     texts = [profile_text_for(by_url[url]) for url in fresh]
@@ -69,7 +76,10 @@ def store_rows(rows: list[dict], country_code: str = "") -> tuple[list, int]:
             embedding=np.asarray(vector, dtype=np.float32).tobytes(),
             profile_text=text,
             source_fields=source_fields_for(row),
-            country_code=country_code,
+            country_code=row.get("_country_code", country_code),
+            discovery_source=discovery_source,
+            first_name=row.get("_first_name"),
+            last_name=row.get("_last_name"),
             company=company_for(row),
             **person_for(row),
         )

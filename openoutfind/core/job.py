@@ -263,7 +263,12 @@ def _why_idle(site_config, result: JobResult, buy_addresses: bool) -> str:
     a reason to run again in an hour.
     """
     from openoutfind.core.cycle import pipeline_summary
+    from openoutfind.core.discovery_source import current
 
+    if current() is not None:
+        return (f"{result.produced} of {result.goal} — the authorized CompanyEnrich page "
+                "and available pool cannot advance. No additional page was purchased. "
+                "Inspect the results before authorizing another request ID/page.")
     return (
         f"{result.produced} of {result.goal} — nothing left to do right now. "
         f"{pipeline_summary(site_config, buy_addresses=buy_addresses)}"
