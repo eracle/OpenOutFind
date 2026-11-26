@@ -129,9 +129,8 @@ def test_below_the_bar_exploit_judges_the_whole_pool_when_judging_is_cheaper(sit
     """Below the bar is not "nothing to do": when a verdict on the pool buys a fit for
     less than a search would, the best lead by P is judged, from every candidate.
 
-    This is the 14h33m failure turned round: with 3 real positives a live pool topped out
-    at P=0.37, every pass discovered, and the posterior that would open the bar never
-    moved."""
+    A cold posterior tops out low: were every pass to discover, the posterior that would
+    open the bar would never move."""
     qualifier = _exploiting_qualifier()
     pool = [_Candidate(), _Candidate()]
 
@@ -152,8 +151,8 @@ def test_below_the_bar_exploit_judges_the_whole_pool_when_judging_is_cheaper(sit
 
 @pytest.mark.django_db
 def test_below_the_bar_exploit_searches_when_searching_is_cheaper(site_config):
-    """CaleafTech's batch 5: 42 verdicts, no fit, 6 queries in the whole store. A pool
-    that stops fitting is left for a fresh page."""
+    """A pool that stops fitting is left for a fresh page, rather than spending verdict
+    after verdict on off-industry profiles with no fit."""
     qualifier = _exploiting_qualifier()
 
     with (
@@ -209,9 +208,9 @@ def test_an_empty_pool_with_nothing_to_search_is_the_end(site_config):
 def test_explore_counts_a_page_of_familiar_profiles_as_work(site_config):
     """A fired page is the unit of work, whatever fraction of it was new.
 
-    A live run ended `goal_unreached` on this shape: the page came back 100 rows all
-    already ours, so it left no candidate to label — which is not the same fact as a
-    spanned frontier, and must not stop the job with the walk one node in."""
+    A page that comes back with every row already ours leaves no candidate to label —
+    which is not the same fact as a spanned frontier, and must not stop the job with the
+    walk one node in."""
     qualifier = BayesianQualifier(embedding_dim=8)
     rng = np.random.RandomState(0)
     qualifier.warm_start(rng.rand(7, 8), np.array([1, 1, 1, 1, 0, 0, 0]))

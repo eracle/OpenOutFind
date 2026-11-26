@@ -48,8 +48,8 @@ class TestPlace:
 
 class TestLegal:
     def test_a_tag_never_fires_without_a_title(self):
-        assert not Terms.written(tag="cannabis", seniority="director").is_legal
-        assert Terms.written(title="purchasing", tag="cannabis").is_legal
+        assert not Terms.written(tag="coffee", seniority="director").is_legal
+        assert Terms.written(title="purchasing", tag="coffee").is_legal
 
     def test_a_place_alone_is_the_whole_market(self):
         assert not Terms.written(place="United States").is_legal
@@ -61,14 +61,14 @@ class TestLegal:
 class TestMatches:
     PERSON = {
         "contact_job_title": "Head of Procurement",
-        "company_keywords": "cannabis extraction, thc vape, food & beverage",
+        "company_keywords": "coffee roasting, cold brew, food & beverage",
         "contact_location_state": "California",
         "contact_location_country": "United States",
         "contact_seniority": "Head",
     }
 
     def test_every_term_in_its_own_field(self):
-        terms = Terms.written(title="procurement head", tag="thc vape",
+        terms = Terms.written(title="procurement head", tag="cold brew",
                               place="California, United States", seniority="head")
         assert terms.matches(self.PERSON)
 
@@ -82,15 +82,15 @@ class TestMatches:
         assert not Terms.written(place="Ohio, United States").matches(self.PERSON)
 
     def test_a_title_word_elsewhere_in_the_profile_does_not_count(self):
-        """The regulator with "cannabis" in a tag, not a title, is not a title match."""
-        assert not Terms.written(title="cannabis").matches(self.PERSON)
+        """The buyer with "coffee" in a tag, not a title, is not a title match."""
+        assert not Terms.written(title="coffee").matches(self.PERSON)
 
     def test_a_tag_word_in_the_title_does_not_count(self):
         assert not Terms.written(title="head", tag="procurement").matches(self.PERSON)
 
     def test_a_tag_phrase_must_sit_inside_one_tag(self):
-        """Two tags cannot be ANDed: `extraction thc` spans two of them."""
-        assert not Terms.written(title="head", tag="extraction thc").matches(self.PERSON)
+        """Two tags cannot be ANDed: `roasting cold` spans two of them."""
+        assert not Terms.written(title="head", tag="roasting cold").matches(self.PERSON)
 
     def test_another_state_of_the_country_does_not_match(self):
         terms = Terms.written(title="head", place="Texas, United States")
@@ -104,13 +104,13 @@ class TestMatches:
 class TestHoldsAllOf:
     """A stricter search matches a subset of people, so a dead one convicts it."""
 
-    DEAD = Terms.written(title="purchasing", tag="cannabis", place="United States")
+    DEAD = Terms.written(title="purchasing", tag="coffee", place="United States")
 
     @pytest.mark.parametrize("child", [
-        Terms.written(title="purchasing manager", tag="cannabis", place="United States"),
-        Terms.written(title="purchasing", tag="cannabis edibles", place="United States"),
-        Terms.written(title="purchasing", tag="cannabis", place="Ohio, United States"),
-        Terms.written(title="purchasing", tag="cannabis", place="United States",
+        Terms.written(title="purchasing manager", tag="coffee", place="United States"),
+        Terms.written(title="purchasing", tag="specialty coffee", place="United States"),
+        Terms.written(title="purchasing", tag="coffee", place="Ohio, United States"),
+        Terms.written(title="purchasing", tag="coffee", place="United States",
                       seniority="director"),
     ])
     def test_a_stricter_search_holds_the_dead_ones_terms(self, child):
@@ -118,8 +118,8 @@ class TestHoldsAllOf:
 
     @pytest.mark.parametrize("child", [
         Terms.written(title="purchasing", place="United States"),
-        Terms.written(title="purchasing", tag="vapes", place="United States"),
-        Terms.written(title="purchasing", tag="cannabis", place="Canada"),
+        Terms.written(title="purchasing", tag="roasters", place="United States"),
+        Terms.written(title="purchasing", tag="coffee", place="Canada"),
     ])
     def test_a_wider_or_sibling_search_does_not(self, child):
         assert not child.holds_all_of(self.DEAD)
@@ -127,13 +127,13 @@ class TestHoldsAllOf:
 
 class TestProviderJson:
     def test_each_field_as_its_match_type_wants(self):
-        terms = Terms.written(title="procurement head", tag="Cannabis Extraction",
+        terms = Terms.written(title="procurement head", tag="Coffee Roasting",
                               place="California, United States", seniority="head")
 
         assert terms.to_filters((1, 50)) == {
             "company_headcount_min": 1, "company_headcount_max": 50,
             "lead_job_title": {"include": ["head procurement"], "exact_match": False},
-            "company_keywords": {"include": ["cannabis extraction"], "exact_match": False},
+            "company_keywords": {"include": ["coffee roasting"], "exact_match": False},
             "lead_location": {"include": ["California, United States"]},
             "lead_seniority": {"include": ["head"]},
         }
@@ -144,11 +144,11 @@ class TestProviderJson:
 
 class TestIdentity:
     def test_one_search_however_it_was_written(self):
-        a = Terms.written(title="head of procurement", tag="Cannabis")
-        b = Terms.written(title="procurement head", tag="cannabis")
+        a = Terms.written(title="head of procurement", tag="Coffee")
+        b = Terms.written(title="procurement head", tag="coffee")
         assert a.key == b.key
 
     def test_the_json_round_trips(self):
-        terms = Terms.written(title="head procurement", tag="thc vape",
+        terms = Terms.written(title="head procurement", tag="cold brew",
                               place="Ohio, United States", seniority="head")
         assert Terms.from_json(terms.as_json()) == terms

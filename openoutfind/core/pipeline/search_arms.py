@@ -63,8 +63,8 @@ SEEN_MARGIN = 1.1
 # dead, drained) below the best.
 COMPOSED = 200
 # The arms worth the most at the mean that one draw of the belief picks among. The greedy
-# pick (mean plus one σ over 200 draws) fired one idea round after round on batch 6: 46 of
-# rounds 16–66 were `ceo`/`chief`/`executive`/`officer` in another combination.
+# pick (mean plus one σ over 200 draws) fired one idea round after round: most rounds were
+# `ceo`/`chief`/`executive`/`officer` in another combination.
 TOP_K = 10
 
 
@@ -262,7 +262,7 @@ class Frontier:
     def in_market(self, terms: Terms) -> bool:
         """Whether ``terms`` stay in the market the written searches drew: where every one
         of them names a state, a search of the whole country is outside it. A store written
-        partly on the country (batch 5: 8 of 10) has no such limit."""
+        partly on the country has no such limit."""
         return bool(split_place(terms.place)[0]) or not self.market_is_states
 
     def is_closed(self, terms: Terms) -> bool:

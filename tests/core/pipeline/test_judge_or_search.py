@@ -23,7 +23,7 @@ def _arm(rate, new=20.0, cost=None):
     from openoutfind.core.pipeline.search_arms import Arm
     from openoutfind.core.pipeline.terms import Terms
 
-    return Arm(Terms.written(title="production", tag="cannabis"), 1, "swap", new=new,
+    return Arm(Terms.written(title="production", tag="coffee"), 1, "swap", new=new,
                rate=rate, cost=0.0001 + 0.05 * new if cost is None else cost)
 
 
@@ -57,7 +57,7 @@ class TestTheRule:
         plan.assert_not_called()
 
     def test_a_round_that_added_leads_is_judged_before_the_next(self, caplog):
-        """Batch 5: a GP scoring everyone alike fired six rounds with no verdict between."""
+        """A GP scoring everyone alike would fire round after round with no verdict between."""
         meter.record(meter.POOL_FIT, 1)
         meter.reset(meter.POOL_FIT)  # what a round adding leads does
         with caplog.at_level("INFO"):
@@ -72,7 +72,7 @@ class TestTheRule:
         assert decision is False
 
     def test_a_best_lead_below_what_a_search_would_bring_is_left_for_a_search(self):
-        """The batch-5 shape: the pool's best is off-industry, a search's people fit more."""
+        """The pool's best is off-industry, and a search's people fit more."""
         decision, _ = _decide(waiting=0.15, arm=_arm(0.3))
         assert decision is False
 

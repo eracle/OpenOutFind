@@ -93,9 +93,9 @@ class TestSourceFieldsFor:
 
     def test_company_tags_are_kept_as_text_not_a_list_repr(self):
         stored = discovery.source_fields_for(
-            {"company_keywords": ["cannabis", "thc vape", ""]})
+            {"company_keywords": ["coffee", "cold brew", ""]})
 
-        assert stored == {"company_keywords": "cannabis, thc vape"}
+        assert stored == {"company_keywords": "coffee, cold brew"}
 
 
 class TestAsPlace:
@@ -293,9 +293,9 @@ class TestDescribeCompanyAxis:
         from openoutfind.core.pipeline.terms import Terms
 
         rendered = discovery.describe_filters(
-            Terms.written(title="purchasing", tag="cannabis").to_filters())
+            Terms.written(title="purchasing", tag="coffee").to_filters())
 
-        assert "company cannabis" in rendered
+        assert "company coffee" in rendered
         assert "job_title purchasing" in rendered
 
 
@@ -305,12 +305,12 @@ class TestWrittenSearchAsTerms:
     def test_the_tag_searches_the_company_and_the_title_the_person(self):
         from openoutfind.core.pipeline.icp import WrittenSearch, as_terms
 
-        terms = as_terms(WrittenSearch(title="Head of Procurement", tag="Cannabis Extraction",
+        terms = as_terms(WrittenSearch(title="Head of Procurement", tag="Coffee Roasting",
                                        state="california", seniority="head"),
                          "united states")
 
         assert terms.title == {"head", "procurement"}
-        assert terms.tag == ("cannabis", "extraction")
+        assert terms.tag == ("coffee", "roasting")
         assert terms.place == "California, United States"
         assert terms.seniority == "head"
 

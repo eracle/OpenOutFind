@@ -39,9 +39,9 @@ def rated_frontier(arms):
 @pytest.mark.django_db
 class TestTheArms:
     def test_a_drained_search_offers_neither_its_next_page_nor_a_stricter_search(self):
-        """Batch 5 spent all 5 stricter slots of a round re-finding people this way."""
+        """A search narrower than a drained one can only re-find people the store holds."""
         people = [make_lead(verdict=1) for _ in range(3)]
-        drained = Terms.written(title="purchasing", tag="cannabis")
+        drained = Terms.written(title="purchasing", tag="coffee")
         fire(drained, people, found=3)
 
         arms = Frontier(None).arms()
@@ -49,12 +49,13 @@ class TestTheArms:
         assert not any(arm.terms.holds_all_of(drained) for arm in arms)
 
     def test_a_market_written_in_states_never_goes_country_wide(self):
-        """The Bali sample: a fired country search's next page and its neighbours are out
-        with the state's own widening, so neither the cover nor the fill can leave Bali."""
+        """A market written as Bali: a fired country search's next page and its neighbours
+        are out with the state's own widening, so neither the cover nor the fill can leave
+        Bali."""
         people = [make_lead(verdict=1) for _ in range(3)]
-        fire(Terms.written(title="owner", tag="cannabis", place="Bali, Indonesia"),
+        fire(Terms.written(title="owner", tag="coffee", place="Bali, Indonesia"),
              people, found=500)
-        fire(Terms.written(title="manager", tag="cannabis", place="Indonesia"), people,
+        fire(Terms.written(title="manager", tag="coffee", place="Indonesia"), people,
              found=500, origin=Search.Origin.DRAWN)
 
         arms = Frontier(None).arms()
@@ -63,9 +64,9 @@ class TestTheArms:
 
     def test_a_market_written_partly_on_the_country_keeps_it(self):
         people = [make_lead(verdict=1) for _ in range(3)]
-        fire(Terms.written(title="owner", tag="cannabis", place=f"Ohio, {US}"), people,
+        fire(Terms.written(title="owner", tag="coffee", place=f"Ohio, {US}"), people,
              found=500)
-        fire(Terms.written(title="manager", tag="cannabis", place=US), people, found=500)
+        fire(Terms.written(title="manager", tag="coffee", place=US), people, found=500)
 
         arms = Frontier(None).arms()
 
@@ -73,7 +74,7 @@ class TestTheArms:
 
     def test_a_search_with_more_to_page_offers_its_next_page_beside_the_composed(self):
         people = [make_lead(verdict=1) for _ in range(3)]
-        roomy = Terms.written(title="purchasing", tag="cannabis")
+        roomy = Terms.written(title="purchasing", tag="coffee")
         fire(roomy, people, found=5000)
 
         arms = Frontier(None).arms()
@@ -83,16 +84,16 @@ class TestTheArms:
                    for arm in arms)
 
     def test_a_composed_search_holds_a_title_and_a_tag_from_the_store(self):
-        make_lead("Extraction Lead", tags="cannabis extraction, live resin", verdict=1)
-        fire(Terms.written(title="purchasing", tag="cannabis", place=f"Ohio, {US}"),
+        make_lead("Roasting Lead", tags="coffee roasting, green coffee", verdict=1)
+        fire(Terms.written(title="purchasing", tag="coffee", place=f"Ohio, {US}"),
              [make_lead(verdict=1)], found=5000)
 
         composed = [arm.terms for arm in Frontier(None).arms() if arm.move == "drawn"]
 
         assert composed
-        vocabulary = {"extraction", "lead", "purchasing", "manager"}
+        vocabulary = {"roasting", "lead", "purchasing", "manager"}
         assert all(t.title and t.title <= vocabulary and t.tag for t in composed)
-        assert any(t.tag == ("live", "resin") for t in composed)
+        assert any(t.tag == ("green", "coffee") for t in composed)
 
     def test_a_store_with_no_written_search_composes_nothing(self):
         make_lead(verdict=1)
@@ -246,8 +247,8 @@ class TestTheNextSearch:
         One draw decides a round, so the known-good arm wins most rounds, not every one."""
         fits = [make_lead("Founder", company=make_company(f"f{i}"), verdict=1) for i in range(15)]
         misses = [make_lead("Clerk", company=make_company(f"c{i}"), verdict=0) for i in range(15)]
-        fire(Terms.written(title="founder", tag="cannabis"), fits, found=5000)
-        fire(Terms.written(title="clerk", tag="cannabis"), misses, found=5000,
+        fire(Terms.written(title="founder", tag="coffee"), fits, found=5000)
+        fire(Terms.written(title="clerk", tag="coffee"), misses, found=5000,
              origin=Search.Origin.DRAWN)
         good, bad, unknown = arm_for("founder"), arm_for("clerk"), arm_for("buyer")
         frontier = rated_frontier([good, bad, unknown])
@@ -259,36 +260,36 @@ class TestTheNextSearch:
     def test_an_unfired_keyword_starts_from_its_guess(self):
         """The LLM's guess is the prior: a likelier fit lifts more, a larger keyword counts
         more, before any search holds either."""
-        fire(Terms.written(title="purchasing", tag="cannabis"), [make_lead()], found=5000)
-        guess_for("tag|live resin", people=400, fits=120)
+        fire(Terms.written(title="purchasing", tag="coffee"), [make_lead()], found=5000)
+        guess_for("tag|green coffee", people=400, fits=120)
         guess_for("tag|retail", people=2_000_000, fits=4_000)
-        resin, retail = ("tag", "live resin"), ("tag", "retail")
+        green, retail = ("tag", "green coffee"), ("tag", "retail")
         beliefs = Frontier(None).beliefs
         lifts = beliefs.lifts()
 
-        assert lifts[resin] > 0 > lifts[retail]
-        assert beliefs.count([retail]) > 100 * beliefs.count([resin])
+        assert lifts[green] > 0 > lifts[retail]
+        assert beliefs.count([retail]) > 100 * beliefs.count([green])
 
     def test_a_fired_keywords_lift_moves_off_its_guess_with_its_pages(self):
         guess_for("title|founder", people=50_000, fits=30_000)
         misses = [make_lead("Founder", company=make_company(f"m{i}"), verdict=0)
                   for i in range(20)]
-        fire(Terms.written(title="founder", tag="cannabis"), misses, found=5000)
+        fire(Terms.written(title="founder", tag="coffee"), misses, found=5000)
         guessed = belief.Guesses.from_counts(
             MARKET, [("title|founder", 50_000, 30_000)]).lift(("title", "founder"))
 
         assert Frontier(None).beliefs.lifts()[("title", "founder")] < guessed
 
     def test_a_page_whose_probe_came_back_without_fits_loses_its_next_page(self):
-        """Batch 6: founder · `wholesale` brought 170 people and 0 fits, and the keywords'
-        marks still read its next page at 0.35. Its own verdicts are what it is valued on."""
+        """Marks holding a keyword are not the market: a page of founder · `importers` with no
+        fit is valued on its own verdicts, never lifted by the marks that share its tag."""
         for i in range(10):
-            make_lead("Owner", tags="wholesale", company=make_company(f"mark{i}"), verdict=1)
-        page = [make_lead("Founder", tags="wholesale", company=make_company(f"w{i}"), verdict=0)
+            make_lead("Owner", tags="importers", company=make_company(f"mark{i}"), verdict=1)
+        page = [make_lead("Founder", tags="importers", company=make_company(f"w{i}"), verdict=0)
                 for i in range(5)]
-        fired = Terms.written(title="founder", tag="wholesale")
+        fired = Terms.written(title="founder", tag="importers")
         fire(fired, page, found=5000)
-        untried = Terms.written(title="owner", tag="wholesale")
+        untried = Terms.written(title="owner", tag="importers")
 
         frontier = Frontier(None)
         (next_page,) = [frontier.next_page_arm(f) for f in frontier.fired]
@@ -300,14 +301,14 @@ class TestTheNextSearch:
 
     def test_a_page_whose_probe_came_back_fits_is_paged_again(self):
         for i in range(10):
-            make_lead("Owner", tags="wholesale", company=make_company(f"mark{i}"), verdict=0)
-        page = [make_lead("Founder", tags="wholesale", company=make_company(f"w{i}"), verdict=1)
+            make_lead("Owner", tags="importers", company=make_company(f"mark{i}"), verdict=0)
+        page = [make_lead("Founder", tags="importers", company=make_company(f"w{i}"), verdict=1)
                 for i in range(5)]
-        fire(Terms.written(title="founder", tag="wholesale"), page, found=5000)
+        fire(Terms.written(title="founder", tag="importers"), page, found=5000)
 
         frontier = Frontier(None)
         (next_page,) = [frontier.next_page_arm(f) for f in frontier.fired]
-        fresh = frontier.first_page_arm(Terms.written(title="owner", tag="wholesale"), "drawn")
+        fresh = frontier.first_page_arm(Terms.written(title="owner", tag="importers"), "drawn")
         frontier.rate_at_mean([next_page, fresh])
 
         assert sum(frontier.pick([next_page, fresh], n) is next_page for n in range(20)) > 10
@@ -315,7 +316,7 @@ class TestTheNextSearch:
     def test_the_belief_refits_only_when_a_page_or_a_verdict_lands(self):
         """It is rebuilt on every judge-or-search decision, and a fit takes seconds."""
         people = [make_lead(company=make_company(f"c{i}")) for i in range(3)]
-        fire(Terms.written(title="purchasing", tag="cannabis"), people, found=5000)
+        fire(Terms.written(title="purchasing", tag="coffee"), people, found=5000)
 
         with patch.object(belief, "sample_posterior", wraps=belief.sample_posterior) as fit:
             Frontier(None).beliefs, Frontier(None).beliefs
@@ -323,7 +324,7 @@ class TestTheNextSearch:
             make_lead(verdict=1)
             Frontier(None).beliefs
             assert fit.call_count == 2
-            fire(Terms.written(title="purchasing", tag="cannabis"), [make_lead()], found=5000,
+            fire(Terms.written(title="purchasing", tag="coffee"), [make_lead()], found=5000,
                  number=2)
             Frontier(None).beliefs
             assert fit.call_count == 3
@@ -333,7 +334,7 @@ class TestTheNextSearch:
 
     def test_a_next_page_keeps_the_providers_count_on_any_draw(self):
         people = [make_lead("Purchasing Manager") for _ in range(3)]
-        fire(Terms.written(title="purchasing", tag="cannabis"), people, found=5000)
+        fire(Terms.written(title="purchasing", tag="coffee"), people, found=5000)
         frontier = Frontier(None)
         next_page = next(arm for arm in frontier.arms() if arm.is_next_page)
 
@@ -364,7 +365,7 @@ class TestTheNextSearch:
 
     def test_with_no_arm_bringing_anybody_new_nothing_is_best(self):
         """The round itself then fires nothing: ``test_walk.py``."""
-        fire(Terms.written(title="purchasing", tag="cannabis"),
+        fire(Terms.written(title="purchasing", tag="coffee"),
              [make_lead(verdict=1) for _ in range(3)], found=5000)
 
         with patch.object(search_arms, "bringing_somebody_new", return_value=[]):
@@ -378,7 +379,7 @@ class TestTheNextSearch:
             def predict_probs(self, X):
                 return None
 
-        fire(Terms.written(title="purchasing", tag="cannabis"), [make_lead()], found=5000)
+        fire(Terms.written(title="purchasing", tag="coffee"), [make_lead()], found=5000)
 
         with patch("openoutfind.core.ml.embeddings.embed_texts",
                    side_effect=lambda texts: np.zeros((len(texts), 384))):
@@ -387,7 +388,7 @@ class TestTheNextSearch:
     def test_the_arm_weighed_against_the_pool_is_the_best_at_the_mean(self):
         for _ in range(3):
             make_lead("Founder", verdict=1)
-        fire(Terms.written(title="purchasing", tag="cannabis"),
+        fire(Terms.written(title="purchasing", tag="coffee"),
              [make_lead(verdict=1) for _ in range(3)], found=5000)
 
         frontier = Frontier(None)

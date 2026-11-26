@@ -170,7 +170,7 @@ class Terms:
         return filters
 
     def as_text(self) -> str:
-        """``title head procurement · tag cannabis extraction · California, United States``."""
+        """``title head procurement · tag coffee roasting · California, United States``."""
         parts = []
         if self.title:
             parts.append("title " + " ".join(sorted(self.title)))

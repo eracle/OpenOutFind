@@ -23,8 +23,8 @@ waiting fits as often as the people the next search would bring*, whoever the ju
 Before the first round there is nothing to weigh, and the pool is judged. **After a round
 that added leads, the pool is judged at least once before the next**: an arm is valued on
 the GP as the run's verdicts leave it, and with no verdict on the new people nothing has
-tested what the round brought. On batch 5 a GP scoring everyone alike put the best waiting
-lead at the base rate round after round, and six rounds fired with no verdict between them.
+tested what the round brought. A GP scoring everyone alike puts the best waiting lead at
+the base rate round after round, and without this rule rounds fire with no verdict between.
 """
 from __future__ import annotations
 

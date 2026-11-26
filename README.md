@@ -42,7 +42,7 @@ It has **zero platform-ToS surface**: browserless, no social-network account, no
 **How it works:**
 
 1. **You provide** a product description and a campaign objective (e.g. "SaaS analytics platform" targeting "VP of Engineering at Series B startups")
-2. **An LLM writes 10 whole searches** — "a head of procurement at a cannabis extraction company in California" — and pages matching firmographic profiles from a **licensed discovery source** (BetterContact **Lead Finder**) — no emails yet, billed nothing
+2. **An LLM writes 10 whole searches** — "a head of procurement at a coffee roasting company in California" — and pages matching firmographic profiles from a **licensed discovery source** (BetterContact **Lead Finder**) — no emails yet, billed nothing
 3. **Discovery searches best-first**: each round values every search one step from those already fired — a word added or dropped, a company tag swapped, the next page — and fires the one expected to bring the most new people who fit
 4. **An LLM qualifies each candidate** against your ICP and **writes down why**. A model of your ICP (Gaussian Process over profile embeddings) learns from those verdicts and picks who to qualify next
 5. **Every lead you have prints as CSV when the run ends** — name, title, company, website, profile URL, and the `reason` — so `> leads.csv` is the only file there is. Ask for addresses (`find 10 emails`, or `--emails`) and the best-fit leads get a **paid email lookup** first, one credit per verified hit, gated on the model's confidence so the spend goes to the leads most likely to fit

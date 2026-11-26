@@ -205,9 +205,8 @@ class BayesianQualifier(GPBaldQualifier):
     _MAX_IMBALANCE_RATIO = 2
     # Real fits past which the GP trains on every verdict. Balancing is for the early
     # window, when a handful of fits is outweighed by the rejections around them; past
-    # it, subsampling drops verdicts the run paid for (batch 5 at 54 fits kept 108 of
-    # 375 no-fits, so a fresh one was usually left out and its lookalike topped the
-    # pool), and scores need only rank — ``store_snapshot.fit_rate_map`` turns them into fit
+    # it, subsampling drops verdicts the run paid for (with dozens of fits, most no-fits
+    # are left out, so a fresh one usually is and its lookalike tops the pool), and scores need only rank — ``store_snapshot.fit_rate_map`` turns them into fit
     # rates. Every verdict at 12% fits ranks only because the GP centres its labels
     # (``openoutlearn.qualifier.gpr_for``); uncentred, it fitted a flat score. 10 is a
     # placeholder until a replay measures where balancing stops helping.
@@ -326,8 +325,8 @@ class BayesianQualifier(GPBaldQualifier):
         about 0.9 on a verdict (``alpha`` keeps the rest), 0 far from every one.
 
         Far from its verdicts the GP's score falls back to its prior mean, the base rate,
-        whoever the person is: on batch 6 the 780 people the walk brought sat at 0.05 and
-        the judged at 0.90. Returns None when the model cannot be fitted yet.
+        whoever the person is: strangers a walk brings, far from every verdict, sit near
+        0, the judged near 0.90. Returns None when the model cannot be fitted yet.
         """
         from sklearn.pipeline import Pipeline
 
@@ -358,10 +357,7 @@ class BayesianQualifier(GPBaldQualifier):
         BALD serves the opposite. Information gain is the right objective when both
         classes are real and the question is where the boundary sits; with invented
         positives it spends every LLM call on the lead the model is *most confused*
-        about, which is precisely the lead least like the ICP. A live run made that
-        concrete — four consecutive picks at P(f>0.5) ≈ 0.25–0.42, and the verdicts were
-        veterinary services, cybersecurity education, K-12 tutoring and a metaverse
-        product manager, against a health-and-wellness ICP. Every one an accurate
+        about, which is precisely the lead least like the ICP: each verdict is an accurate
         rejection, and not one of them a step toward the first acceptance.
 
         Past the cold phase it is balance-driven as before: exploit once real negatives

@@ -5,8 +5,8 @@ A fired search's next page is valued on its own effect in the fit-rate model (``
 fitted on the people its pages brought — and nothing else judges them. Exploit takes the best-scored
 lead, BALD the one the GP is least sure of, calibrate one from the thinnest score band;
 none of them reaches a page of strangers far from every verdict, where the GP reads the
-base rate whoever they are. On batch 6, founder · ``food`` brought 186 people and not one
-was judged, so its σ never shrank and an optimistic pick would have fired it forever.
+base rate whoever they are. A search whose page brings a couple of hundred such people,
+none of them judged, keeps its σ wide, and an optimistic pick would fire it forever.
 
 So past the cold phase, each ``top_up`` pass first takes a person drawn at random from the
 latest search whose people hold fewer than ``PROBE_VERDICTS`` verdicts. Random, so the

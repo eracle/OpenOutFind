@@ -23,16 +23,16 @@ def _mark(handle, value="good", value_reason="", note="", profile_text=None, **e
     return {
         "linkedin_url": f"https://www.linkedin.com/in/{handle}/",
         "full_name": handle.title(),
-        "title": "Head of Extraction",
-        "company": "Green Labs",
-        "reason": "makes its own oil",
+        "title": "Head of Roasting",
+        "company": "Harbour Roastery",
+        "reason": "roasts its own beans",
         "value": value,
         "value_reason": value_reason,
         "note": note,
-        "profile_text": f"{handle} head of extraction at green labs"
+        "profile_text": f"{handle} head of roasting at harbour roastery"
         if profile_text is None else profile_text,
-        "source_fields": {"contact_job_title": "Head of Extraction",
-                          "company_keywords": "cannabis, extraction"},
+        "source_fields": {"contact_job_title": "Head of Roasting",
+                          "company_keywords": "coffee, roasting"},
         "employees_min": 11,
         "employees_max": 50,
         **extra,
@@ -132,10 +132,10 @@ class TestLoad:
 
         lead = Lead.objects.get(profile_url=_url("ada"))
         assert lead.marked and not lead.synthetic
-        assert lead.profile_text == "ada head of extraction at green labs"
-        assert lead.source_fields["company_keywords"] == "cannabis, extraction"
-        assert lead.job_title == "Head of Extraction" and lead.full_name == "Ada"
-        assert (lead.company.name, lead.company.employees_max) == ("Green Labs", 50)
+        assert lead.profile_text == "ada head of roasting at harbour roastery"
+        assert lead.source_fields["company_keywords"] == "coffee, roasting"
+        assert lead.job_title == "Head of Roasting" and lead.full_name == "Ada"
+        assert (lead.company.name, lead.company.employees_max) == ("Harbour Roastery", 50)
         assert lead.embedding_array is not None
 
     def test_the_latest_mark_on_a_url_wins(self):

@@ -3,9 +3,9 @@
 
 ``min_gp_confidence`` is one bar read in two places — exploit judges only a lead
 clearing it, and the promote gate buys an address only for one. Keeping one bar for
-both is right. Leaving it a constant nobody measured was not: a 500-lead order held at
-0.7 judged 71 people in 17h24m with 21,134 in its pool, because 2 of them cleared it,
-while out of fold the leads scoring 0.4–0.7 fit 54–77% of the time.
+both is right. Leaving it a constant nobody measured was not: held at a fixed 0.7, a
+large pool can wait while almost none of it clears the bar, though out of fold the
+leads scoring well below it fit most of the time.
 
 **What the bar decides.** Every lead is judged before it ships, so the bar does not set
 the list's quality; it sets where the run's spend goes — its LLM bill and its machine
@@ -34,9 +34,8 @@ Choices worth knowing before changing anything:
 
 - **√N of the pool when the arm switches on, then closed.** Once a bar is measured the
   arm draws no more, however the pool grows. Reopening on growth let every round raise
-  the target: on batch 5 rounds of 200–400 mostly off-industry people took it from 40
-  to 53, and each new draw was a stranger judged at random while the bar stayed at
-  0.19–0.21.
+  the target: each round of mostly off-industry people raised √N, and each new draw was
+  a stranger judged at random while the bar did not move.
 - **Scores are out of fold, on the current model** — not the score at draw time. Early
   draws were scored by a GP many verdicts older, and the calibration verdicts themselves
   (mostly low-band rejections) move the scores the bar is compared against.

@@ -17,19 +17,19 @@ from tests.store_builders import US, make_lead
 @pytest.mark.django_db
 class TestPeople:
     def test_match_is_what_terms_matches_says_over_everyone(self):
-        make_lead("Purchasing Manager", "cannabis edibles, thc vape", "Ohio")
-        make_lead("Head of Procurement", "cannabis extraction", "California", seniority="head")
+        make_lead("Purchasing Manager", "specialty coffee, cold brew", "Ohio")
+        make_lead("Head of Procurement", "coffee roasting", "California", seniority="head")
         make_lead("Co-Founder", "e-commerce, food & beverage", "Ohio")
-        make_lead("Production Manager", "vapes", "Texas")
+        make_lead("Production Manager", "roasters", "Texas")
         searches = [
             Terms.written(title="manager"),
-            Terms.written(title="purchasing", tag="cannabis"),
-            Terms.written(title="procurement head", tag="cannabis extraction"),
+            Terms.written(title="purchasing", tag="coffee"),
+            Terms.written(title="procurement head", tag="coffee roasting"),
             Terms.written(title="cofounder", tag="food beverage"),
             Terms.written(title="founder", tag="e commerce", place=f"Ohio, {US}"),
             Terms.written(title="manager", place=f"Texas, {US}"),
             Terms.written(title="procurement", seniority="head", place=US),
-            Terms.written(title="manager", tag="edibles cannabis"),
+            Terms.written(title="manager", tag="coffee specialty"),
         ]
         people = People.load({})
         leads = list(Lead.objects.all())
@@ -60,35 +60,36 @@ class TestPeople:
 
     def test_a_hyphenated_title_offers_none_of_its_pieces(self):
         """`co` alone reaches co-owners and co-CEOs: 283,068 against 179,644 co-founders."""
-        both = {make_lead("Co-Founder & CEO", "cannabis edibles, food & beverage", "Ohio").pk,
-                make_lead("Founder", "cannabis", "Ohio").pk}
+        both = {make_lead("Co-Founder & CEO", "specialty coffee, food & beverage", "Ohio").pk,
+                make_lead("Founder", "coffee", "Ohio").pk}
 
         people = People.load({})
 
         assert people.title_vocabulary(both) == {"founder", "ceo"}
-        assert {("cannabis",), ("cannabis", "edibles"), ("food", "beverage")} <= (
+        assert {("coffee",), ("specialty", "coffee"), ("food", "beverage")} <= (
             people.tag_vocabulary(both))
         assert people.states_in("United States") == {"ohio"}
 
     def test_the_vocabulary_holds_whole_tags_and_a_phrase_inside_one_still_matches(self):
-        """`pre` from `pre-rolls` brought 6,512 founders of pre-seed funds and pre-k schools."""
-        held = make_lead("Founder", "pre-rolls, health care, cannabis extraction", "Ohio")
+        """`single` from `single-origin` would reach single-family offices and anything else
+        with a `single-` tag, so the vocabulary keeps the whole tag."""
+        held = make_lead("Founder", "single-origin, health care, coffee roasting", "Ohio")
 
         people = People.load({})
 
         assert people.tag_vocabulary({held.pk}) == {
-            ("pre", "rolls"), ("health", "care"), ("cannabis", "extraction")}
-        assert people.match(Terms.written(title="founder", tag="cannabis")) == {held.pk}
-        assert people.match(Terms.written(title="founder", tag="pre")) == {held.pk}
+            ("single", "origin"), ("health", "care"), ("coffee", "roasting")}
+        assert people.match(Terms.written(title="founder", tag="coffee")) == {held.pk}
+        assert people.match(Terms.written(title="founder", tag="single")) == {held.pk}
 
     def test_the_vocabulary_is_of_the_people_asked_for(self):
-        fit = make_lead("Extraction Lead", "live resin", "Ohio")
+        fit = make_lead("Roasting Lead", "green coffee", "Ohio")
         make_lead("Clerk", "insurance", "Ohio")
 
         people = People.load({})
 
-        assert people.title_vocabulary({fit.pk}) == {"extraction", "lead"}
-        assert people.tag_vocabulary({fit.pk}) == {("live", "resin")}
+        assert people.title_vocabulary({fit.pk}) == {"roasting", "lead"}
+        assert people.tag_vocabulary({fit.pk}) == {("green", "coffee")}
 
     def test_a_store_with_nobody_scored_reads_as_neutral(self):
         make_lead()

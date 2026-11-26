@@ -5,7 +5,7 @@ starts from.
 Before a search holds a keyword the belief knows nothing about it: every unknown lift read
 the market's rate, and every unknown size the store's share, which over-counts the words
 of the market the store was searched from (``retail`` was put at 338 people and the
-provider counted 103,785). A model reading the brief knows ``live resin`` is a cart buyer's
+provider counted 103,785). A model reading the brief knows ``green coffee`` is a roaster's
 tag and ``retail`` is not, and that ``manager`` is held by millions.
 
 **The guess is plain counts, over what a search runs on** (``COUNTS_MEAN``): the market is
@@ -43,10 +43,10 @@ logger = logging.getLogger(__name__)
 GIVEN = "--keyword-guesses"
 
 # What the counts are counted over, for whoever guesses them: the population a search runs
-# on, not the customer's market. Batch 6's session, handed the payload without it, read the
-# market as the customer's (60,000 people, `country|united states` at 60,000) and put
-# `processing` at 2,000 people and 110 fits: cannabis processors only. Its search counted
-# 61× what that implied, food and payments companies.
+# on, not the customer's market. A session handed the payload without it reads the market
+# as the customer's buyers alone, and puts a shared word like `processing` at the
+# customer's trade only, where its search counts many times that across food, payments
+# and every other trade.
 COUNTS_MEAN = (
     "The market is everyone on LinkedIn in the customer's country (or the states the rules "
     "name), at companies of any size and in any job, not only the customer's buyers: a "

@@ -31,13 +31,13 @@ from openoutfind.enrichment.bettercontact import BetterContactUnavailable
 
 POPULATION = WALK_CONFIG["population"]
 TITLES = ["founder", "purchasing", "procurement", "production", "operations", "buyer",
-          "extraction", "cultivation", "compliance", "quality", "sourcing", "supply",
-          "logistics", "packaging", "formulation"][:POPULATION]
+          "roasting", "roastery", "compliance", "quality", "sourcing", "supply",
+          "logistics", "packaging", "blending"][:POPULATION]
 
 
 def _population():
     return InitialPopulation(
-        searches=[{"title": title, "tag": "cannabis" if i % 2 else ""}
+        searches=[{"title": title, "tag": "coffee" if i % 2 else ""}
                   for i, title in enumerate(TITLES)],
         country="United States", country_code="us", headcount_min=1, headcount_max=50)
 
@@ -45,7 +45,7 @@ def _population():
 def _row(url, title, company):
     return {"contact_linkedin_profile_url": url, "contact_job_title": title,
             "contact_headline": f"{title} at {company}", "company_name": company,
-            "company_keywords": ["cannabis", "thc vape"],
+            "company_keywords": ["coffee", "cold brew"],
             "contact_location_country": "united states"}
 
 
@@ -83,14 +83,14 @@ class FakeLeadFinder:
 
 @pytest.fixture
 def site(db, configure):
-    configure(bettercontact_api_key="k", product_docs="cannabis packaging",
-              campaign_target="buyers at cannabis brands")
+    configure(bettercontact_api_key="k", product_docs="coffee packaging",
+              campaign_target="buyers at coffee roasters")
     return SiteConfig.load()
 
 
-ANCHORS = [Anchor(f"head of procurement cannabis {i}",
+ANCHORS = [Anchor(f"head of procurement coffee {i}",
                   {"contact_job_title": "head of procurement",
-                   "company_keywords": "cannabis extraction",
+                   "company_keywords": "coffee roasting",
                    "contact_location_country": "united states"})
            for i in range(ANCHOR_COUNT)]
 
@@ -135,8 +135,8 @@ class TestTheFirstRound:
         planned.assert_not_called()
 
     def test_it_writes_the_anchors_with_the_population(self, site):
-        """A store seeded with marks starts with fits, so it never ran cold — batch 5
-        had none."""
+        """A store seeded with marks starts with fits, so it never runs cold, and the anchors
+        are written all the same."""
         mark = Lead.objects.create(profile_url="https://linkedin.com/in/mark", marked=True)
         Deal.objects.create(lead=mark, state=DealState.QUALIFIED)
 
@@ -239,8 +239,8 @@ class TestTakingPagesIn:
         """A stored person's vector goes out as it is; a dropped row is embedded once."""
         from openoutfind.core.ml import embeddings
 
-        configure(bettercontact_api_key="k", product_docs="cannabis packaging",
-                  campaign_target="buyers at cannabis brands", contacts_api_token="tok")
+        configure(bettercontact_api_key="k", product_docs="coffee packaging",
+                  campaign_target="buyers at coffee roasters", contacts_api_token="tok")
         finder = FakeLeadFinder()
         shared = _row("https://linkedin.com/in/shared", "founder", "Shared")
         dropped = {"contact_linkedin_profile_url": "https://linkedin.com/in/forgotten",

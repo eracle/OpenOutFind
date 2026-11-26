@@ -116,9 +116,9 @@ def top_up(site_config, qualifier: BayesianQualifier) -> bool:
         # **Nothing clearing the bar is not evidence the pool is spent**, nor that a
         # search is the better move: it is a choice between two costs, measured on this
         # run (`judge_or_search`). Judging takes the best lead by P from the whole pool.
-        # Falling straight to discovery here cost a live install 14h33m with 3 real
-        # positives and a pool that topped out at P=0.37, so the rule judges a fresh
-        # pool before its first verdict is in.
+        # A cold posterior tops out low, so falling straight to discovery here would
+        # search for hours past a pool nobody judged; the rule judges a fresh pool
+        # before its first verdict is in.
         if candidates and decide(qualifier, candidates):
             return run_qualification(site_config, qualifier, candidates=candidates) is not None
         # A fired round is the work, however much of it we had already seen. Reading

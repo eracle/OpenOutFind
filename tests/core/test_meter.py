@@ -45,7 +45,7 @@ class TestMeter:
 
 
 def _candidate(url="https://www.linkedin.com/in/alice/"):
-    return Lead.objects.create(profile_url=url, profile_text="extraction lead",
+    return Lead.objects.create(profile_url=url, profile_text="roasting lead",
                                embedding=np.ones(384, dtype=np.float32).tobytes())
 
 
@@ -80,7 +80,7 @@ class TestVerdictMeasurements:
         assert meter.totals(meter.POOL_FIT) == (0.0, 1)
 
     def test_a_session_left_waiting_is_not_a_verdicts_time(self, site_config):
-        """Batch 5's first measured agent verdict had waited 1h46m on a stopped session."""
+        """An answer after the calling session stopped measures the wait, not a verdict."""
         _pending_for(2 * 3600)
 
         run_qualification(site_config, BayesianQualifier(seed=42))

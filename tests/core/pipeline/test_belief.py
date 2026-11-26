@@ -3,9 +3,7 @@
 a draw."""
 from __future__ import annotations
 
-import json
 import math
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -16,29 +14,13 @@ from openoutfind.core.pipeline.store_snapshot import People, fired_searches
 from openoutfind.core.pipeline.terms import Terms
 from tests.store_builders import US, fire, make_company, make_lead
 
-BATCH_6 = Path(__file__).parents[2] / "fixtures" / "batch6_belief.json"
-FIELD = {"title": "title", "tag": "tag", "seniority": "seniority", "state": "place",
-         "country": "place"}
-
-
-def batch_6_inputs(searches: int | None = None) -> belief.Inputs:
-    """Batch 6's first ``searches`` fired searches as the model reads them."""
-    raw = json.loads(BATCH_6.read_text())
-    fired = raw["searches"][:searches]
-    keywords = tuple(sorted({k for s in fired for k in s["keywords"]}))
-    column = {k: j for j, k in enumerate(keywords)}
-    member = np.zeros((len(fired), len(keywords)))
-    fields = np.zeros((len(fired), len(belief.FIELDS)))
-    for i, s in enumerate(fired):
-        for keyword in s["keywords"]:
-            member[i, column[keyword]] = 1.0
-            fields[i, belief.FIELDS.index(FIELD[keyword.split("|")[0]])] += 1.0
+def no_fired_search() -> belief.Inputs:
+    """A store that has fired nothing: no keyword, no count, no verdict."""
     return belief.Inputs(
-        keywords=keywords, searches=tuple(f"s{i}" for i in range(len(fired))), member=member,
-        fields=fields, log_share=np.array([raw["store_log_share"][k] for k in keywords]),
-        centre=np.zeros(len(keywords)), counted=np.arange(len(fired)), counts=np.array([s["found"] for s in fired], float),
-        fits=np.array([s["fits"] for s in fired]), misses=np.array([s["misses"] for s in fired]),
-        market_log_odds=belief.log_odds(raw["store_rate"]))
+        keywords=(), searches=(), member=np.zeros((0, 0)),
+        fields=np.zeros((0, len(belief.FIELDS))), log_share=np.zeros(0), centre=np.zeros(0),
+        counted=np.arange(0), counts=np.zeros(0), fits=np.zeros(0), misses=np.zeros(0),
+        market_log_odds=belief.log_odds(0.1))
 
 
 def make_beliefs(rates, judged=(), fired=(), store_rate=0.5):
@@ -54,17 +36,8 @@ def counted_beliefs():
 
 
 class TestTheSampler:
-    def test_batch_6_reads_its_market_rate(self):
-        """The Newton fit this replaced stopped at α = +17.86 on batch 6, and read every arm
-        at θ = 1. Its first 8 searches (≈10 fits in 117 verdicts) compile at the same size
-        as every other test here; all 23 cost a second compile, ~15 s, for the same check."""
-        posterior = belief.sample_posterior(batch_6_inputs(8))
-
-        assert posterior.draws == belief.CHAINS * belief.DRAWS
-        assert 0.005 < belief.sigmoid(posterior.alpha).mean() < 0.15
-
     def test_with_no_fired_search_the_belief_is_the_prior(self):
-        posterior = belief.sample_posterior(batch_6_inputs(0))
+        posterior = belief.sample_posterior(no_fired_search())
 
         assert posterior.log_market.mean() == pytest.approx(math.log(belief.MARKET_PEOPLE),
                                                             abs=0.2)
@@ -87,7 +60,8 @@ def two_guessed_searches(found: tuple[int, int]) -> belief.Inputs:
 
 class TestTheSizeAndTheRate:
     def test_a_count_far_above_its_guess_lowers_the_rate_before_any_verdict(self):
-        """Batch 6: `processing`, guessed at cannabis processors only, counted 61× that."""
+        """A keyword guessed at one trade's people that counts many times that is wider than
+        the trade, so its rate falls before anyone on its page is judged."""
         lift = belief.sample_posterior(two_guessed_searches((100, 5_000))).lift.mean(axis=0)
 
         assert lift[1] < lift[0] - 1.0
@@ -118,8 +92,8 @@ class TestTheFitRate:
         assert lifts[("title", "founder")] > 0.0 > lifts[("title", "clerk")]
 
     def test_the_markets_rate_is_learned_from_what_searches_brought_never_the_store(self):
-        """Batch 6 read every unknown keyword at the store's 0.21, its marks' rate; the pages
-        it brought held 2 fits in 16 verdicts."""
+        """The store's rate is its marks' rate; the pages searches bring are the market's, and
+        an unknown keyword reads theirs."""
         page = [make_lead("Founder", company=make_company(f"c{i}"), verdict=0) for i in range(16)]
         terms = Terms.written(title="founder")
         fire(terms, page, found=5000)
@@ -192,7 +166,7 @@ class TestTheDraw:
 @pytest.mark.django_db
 class TestTheEvidence:
     def test_an_unjudged_person_counts_by_the_gps_confidence_at_them(self):
-        """Batch 6: 780 strangers at confidence ~0.05 read the market's rate whoever they were."""
+        """A stranger the GP knows nothing about reads the market's rate whoever they are."""
         sure, unsure = make_lead(company=make_company("a")), make_lead(company=make_company("b"))
         people = People.load({sure.pk: 0.8, unsure.pk: 0.8}, {sure.pk: 1.0, unsure.pk: 0.0})
 
@@ -283,7 +257,7 @@ class TestTheSizes:
 
     def test_no_keyword_draws_more_than_the_market(self):
         beliefs = counted_beliefs()
-        keywords = [("title", "purchasing"), ("title", "founder"), ("tag", ("thc", "vape"))]
+        keywords = [("title", "purchasing"), ("title", "founder"), ("tag", ("cold", "brew"))]
 
         for number in range(200):
             assert max(beliefs.shares(keywords, beliefs.draw_sizes(number)).values()) <= 0.0

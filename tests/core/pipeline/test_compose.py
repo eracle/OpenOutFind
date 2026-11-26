@@ -24,7 +24,7 @@ def _worth(lift, share):
     return theta * new / (5.0 + 0.05 * new)
 
 
-def _vocabulary(titles=("founder",), tags=(("cannabis",),), seniorities=(), places=()):
+def _vocabulary(titles=("founder",), tags=(("coffee",),), seniorities=(), places=()):
     return Vocabulary(tuple(("title", w) for w in titles), tuple(("tag", t) for t in tags),
                       tuple(("seniority", s) for s in seniorities), tuple(places))
 
@@ -54,8 +54,8 @@ class TestCompose:
         """Six title words, three tags, two seniorities, three places: 3,276 searches."""
         rng = np.random.default_rng(7)
         vocabulary = _vocabulary(
-            titles=("founder", "owner", "extraction", "production", "manager", "lab"),
-            tags=(("cannabis",), ("thc", "vape"), ("food",)),
+            titles=("founder", "owner", "roasting", "production", "manager", "lab"),
+            tags=(("coffee",), ("cold", "brew"), ("food",)),
             seniorities=("founder", "director"),
             places=(("country", US), ("state", "ohio", US), ("state", "texas", US)))
         for draw in range(20):
@@ -69,7 +69,7 @@ class TestCompose:
             assert got == pytest.approx(truth, rel=0.05), draw
 
     def test_every_search_holds_a_title_and_one_tag_and_the_place(self):
-        vocabulary = _vocabulary(titles=("founder", "owner"), tags=(("cannabis",), ("vapes",)),
+        vocabulary = _vocabulary(titles=("founder", "owner"), tags=(("coffee",), ("roasters",)),
                                  places=(("state", "ohio", US),))
         lift = dict.fromkeys(vocabulary.keywords(), 0.5)
         share = dict.fromkeys(vocabulary.keywords(), -1.0)
@@ -82,7 +82,7 @@ class TestCompose:
 
     def test_a_word_that_lowers_the_rate_ranks_below_the_search_without_it(self):
         vocabulary = _vocabulary(titles=("founder", "clerk"))
-        lift = {("title", "founder"): 2.0, ("title", "clerk"): -2.0, ("tag", ("cannabis",)): 0.0}
+        lift = {("title", "founder"): 2.0, ("title", "clerk"): -2.0, ("tag", ("coffee",)): 0.0}
         share = dict.fromkeys(vocabulary.keywords(), -1.0)
 
         titles = [s.title for s in compose.compose(vocabulary, lift, share, LOG_MARKET,
@@ -95,7 +95,7 @@ class TestCompose:
         vocabulary = _vocabulary(titles=("founder", "owner"))
         lift = dict.fromkeys(vocabulary.keywords(), 3.0)
         share = {("title", "founder"): -8.0, ("title", "owner"): -8.0,
-                 ("tag", ("cannabis",)): -1.0}
+                 ("tag", ("coffee",)): -1.0}
 
         searches = compose.compose(vocabulary, lift, share, LOG_MARKET, _worth, limit=10)
 
@@ -103,7 +103,7 @@ class TestCompose:
                                                           frozenset({"owner"})}
 
     def test_no_search_holds_a_seniority_its_title_word_names(self):
-        """Batch 6: 19 of 23 searches held title and seniority `founder`, one keyword twice."""
+        """Title and seniority `founder` are near one keyword: holding both counts it twice."""
         vocabulary = _vocabulary(titles=("founder", "ceo"), seniorities=("founder", "owner"))
         lift = dict.fromkeys(vocabulary.keywords(), 1.0)
         share = dict.fromkeys(vocabulary.keywords(), -1.0)
@@ -118,12 +118,12 @@ class TestCompose:
         assert compose.compose(_vocabulary(tags=()), {}, {}, LOG_MARKET, _worth, 10) == []
 
     def test_a_composed_search_reads_back_as_its_keywords(self):
-        keywords = (("title", "head"), ("title", "procurement"), ("tag", ("cannabis", "extraction")),
+        keywords = (("title", "head"), ("title", "procurement"), ("tag", ("coffee", "roasting")),
                     ("seniority", "director"), ("state", "new york", US))
 
         terms = compose.as_terms(keywords)
 
         assert terms == Terms(title=frozenset({"head", "procurement"}),
-                              tag=("cannabis", "extraction"), place="New York, United States",
+                              tag=("coffee", "roasting"), place="New York, United States",
                               seniority="director")
         assert set(query_keywords(terms)) == set(keywords)

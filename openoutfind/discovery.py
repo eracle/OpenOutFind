@@ -52,25 +52,23 @@ LEAD_SENIORITIES = get_args(Seniority)
 #   Finance — §3). An axis with no token source is dead weight.
 # - ``company_industry`` — real and steering, but it adds little on top of
 #   ``company_keywords``. It is LinkedIn's closed industry list matched on exact value
-#   *and case* (``Alternative Medicine`` 14,748, ``alternative medicine`` 0). Added to a
-#   company-word + title query it kept 57 of 197 rows for one more on-target company,
-#   and on its own it lets in neighbours (supplement and wellness shops for a cannabis
-#   buyer). See ``p1-e1-discovery-searches-the-buyers-company``.
+#   *and case* (the capitalised label matches, its lowercase form 0). Added to a
+#   company-word + title query it cut most of the rows for one more on-target company,
+#   and on its own it lets in neighbours (the companies filed under the same broad label
+#   that do not buy). See ``p1-e1-discovery-searches-the-buyers-company``.
 #
 # ``company_keywords`` is the company axis: the provider's tag list for the employer
-# (``cannabis``, ``thc vape``, ``cannabis extraction and processing``), which is what
+# (``coffee``, ``cold brew``, ``coffee roasting and packaging``), which is what
 # the filter matches — ``company_description`` is the same field under a second name
-# (identical counts), and ``company_name`` is ignored like ``lead_industry``. Measured
-# against US rows at 2–1,000 staff with a nonsense control (0):
+# (identical counts), and ``company_name`` is ignored like ``lead_industry``. Against a
+# nonsense control (0), a market word as a job title finds a sliver of the people who
+# work at companies tagged with it; the tag finds far more; a title narrows the tag to
+# a page's worth; and two words inside a tag behave as a phrase, not an AND:
 #
-#     lead_job_title   ["cannabis"]                         1,007
-#     company_keywords ["cannabis"]                        63,599
-#     company_keywords ["cannabis"] + title "purchasing"      197
-#     company_keywords ["cannabis vape"]                      269
-#     company_keywords ["vape cannabis"]                        2   ← order matters
+#     company_keywords ["coffee roasting"]   matches the phrase
+#     company_keywords ["roasting coffee"]   next to nothing   ← order matters
 #
-# Two words inside it behave as a phrase, not an AND. And a company tag is never fired
-# without a title (``query.Terms.is_legal``): alone, the provider pages one company's
+# A company tag is never fired without a title (``query.Terms.is_legal``): alone, the provider pages one company's
 # whole staff at a time; with a title, a page spreads over 59–77 companies.
 #
 # **No field takes Elasticsearch's query-string syntax.** ``AND``, ``OR``, ``+``,
@@ -83,26 +81,25 @@ LEAD_SENIORITIES = get_args(Seniority)
 #         "production"  49,004 · "producti*" 0 · "producti" 0
 #     company_keywords (= company_description) — match_phrase inside one tag:
 #     adjacent, in order, case-insensitive, punctuation stripped, stopwords kept
-#         "cannabis" 24,420 · "vapes" 1,505
-#         "cannabis vapes" = "\"cannabis vapes\"" = "+cannabis +vapes"
-#           = "cannabis, vapes" = "cannabis && vapes"                       76
-#         "vapes cannabis" · "cannabis and vapes" · "cannabis AND vapes"
-#           · "cannabis OR vapes" · "cannab*"                                0
+#         "coffee roasters" = "\"coffee roasters\"" = "+coffee +roasters"
+#           = "coffee, roasters" = "coffee && roasters"     the same count
+#         "roasters coffee" · "coffee and roasters" · "coffee AND roasters"
+#           · "coffee OR roasters" · "coff*"                                 0
 #     lead_location — "state, country", parsed, case-insensitive, country required
 #         "New Jersey, United States" = "new jersey, united states"    170,688
 #         "New Jersey" 0 · "United States, New Jersey" 0
 #     lead_seniority, company_industry — a whole value from a closed list
 #         seniority "director" = "Director" 681,108 · "direct" 0
-#         industry "Alternative Medicine" 7,484 · "alternative medicine" 0
-#           · "Alternative" 0 · any value with exact_match off 0
+#         industry "Food and Beverage Manufacturing" matches ·
+#           "food and beverage manufacturing" 0 · "Food" 0 · any value with exact_match
+#           off 0
 #
 # **Nothing is stemmed, and the two free-text fields analyse differently.** Every word
 # form is its own term, so the form a profile carries is the one to search:
 #
 #     title "manager" 1,140,870 · "managers" 231 · "management" 57,430 · "manag" 14
 #     title "founder" 474,609 · "founders" 281 · "founding" 28,809
-#     tag   "vape" 2,282 · "vapes" 1,505 · "vaping" 1,112
-#     tag   "extraction" 13,406 · "extract" 5,683 · "extracts" 4,218
+#     tag   "roaster" · "roasters" · "roasting" — three terms, three different counts
 #
 # A title drops stopwords; a tag keeps them as words of its phrase. A hyphen splits a
 # title word and also matches the joined form; in a tag it only splits:
@@ -115,9 +112,9 @@ LEAD_SENIORITIES = get_args(Seniority)
 #     tag   "e-commerce" = "e commerce" 215,694 · "ecommerce" 104,267
 #
 # Two entries in one include list OR on every field (seniority ["director", "founder"]
-# 1,142,493; tags ["cannabis", "vapes"] 24,760), and so does naming one field under
-# both of its keys (``company_keywords`` "cannabis" + ``company_description`` "vapes"
-# 24,760). So two company tags cannot be ANDed by any query: the provider can be asked
+# 1,142,493; tags ["coffee", "roasters"] counts the companies holding either), and so
+# does naming one field under both of its keys (``company_keywords`` "coffee" +
+# ``company_description`` "roasters", the same count). So two company tags cannot be ANDed by any query: the provider can be asked
 # for one tag word, or one phrase a company's tag list actually holds.
 #
 # The field names are the contract; the terms are search values. An unknown *key*

@@ -9,7 +9,7 @@ from openoutfind.crm.models import Company, Deal, DealState, Lead, Outcome
 US = "United States"
 
 
-def make_lead(title="Purchasing Manager", tags="cannabis, thc vape", state="Ohio",
+def make_lead(title="Purchasing Manager", tags="coffee, cold brew", state="Ohio",
               company=None, verdict=None, seniority=""):
     """A US person; ``verdict`` 1 or 0 judges them a fit or not."""
     lead = Lead.objects.create(

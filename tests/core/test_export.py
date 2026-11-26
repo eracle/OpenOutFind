@@ -155,8 +155,7 @@ class TestLeadRecords:
 
         An LLM rejection is `FAILED` + `wrong_fit`, site_config-scoped — it does **not**
         set `Lead.disqualified`, which is the permanent account-level exclusion. Filtering
-        on `disqualified` alone exported 1,944 rows from a site_config where most deals were
-        rejections, with `reason` reading "does not align well with the target market".
+        on `disqualified` alone exports every rejection of a site_config, each with `reason` reading "does not align well with the target market".
         """
         _deal(site_config)
         DealFactory(lead=_lead(), state=DealState.FAILED,

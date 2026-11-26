@@ -172,8 +172,8 @@ def compose(vocabulary: Vocabulary, lift: dict, share: dict, log_market: float,
 
 def _names_its_title(parts, seniority: Keyword) -> bool:
     """Whether ``seniority`` is a title word ``parts`` already hold: title `founder` and
-    seniority `founder` are near one keyword, and 19 of batch 6's 23 searches held both,
-    doubling the `founder` lift into the sum."""
+    seniority `founder` are near one keyword, and a search holding both would count the
+    `founder` lift into the sum twice."""
     return ("title", seniority[1]) in parts
 
 

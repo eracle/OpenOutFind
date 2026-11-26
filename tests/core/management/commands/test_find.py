@@ -345,7 +345,7 @@ class TestTheCommandContract:
         from openoutfind.core.pipeline.qualify import KeywordGuessPending
 
         pending = KeywordGuessPending("2 keyword(s) have no guess yet", payload={
-            "fields": {"tag": {"keywords": ["tag|live resin", "tag|rosin"]}},
+            "fields": {"tag": {"keywords": ["tag|green coffee", "tag|espresso"]}},
             "schema": {"title": "KeywordGuesses"}})
 
         with patch("openoutfind.core.cycle.run_one_action", side_effect=pending), \
@@ -354,7 +354,7 @@ class TestTheCommandContract:
                 call_command("find", "1", "--agent-qualify", stdout=io.StringIO())
 
         assert exc.value.error_type == ErrorType.KEYWORD_GUESS_PENDING
-        assert "tag|live resin, tag|rosin" in caplog.text
+        assert "tag|green coffee, tag|espresso" in caplog.text
         assert '"title": "KeywordGuesses"' in caplog.text
 
     def test_other_stops_show_no_candidate(self, site_config, booted, caplog):

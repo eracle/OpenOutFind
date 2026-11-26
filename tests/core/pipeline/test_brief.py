@@ -100,19 +100,19 @@ class TestPrompts:
 
     def test_the_verdict_prompt_labels_the_person(self):
         prompt = self._render("qualify_lead.j2", rules="", person={
-            "title": "Vice president finance", "company": "Nug", "location": "California",
-            "company_tags": "carts, flower vapes",
-            "profile_text": "manufacturing vice president finance nug president/vice president",
+            "title": "Vice president finance", "company": "Brewline", "location": "California",
+            "company_tags": "espresso machines, grinders",
+            "profile_text": "manufacturing vice president finance brewline president/vice president",
         })
 
         assert "- **Title:** Vice president finance" in prompt
-        assert "- **Company:** Nug" in prompt
-        assert "- **Company tags:** carts, flower vapes" in prompt
+        assert "- **Company:** Brewline" in prompt
+        assert "- **Company tags:** espresso machines, grinders" in prompt
         assert "never part of a job title" in prompt
 
     def test_the_verdict_prompt_shows_the_company_size(self):
         prompt = self._render("qualify_lead.j2", rules="", person={
-            "company": "Nug", "company_size": "51–200 employees (LinkedIn)",
+            "company": "Brewline", "company_size": "51–200 employees (LinkedIn)",
             "profile_text": "baker"})
 
         assert "- **Company size:** 51–200 employees (LinkedIn)" in prompt
@@ -165,22 +165,22 @@ class TestVerdictFields:
         from openoutfind.crm.models import Company, Lead
 
         lead = Lead.objects.create(
-            profile_url="https://www.linkedin.com/in/viktoria/",
-            profile_text="manufacturing vice president finance nug",
+            profile_url="https://www.linkedin.com/in/jane-doe/",
+            profile_text="manufacturing vice president finance brewline",
             job_title="Vice president finance",
-            company=Company.from_row("Nug", None, employees_min=51, employees_max=200),
+            company=Company.from_row("Brewline", None, employees_min=51, employees_max=200),
             source_fields={"contact_location_state": "California",
                            "contact_location_country": "United states",
-                           "company_keywords": "carts, flower vapes"})
+                           "company_keywords": "espresso machines, grinders"})
 
         assert verdict_fields(lead) == {
-            "title": "Vice president finance", "company": "Nug",
+            "title": "Vice president finance", "company": "Brewline",
             "company_size": "51–200 employees (LinkedIn)",
-            "location": "California, United states", "company_tags": "carts, flower vapes",
-            "profile_text": "manufacturing vice president finance nug",
+            "location": "California, United states", "company_tags": "espresso machines, grinders",
+            "profile_text": "manufacturing vice president finance brewline",
         }
         payload = _candidate_payload(lead)
-        assert payload["company_tags"] == "carts, flower vapes"
+        assert payload["company_tags"] == "espresso machines, grinders"
         assert payload["company_size"] == "51–200 employees (LinkedIn)"
 
     def test_a_lead_with_nothing_stored_apart_still_has_its_profile_text(self):

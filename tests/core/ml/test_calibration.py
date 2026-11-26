@@ -70,7 +70,7 @@ def test_the_arm_stops_at_root_n():
 
 @pytest.mark.django_db
 def test_once_a_bar_is_measured_pool_growth_does_not_reopen_the_arm():
-    """Batch 5: each round's off-industry people raised √N, 40 → 53 random draws."""
+    """Each round of off-industry people raises √N; a measured bar is not reopened by it."""
     from openoutfind.core.models import CalibrationBar
 
     for i in range(40):
@@ -388,7 +388,7 @@ def test_the_arm_judges_a_calibration_lead_before_an_exploit_pick(site_config):
 
 @pytest.mark.django_db
 def test_exploit_judges_above_a_measured_bar_instead_of_searching(site_config):
-    """The held order: 0.7 cleared 2 leads of 21,134, so every pass searched."""
+    """A fixed bar almost no lead clears leaves every pass searching; a measured one judges."""
     CalibrationBar.objects.create(threshold=0.45, break_even=0.1, n_verdicts=145)
     qualifier = _exploiting_qualifier()
 

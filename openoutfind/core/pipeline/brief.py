@@ -2,10 +2,10 @@
 
 The customer's words (``product_docs``, ``campaign_target``) come in through the
 environment and are never rewritten. What we conclude from them used to live nowhere a
-model could read: the qualifier got the two paragraphs and a generic checklist, and on
-the first 500-lead order a third of its fits broke rules a person would have applied —
-hardware suppliers accepted as buyers, edibles-only brands, finance and sales roles the
-target never named.
+model could read: the qualifier got the two paragraphs and a generic checklist, and many
+of its fits broke rules a person would have applied — suppliers accepted as buyers,
+brands outside the product the customer serves, finance and sales roles the target never
+named.
 
 So the reading is one stored row (``core.models.Brief``), rendered beside the customer's
 text into the seed, the anchors and every verdict. It is written by ``AI_MODEL`` the first

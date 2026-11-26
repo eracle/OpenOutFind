@@ -20,7 +20,6 @@ tests/
 │                          #   and the operator / configure / site_config fixtures
 ├── factories.py           # factory-boy factories, and exportable_deal()
 ├── store_builders.py      # people, companies, verdicts and fired searches for a walk's store
-├── fixtures/              # batch 6's searches, as the belief reads them
 ├── test_main.py           # the entry point: --db, and the overview a bare call prints
 ├── test_defaults.py       # the state dir and what a host must splat
 ├── test_discovery.py      # Lead Finder search, rows into leads and companies

@@ -151,8 +151,8 @@ class People:
         return {word for pk in among for word in self.titles_of.get(pk, ())}
 
     def tag_vocabulary(self, among: set[int]) -> set[tuple[str, ...]]:
-        """Every whole tag ``among`` hold, never a phrase inside one (``pre`` from
-        ``pre-rolls`` reached founders of pre-seed funds) and never stopwords alone."""
+        """Every whole tag ``among`` hold, never a phrase inside one (``single`` from
+        ``single-origin`` reaches founders of single-family offices) and never stopwords alone."""
         return {tag for pk in among for tag in self.tags_of.get(pk, ())
                 if not is_stopword_phrase(tag)}
 

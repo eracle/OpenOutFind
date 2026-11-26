@@ -392,14 +392,14 @@ class TestShareProfiles:
 # ── companies: each page's employers, given back ─────────────────────
 
 
-def _company_row(url="https://www.linkedin.com/company/verano-holdings", **over):
+def _company_row(url="https://www.linkedin.com/company/northside-roasters", **over):
     company = {
         "company_linkedin_url": url,
-        "company_name": "Verano",
-        "company_domain": "verano.com",
-        "company_industry": "Alternative Medicine",
-        "company_keywords": ["cannabis", "alternative medicine"],
-        "company_description": "A vertically integrated multi-state cannabis operator.",
+        "company_name": "Northside Roasters",
+        "company_domain": "northsideroasters.com",
+        "company_industry": "Food and Beverage Manufacturing",
+        "company_keywords": ["specialty coffee", "food & beverages"],
+        "company_description": "A vertically integrated multi-state specialty coffee roaster.",
         "company_employees_range_start": 1001,
         "company_employees_range_end": 5000,
         "company_head_quarters_country": "United States",
@@ -429,18 +429,18 @@ class TestShareCompanies:
 
     def test_a_page_is_one_request_with_one_record_per_company(self):
         _config(token="tok")
-        other = "https://www.linkedin.com/company/connected-cannabis-co"
+        other = "https://www.linkedin.com/company/harbour-coffee-co"
         post = self._share([_company_row(), _company_row(), _company_row(url=other)])
         post.assert_called_once()
         assert post.call_args.args[0].endswith("/api/v2/companies/")
         urls = [r["linkedin_url"] for r in post.call_args.kwargs["json"]["companies"]]
-        assert urls == ["https://www.linkedin.com/company/verano-holdings", other]
+        assert urls == ["https://www.linkedin.com/company/northside-roasters", other]
 
     def test_a_record_is_the_company_alone_with_its_text_and_size(self):
         _config(token="tok")
         record = self._share([_company_row()]).call_args.kwargs["json"]["companies"][0]
         fields = record["fields"]
-        assert fields["company_keywords"] == "cannabis, alternative medicine"
+        assert fields["company_keywords"] == "specialty coffee, food & beverages"
         assert fields["company_description"].startswith("A vertically integrated")
         assert fields["company_employees_range_end"] == "5000"
         assert not any(key.startswith("contact_") for key in fields)
@@ -456,7 +456,8 @@ class TestShareCompanies:
             self._share([row])
         expected = company_text_for(company_records([row])[0]["fields"])
         embed.assert_called_once_with([expected])
-        assert expected.startswith("verano alternative medicine cannabis")
+        assert expected.startswith(
+            "northside roasters food and beverage manufacturing specialty coffee")
 
     def test_a_placeholder_employer_or_no_company_page_is_not_sent(self):
         _config(token="tok")

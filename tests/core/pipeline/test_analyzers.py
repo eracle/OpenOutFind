@@ -94,16 +94,17 @@ class TestTagAnalyzer:
         assert phrase_words("Agence Immobilière") == ("agence", "immobilière")
 
     def test_a_phrase_is_adjacent_and_in_order(self):
-        """`cannabis vapes` 76, `vapes cannabis` 0."""
-        tag = ("cannabis", "vapes", "and", "edibles")
-        assert holds_phrase(tag, ("cannabis", "vapes"))
-        assert not holds_phrase(tag, ("vapes", "cannabis"))
-        assert not holds_phrase(tag, ("cannabis", "edibles"))
+        """`coffee roasters` is held, `roasters coffee` is not."""
+        tag = ("coffee", "roasters", "and", "espresso")
+        assert holds_phrase(tag, ("coffee", "roasters"))
+        assert not holds_phrase(tag, ("roasters", "coffee"))
+        assert not holds_phrase(tag, ("coffee", "espresso"))
 
     def test_a_tag_list_is_split_on_commas(self):
-        assert company_tags("cannabis, thc vape, ") == [("cannabis",), ("thc", "vape")]
+        assert company_tags("coffee, cold brew, ") == [("coffee",), ("cold", "brew")]
 
     def test_a_tag_search_matches_every_phrase_inside_a_tag(self):
-        """`pre` matches `pre-rolls`, and `pre-seed venture capital` with it."""
-        assert set(sub_phrases(("pre", "rolls"))) == {("pre",), ("rolls",), ("pre", "rolls")}
+        """`single` matches `single-origin`, and `single-family office` with it."""
+        assert set(sub_phrases(("single", "origin"))) == {
+            ("single",), ("origin",), ("single", "origin")}
         assert sub_phrases(()) == []

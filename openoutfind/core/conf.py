@@ -91,9 +91,9 @@ CAMPAIGN_CONFIG = {
     # lowest score where a verdict pays more than a search would. `min_gp_confidence`
     # stays the fallback until then.
     #
-    # Why: a 500-lead order held at 0.7 judged 71 people in 17h24m while 21,134 sat in its
-    # pool — 2 of them cleared 0.7, though leads at 0.4–0.7 fit 54–77% of the time out of
-    # fold. See the roadmap card `p1-e1-the-bar-is-measured-on-a-stratified-sample`.
+    # Why: a fixed 0.7 is a constant nobody measured. A cold GP tops out low, so a fixed
+    # bar can leave a large pool waiting with almost nothing clearing it, while out of fold
+    # the leads scoring well below it fit most of the time. See the roadmap card `p1-e1-the-bar-is-measured-on-a-stratified-sample`.
     #
     # The two costs the rule weighs, in dollars: run time priced at `run_hour_dollars`,
     # plus what the step itself is billed. The same two costs drive `judge_or_search`,
@@ -110,13 +110,13 @@ CAMPAIGN_CONFIG = {
     # free: Lead Finder bills nothing.
     #
     # A verdict is one candidate judged: a few seconds and an LLM call for a model, and
-    # ~40 s for a calling agent under --agent-qualify (178 verdicts in 1h49m on the same
-    # store), whose turn re-reads its context: a few cents. The bill is not measured: it
+    # ~40 s for a calling agent under --agent-qualify, whose turn re-reads its context: a
+    # few cents. The bill is not measured: it
     # is the tokens below at the model's rates, or `verdict_dollars_agent`.
     #
     # A model's call is priced from the model that makes it (`MODEL_PRICES` below) times
-    # the tokens one verdict reads and writes, measured over 20 verdicts on the held
-    # order with its ~450-word brief: ~2,760 read (the customer's two texts, the brief,
+    # the tokens one verdict reads and writes, measured over 20 verdicts with a
+    # ~450-word brief: ~2,760 read (the customer's two texts, the brief,
     # the profile, the instructions and the answer's schema), and 112 written on Sonnet
     # 5.5 against 389 on Haiku 5.5, which thinks before it answers. So Haiku 5.5 pays
     # ~$0.0004 a verdict, Sonnet 5.5 ~$0.006, Opus 5.5 ~$0.012, and the bar rises with
@@ -127,7 +127,7 @@ CAMPAIGN_CONFIG = {
     # its own — runs are independent, so the machine's hours are the only cost time has: a
     # DigitalOcean Basic droplet, 1 vCPU / 2 GiB, $12/month = $0.01786/h
     # (digitalocean.com/pricing/droplets, 2026-10-16). The heaviest pass measured —
-    # re-measuring the bar on a 21k-lead store, five GP fits and the pool scored — peaked at
+    # re-measuring the bar on a store of tens of thousands of leads, five GP fits and the pool scored — peaked at
     # 824 MB resident, so 1 GiB is too tight once an OS sits underneath and 2 GiB is not. At
     # this price time is nearly free next to an LLM's bill, so the bill decides the bar.
     "run_hour_dollars": 0.01786,
@@ -136,8 +136,8 @@ CAMPAIGN_CONFIG = {
     "verdict_seconds_model": 5,
     "verdict_seconds_agent": 40,
     # An agent's verdict longer than this is not measured: the candidate waited on a
-    # session that had stopped, not on a verdict. Batch 5's first measured one had waited
-    # 1h46m, and the plain running mean would have carried it for the rest of the store.
+    # session that had stopped, not on a verdict. One such wait of an hour or more would
+    # otherwise ride the plain running mean for the rest of the store.
     "verdict_seconds_agent_max": 600,
     "verdict_input_tokens": 2800,
     "verdict_output_tokens": 300,

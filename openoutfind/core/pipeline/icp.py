@@ -6,8 +6,8 @@ before any lead has been judged, and the engine needs them expressed two ways:
 
 - ``write_initial_population`` — the ICP as **searches**: the walk's whole first round,
   written by the model as whole searches rather than drawn at random. "A head
-  of procurement at a cannabis extraction company in California" is ``{title: head,
-  procurement; tag: cannabis extraction; place: California, United States}``: the model
+  of procurement at a coffee roasting company in California" is ``{title: head,
+  procurement; tag: coffee roasting; place: California, United States}``: the model
   knows which words go together, a title loses nothing by being a set of words (order and
   stopwords are ignored), and a tag phrase is kept whole, as the provider matches it.
   The answer also carries the **shape** every search rides — the size band and the market.
@@ -64,7 +64,7 @@ class WrittenSearch(BaseModel):
     tag: str = Field(
         default="",
         description="At most one phrase the company's own LinkedIn tags hold — "
-                    "'cannabis', 'thc vape', 'cannabis extraction' — or empty for any "
+                    "'coffee', 'cold brew', 'coffee roasting' — or empty for any "
                     "company. Its words must sit together, in order, inside one tag.",
     )
     state: str = Field(
@@ -207,7 +207,7 @@ class _AnchorProfile(BaseModel):
         default="",
         description="The tags LinkedIn would give this lead's company, lowercase and "
                     "comma separated — what it does, sells and makes, never the "
-                    "company's name — e.g. 'cannabis, thc vape, cannabis extraction'.",
+                    "company's name — e.g. 'coffee, cold brew, coffee roasting'.",
     )
 
 
@@ -315,7 +315,7 @@ FIELD_TYPES = {
     "title": "words, every one required in the job title, any order; stopwords ignored; "
              "nothing stemmed (manager ≠ managers)",
     "tag": "one phrase inside one of the company's LinkedIn tags: adjacent, in order, "
-           "nothing stemmed (vape ≠ vapes); never without a title",
+           "nothing stemmed (roaster ≠ roasters); never without a title",
     "state": "a state or region inside the market country, or empty for all of it",
     "seniority": "one value from the closed list, or null",
 }

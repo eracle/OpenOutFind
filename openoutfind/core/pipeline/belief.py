@@ -18,9 +18,9 @@ compiled by nutpie):
 - **A keyword's lift is its fits less its size**: ``u_t`` is how far its log people stray
   from the guess, ``w_t`` how far its log fits do, and the rate moves by the difference. So a
   count far above the guess lowers the rate before any verdict, with the fits held where
-  they were guessed: ``processing``, guessed at cannabis processors' 2,000 people, counted
-  61× that on its first search, and a lift that was free of the size took 14 no-fits to come
-  down. Verdicts move ``w_t``; ``ρ`` learns whether fits follow size.
+  they were guessed: a word like ``processing``, guessed at one trade's processors alone,
+  counts many times that on its first search across every trade, and a lift free of the
+  size would need a run of no-fits to come down. Verdicts move ``w_t``; ``ρ`` learns whether fits follow size.
 - **The LLM's guess is the prior** (``Guesses``, written by ``keyword_guess``): the
   market's people and fits, guessed once, and per keyword the people in the market holding
   it and how many of them fit. ``x_t`` is ``log(people / market people)``, and ``p_t``
@@ -38,8 +38,8 @@ compiled by nutpie):
   between a keyword's size and its fits — and a keyword no fired search holds draws its pair
   from the draw's own ``MVNormal(0, Σ)``.
 
-Sampling has no mode to reach: the Newton fit this replaced fell into a 2-cycle on batch 6
-and stopped at ``α`` = +17.86, every arm reading ``θ`` = 1. **The posterior is refitted only
+Sampling has no mode to reach: the Newton fit this replaced could fall into a 2-cycle and
+stop at a huge ``α``, every arm reading ``θ`` = 1. **The posterior is refitted only
 when a page or a verdict lands** (``fitted``), about 3.5 s a refit.
 """
 from __future__ import annotations
@@ -80,8 +80,8 @@ MARKET_RATE_SPREAD = 1.0
 # search's own effect.
 KEYWORD_SPREAD, FITS_SPREAD, SEARCH_SPREAD = 1.5, 1.0, 0.5
 # φ, the count's dispersion about N(q), what independence gets wrong. A negative binomial
-# beat the log-normal on log(y + ½) inside this model on batch 6's counts: 16 of 20 inside
-# the 80% interval against 14.
+# beat the log-normal on log(y + ½) inside this model on held-out counts: more of them
+# inside the 80% interval.
 COUNT_DISPERSION = 5.0
 # R's LKJ concentration: 2 leans away from a perfect correlation.
 CORRELATION_CONCENTRATION = 2.0
@@ -146,7 +146,7 @@ def store_log_share(keyword: Keyword, people) -> float:
 # ── the LLM's guess: the prior ──
 
 def keyword_text(keyword: Keyword) -> str:
-    """``keyword`` as a guess spells it: ``tag|cannabis extraction``,
+    """``keyword`` as a guess spells it: ``tag|coffee roasting``,
     ``state|new york|united states``."""
     return "|".join(" ".join(part) if isinstance(part, tuple) else str(part)
                     for part in keyword)

@@ -37,7 +37,7 @@ nothing: every lead in this file already has a Deal, so it already passed the qu
 
 It also made the export expensive and unsafe. Scoring meant ``qualifier_for()``,
 which warm-starts over every label and fits a GP — O(n³), minutes on a real install
-(2,538 deals on the live install; the docstring there assumes "tens to low hundreds") —
+(a few thousand deals; the docstring there assumes "tens to low hundreds") —
 and which calls ``ensure_anchors``, so a cold install would have made **LLM calls and
 mutated install state from a read-only export**. This module now touches nothing but the
 database.
@@ -157,8 +157,7 @@ def lead_records() -> Iterable[dict]:
     - **`Lead.disqualified`** is the permanent, account-level exclusion (an opt-out).
 
     Filtering only on `disqualified` catches the second and misses the first, which is
-    what shipped and what the live install exposed: 1,944 rows exported where most
-    deals were rejections.
+    what once shipped: a file where most rows were rejections.
 
     A lead on this run's ``--exclude`` list is left out too (``core/exclude.py``), and so
     is a **marked** one (``Lead.marked``, ``find --labels``): the customer already has

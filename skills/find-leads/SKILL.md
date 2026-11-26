@@ -197,8 +197,8 @@ Spread them: different titles, different kinds of company, some broad and some n
   write the form titles carry (`founder`, not `founders`), accents included (`gérant` and `gerant`
   are different words).
 - **`tag`** — at most one phrase one of the company's own LinkedIn tags holds, its words adjacent
-  and in order (`thc vape`, not `vape thc`), or empty for any company. Not stemmed either: a company
-  tags itself `vapes` or `vape`, and the two find different companies. A tag is never searched
+  and in order (`cold brew`, not `brew cold`), or empty for any company. Not stemmed either: a
+  company tags itself `roasters` or `roaster`, and the two find different companies. A tag is never searched
   without a title, and a word just as common in unrelated industries (`oil`, `brand`) is no tag.
 - **`state`** — a state inside the market `country`, or empty for the whole country. When all
   the searches name a state, the walk never goes country-wide.
@@ -231,7 +231,7 @@ with:
 ```bash
 outfind find 10 --agent-qualify --keyword-guesses '{
   "market": {"people": 200000000, "fits": 5000},
-  "keywords": [{"keyword": "tag|live resin", "people": 600, "fits": 120},
+  "keywords": [{"keyword": "tag|green coffee", "people": 600, "fits": 120},
                {"keyword": "tag|processing", "people": 400000, "fits": 110}, ...]}'
 ```
 

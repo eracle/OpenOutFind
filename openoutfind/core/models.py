@@ -231,7 +231,7 @@ class MarketGuess(models.Model):
 class KeywordGuess(models.Model):
     """An LLM's guess about one keyword of the walk, the prior the belief starts it from:
     how many people in the market hold it, and how many of them fit, against the
-    ``MarketGuess``. The field is the keyword's own prefix (``tag|rosin``).
+    ``MarketGuess``. The field is the keyword's own prefix (``tag|espresso``).
     ``core/pipeline/keyword_guess.py`` owns it; a replaced brief clears it.
     """
 
